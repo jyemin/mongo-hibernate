@@ -81,7 +81,13 @@ class MongoParameterRecognizer {
         builder.append(quoteCharacter);
         while (i < json.length()) {
             char c = json.charAt(i++);
-            if (c == quoteCharacter) {
+            if (c == '\\') {
+                builder.append(c);
+                if (i < json.length()) {
+                    c = json.charAt(i++);
+                    builder.append(c);
+                }
+            } else if (c == quoteCharacter) {
                 builder.append(c);
                 return i;
             } else {
