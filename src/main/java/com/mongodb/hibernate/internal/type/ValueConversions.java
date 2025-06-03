@@ -18,13 +18,17 @@ package com.mongodb.hibernate.internal.type;
 
 import static com.mongodb.hibernate.internal.MongoAssertions.assertNotNull;
 import static java.lang.String.format;
+import static java.lang.String.valueOf;
 
 import java.math.BigDecimal;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.Timestamp;
+
 import org.bson.BsonBinary;
 import org.bson.BsonBoolean;
+import org.bson.BsonDateTime;
 import org.bson.BsonDecimal128;
 import org.bson.BsonDouble;
 import org.bson.BsonInt32;
@@ -61,7 +65,10 @@ public final class ValueConversions {
             return toBsonValue(v);
         } else if (value instanceof ObjectId v) {
             return toBsonValue(v);
-        } else {
+        } else if (value instanceof Timestamp t) {
+            return toBsonValue(t);
+        }
+        else {
             throw new SQLFeatureNotSupportedException(format(
                     "Value [%s] of type [%s] is not supported",
                     value, value.getClass().getTypeName()));
@@ -98,6 +105,10 @@ public final class ValueConversions {
 
     public static BsonObjectId toBsonValue(ObjectId value) {
         return new BsonObjectId(value);
+    }
+
+    public static BsonDateTime toBsonValue(Timestamp value) {
+        return new BsonDateTime(value.getTime());
     }
 
     static Object toDomainValue(BsonValue value) throws SQLFeatureNotSupportedException {
@@ -187,5 +198,13 @@ public final class ValueConversions {
 
     private static ObjectId toDomainValue(BsonObjectId value) {
         return value.getValue();
+    }
+
+    public static Timestamp toTimestampDomainValue(BsonValue value) {
+        return toDomainValue(value.asDateTime());
+    }
+
+    private static Timestamp toDomainValue(BsonDateTime value) {
+        return new Timestamp(value.getValue());
     }
 }

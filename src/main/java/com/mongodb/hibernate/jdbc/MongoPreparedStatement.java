@@ -39,6 +39,7 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.function.Consumer;
 import org.bson.BsonArray;
 import org.bson.BsonDocument;
@@ -234,7 +235,10 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
     public void setTimestamp(int parameterIndex, Timestamp x, Calendar cal) throws SQLException {
         checkClosed();
         checkParameterIndex(parameterIndex);
-        throw new SQLFeatureNotSupportedException("TODO-HIBERNATE-42 https://jira.mongodb.org/browse/HIBERNATE-42");
+        if (!cal.getTimeZone().equals(TimeZone.getTimeZone("UTC"))) {
+            throw new SQLFeatureNotSupportedException("No support for non-UTC Calendar");
+        }
+        setParameter(parameterIndex, toBsonValue(x));
     }
 
     @Override

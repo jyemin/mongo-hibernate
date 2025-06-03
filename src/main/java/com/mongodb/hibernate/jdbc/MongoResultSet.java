@@ -49,6 +49,7 @@ import java.sql.Timestamp;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Objects;
+import java.util.TimeZone;
 import java.util.function.Function;
 import org.bson.BsonDocument;
 import org.bson.BsonValue;
@@ -182,7 +183,10 @@ final class MongoResultSet implements ResultSetAdapter {
     public @Nullable Timestamp getTimestamp(int columnIndex, Calendar cal) throws SQLException {
         checkClosed();
         checkColumnIndex(columnIndex);
-        throw new SQLFeatureNotSupportedException("TODO-HIBERNATE-42 https://jira.mongodb.org/browse/HIBERNATE-42");
+        if (!cal.getTimeZone().equals(TimeZone.getTimeZone("UTC"))) {
+            throw new SQLFeatureNotSupportedException("No support for non-UTC Calendar");
+        }
+        return getValue(columnIndex, ValueConversions::toTimestampDomainValue);
     }
 
     @Override
