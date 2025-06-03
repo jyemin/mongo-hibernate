@@ -178,7 +178,7 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
     public void setTimestamp(int parameterIndex, Timestamp x) throws SQLException {
         checkClosed();
         checkParameterIndex(parameterIndex);
-        throw new SQLFeatureNotSupportedException("TODO-HIBERNATE-42 https://jira.mongodb.org/browse/HIBERNATE-42");
+        setParameter(parameterIndex, toBsonValue(x));
     }
 
     @Override

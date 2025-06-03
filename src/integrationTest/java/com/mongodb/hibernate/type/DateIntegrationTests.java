@@ -34,6 +34,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Date;
 
 import static com.mongodb.hibernate.MongoTestAssertions.assertEq;
 import static com.mongodb.hibernate.internal.MongoConstants.ID_FIELD_NAME;
@@ -56,11 +57,13 @@ class DateIntegrationTests implements SessionFactoryScopeAware {
         var item = new Item();
         item.id = 1;
         item.t = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+        item.d = new Date();
         sessionFactoryScope.inTransaction(session -> session.persist(item));
         assertThat(mongoCollection.find())
                 .containsExactly(new BsonDocument()
                         .append(ID_FIELD_NAME, new BsonInt32(1))
-                        .append("t", new BsonDateTime(item.t.toEpochMilli())));
+                        .append("t", new BsonDateTime(item.t.toEpochMilli()))
+                        .append("d", new BsonDateTime(item.d.getTime())));
         var loadedItem = sessionFactoryScope.fromTransaction(session -> session.find(Item.class, item.id));
         assertEq(item, loadedItem);
     }
@@ -76,5 +79,6 @@ class DateIntegrationTests implements SessionFactoryScopeAware {
         @Id
         int id;
         Instant t;
+        Date d;
     }
 }
