@@ -37,11 +37,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 @SessionFactory(exportSchema = false)
 @DomainModel(
-        annotatedClasses = {BasicCrudIntegrationTests.Book.class, BasicCrudIntegrationTests.BookDynamicallyUpdated.class,
-                BasicCrudIntegrationTests.BookCountByAuthor.class, BasicCrudIntegrationTests.BookSummary.class
-        },
-        extraQueryImportClasses = {BasicCrudIntegrationTests.BookCountByAuthor.class}
-        )
+        annotatedClasses = {BasicCrudIntegrationTests.Book.class, BasicCrudIntegrationTests.BookDynamicallyUpdated.class
+        })
 @ExtendWith(MongoExtension.class)
 class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
 
@@ -221,8 +218,9 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
             book.publishYear = 1913;
 
             sessionFactoryScope.inTransaction(session -> session.persist(book));
-            BookSummary loadedBookSummary = sessionFactoryScope.fromTransaction(session ->
-                    session.createQuery("SELECT author, title FROM book", BookSummary.class).getSingleResult());
+            BookSummary loadedBookSummary = sessionFactoryScope.fromTransaction(
+                    session -> session.createQuery("SELECT author, title FROM book", BookSummary.class)
+                            .getSingleResult());
             assertEq(book, loadedBookSummary);
         }
     }
@@ -251,12 +249,12 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
                     }
                     """;
             sessionFactoryScope.inTransaction(session -> {
-                var query = session.createNativeQuery(nativeQuery, Book.class)
-                        .setParameter("id", book.id);
+                var query = session.createNativeQuery(nativeQuery, Book.class).setParameter("id", book.id);
                 var queriedBook = query.getSingleResult();
                 assertThat(queriedBook).usingRecursiveComparison().isEqualTo(book);
             });
         }
+
         @Test
         void testNativeGroup() {
             var book1 = new Book();
@@ -276,9 +274,7 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
                 session.persist(book2);
             });
 
-            var expectedBookCountByAuthor = new BookCountByAuthor();
-            expectedBookCountByAuthor._id = book1.author;
-            expectedBookCountByAuthor.count = 2;
+            var expectedBookCountByAuthor = new BookCountByAuthor(book1.author, 2);
 
             var nativeQuery =
                     """
@@ -292,7 +288,6 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
                     }
                     """;
             sessionFactoryScope.inTransaction(session -> {
-                // Also fails with `Object[].class` as the result type.
                 var query = session.createNativeQuery(nativeQuery, BookCountByAuthor.class)
                         .setParameter("author", book1.author);
                 var bookCountByAuthor = query.getSingleResult();
@@ -321,6 +316,11 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
     static class BookCountByAuthor {
         String _id;
         int count;
+
+        public BookCountByAuthor(String _id, int count) {
+            this._id = _id;
+            this.count = count;
+        }
     }
 
     static class BookSummary {
