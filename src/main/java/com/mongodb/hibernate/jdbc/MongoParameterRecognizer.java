@@ -47,7 +47,7 @@ class MongoParameterRecognizer {
                     } else if (c == '$' || c == '_' || Character.isLetter(c)) {
                         i = scanUnquotedString(c, i, json, builder);
                     } else {
-                        builder.append(c);  // or throw exception, as this isn't valid JSON
+                        builder.append(c); // or throw exception, as this isn't valid JSON
                     }
             }
         }
@@ -65,7 +65,8 @@ class MongoParameterRecognizer {
         return i - 1;
     }
 
-    private static int scanUnquotedString(final char firstCharacter, final int startIndex, final String json, final StringBuilder builder) {
+    private static int scanUnquotedString(
+            final char firstCharacter, final int startIndex, final String json, final StringBuilder builder) {
         builder.append(firstCharacter);
         int i = startIndex;
         char c = json.charAt(i++);
@@ -76,7 +77,8 @@ class MongoParameterRecognizer {
         return i - 1;
     }
 
-    private static int scanString(final char quoteCharacter, final int startIndex, final String json, final StringBuilder builder) {
+    private static int scanString(
+            final char quoteCharacter, final int startIndex, final String json, final StringBuilder builder) {
         int i = startIndex;
         builder.append(quoteCharacter);
         while (i < json.length()) {
