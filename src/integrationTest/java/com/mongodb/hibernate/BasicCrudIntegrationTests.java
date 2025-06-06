@@ -37,8 +37,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 @SessionFactory(exportSchema = false)
 @DomainModel(
-        annotatedClasses = {BasicCrudIntegrationTests.Book.class, BasicCrudIntegrationTests.BookDynamicallyUpdated.class
-        })
+        annotatedClasses = {BasicCrudIntegrationTests.Book.class, BasicCrudIntegrationTests.BookDynamicallyUpdated.class,
+                BasicCrudIntegrationTests.BookCountByAuthor.class, BasicCrudIntegrationTests.BookSummary.class
+        },
+        extraQueryImportClasses = {BasicCrudIntegrationTests.BookCountByAuthor.class}
+        )
 @ExtendWith(MongoExtension.class)
 class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
 
@@ -208,6 +211,20 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
             var loadedBook = sessionFactoryScope.fromTransaction(session -> session.find(Book.class, 1));
             assertEq(book, loadedBook);
         }
+
+        @Test
+        void testFindUsingDTO() {
+            var book = new Book();
+            book.id = 1;
+            book.author = "Marcel Proust";
+            book.title = "In Search of Lost Time";
+            book.publishYear = 1913;
+
+            sessionFactoryScope.inTransaction(session -> session.persist(book));
+            BookSummary loadedBookSummary = sessionFactoryScope.fromTransaction(session ->
+                    session.createQuery("SELECT author, title FROM book", BookSummary.class).getSingleResult());
+            assertEq(book, loadedBookSummary);
+        }
     }
 
     @Nested
@@ -240,6 +257,48 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
                 assertThat(queriedBook).usingRecursiveComparison().isEqualTo(book);
             });
         }
+        @Test
+        void testNativeGroup() {
+            var book1 = new Book();
+            book1.id = 1;
+            book1.title = "Time Regained";
+            book1.author = "Marcel Proust";
+            book1.publishYear = 1927;
+
+            var book2 = new Book();
+            book2.id = 2;
+            book2.title = "In Search of Lost Time";
+            book2.author = "Marcel Proust";
+            book2.publishYear = 1913;
+
+            sessionFactoryScope.inTransaction(session -> {
+                session.persist(book1);
+                session.persist(book2);
+            });
+
+            var expectedBookCountByAuthor = new BookCountByAuthor();
+            expectedBookCountByAuthor._id = book1.author;
+            expectedBookCountByAuthor.count = 2;
+
+            var nativeQuery =
+                    """
+                    {
+                        aggregate: "books",
+                        pipeline: [
+                            { $match :  { author: { $eq: :author } } },
+                            { $group: { _id: "$author", count: {$count: {} }} },
+                            { $project: { _id: 1, count: 1 } }
+                        ]
+                    }
+                    """;
+            sessionFactoryScope.inTransaction(session -> {
+                // Also fails with `Object[].class` as the result type.
+                var query = session.createNativeQuery(nativeQuery, BookCountByAuthor.class)
+                        .setParameter("author", book1.author);
+                var bookCountByAuthor = query.getSingleResult();
+                assertThat(bookCountByAuthor).usingRecursiveComparison().isEqualTo(expectedBookCountByAuthor);
+            });
+        }
     }
 
     private static void assertCollectionContainsExactly(BsonDocument expectedDoc) {
@@ -257,6 +316,16 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
         String author;
 
         int publishYear;
+    }
+
+    static class BookCountByAuthor {
+        String _id;
+        int count;
+    }
+
+    static class BookSummary {
+        String title;
+        String author;
     }
 
     @Entity
