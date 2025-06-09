@@ -17,6 +17,7 @@
 package com.mongodb.hibernate;
 
 import static com.mongodb.hibernate.MongoTestAssertions.assertEq;
+import static com.mongodb.hibernate.MongoTestAssertions.assertIterableEq;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.mongodb.client.MongoCollection;
@@ -219,9 +220,9 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
 
             sessionFactoryScope.inTransaction(session -> session.persist(book));
             BookSummary loadedBookSummary = sessionFactoryScope.fromTransaction(
-                    session -> session.createQuery("SELECT author, title FROM book", BookSummary.class)
+                    session -> session.createQuery("SELECT author, title FROM Book", BookSummary.class)
                             .getSingleResult());
-            assertEq(book, loadedBookSummary);
+            assertThat(loadedBookSummary).usingRecursiveComparison().ignoringFields("id").isEqualTo(book);
         }
     }
 
@@ -300,7 +301,7 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
         assertThat(mongoCollection.find()).containsExactly(expectedDoc);
     }
 
-    @Entity
+    @Entity(name = "Book")
     @Table(name = "books")
     static class Book {
         @Id
@@ -324,8 +325,12 @@ class BasicCrudIntegrationTests implements SessionFactoryScopeAware {
     }
 
     static class BookSummary {
-        String title;
         String author;
+        String title;
+        public BookSummary(String author, String title) {
+            this.author = author;
+            this.title = title;
+        }
     }
 
     @Entity
