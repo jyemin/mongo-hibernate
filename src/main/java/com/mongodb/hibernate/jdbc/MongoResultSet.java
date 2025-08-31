@@ -46,6 +46,7 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.sql.Types;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Objects;
@@ -200,6 +201,19 @@ final class MongoResultSet implements ResultSetAdapter {
     }
 
     @Override
+    public @Nullable Object getObject(int columnIndex) throws SQLException {
+        checkClosed();
+        checkColumnIndex(columnIndex);
+        return getValue(columnIndex, bsonValue -> {
+            try {
+                return ValueConversions.toDomainValue(bsonValue);
+            } catch (SQLFeatureNotSupportedException e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    @Override
     public <T> @Nullable T getObject(int columnIndex, Class<T> type) throws SQLException {
         checkClosed();
         checkColumnIndex(columnIndex);
@@ -288,10 +302,34 @@ final class MongoResultSet implements ResultSetAdapter {
             return fieldNames.size();
         }
 
-
         @Override
         public String getColumnLabel(int column) {
             return fieldNames.get(column - 1);
+        }
+
+        @Override
+        public String getColumnTypeName(int column) throws SQLException {
+            return "";
+        }
+
+        @Override
+        public int getPrecision(int column) throws SQLException {
+            return 0;
+        }
+
+        @Override
+        public int getScale(int column) throws SQLException {
+            return 0;
+        }
+
+        @Override
+        public int getColumnDisplaySize(int column) throws SQLException {
+            return 1;
+        }
+
+        @Override
+        public int getColumnType(int column) throws SQLException {
+            return Types.JAVA_OBJECT;
         }
     }
 }

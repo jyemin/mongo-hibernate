@@ -100,7 +100,7 @@ public final class ValueConversions {
         return new BsonObjectId(value);
     }
 
-    static Object toDomainValue(BsonValue value) throws SQLFeatureNotSupportedException {
+    public static Object toDomainValue(BsonValue value) throws SQLFeatureNotSupportedException {
         assertNotNull(value);
         if (value instanceof BsonBoolean v) {
             return toDomainValue(v);
