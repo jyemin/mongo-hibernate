@@ -52,6 +52,8 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
     private final BsonDocument command;
     private final List<BsonDocument> commandBatch;
     private final List<ParameterValueSetter> parameterValueSetters;
+    // Non-null only for MQLv2 commands; indexed by {?N} parameter index.
+    private final org.bson.BsonValue @org.jspecify.annotations.Nullable [] mqlv2ParamValues;
 
     MongoPreparedStatement(
             MongoDatabase mongoDatabase, ClientSession clientSession, MongoConnection mongoConnection, String mql)
@@ -61,7 +63,18 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
         this.command = MongoStatement.parse(mql);
         this.commandBatch = new ArrayList<>();
         this.parameterValueSetters = new ArrayList<>();
-        parseParameters(command, parameterValueSetters);
+        if (command.containsKey("mqlv2")) {
+            var mqlv2Text = command.getString("mqlv2").getValue();
+            var paramCount = countMqlv2Params(mqlv2Text);
+            this.mqlv2ParamValues = new org.bson.BsonValue[paramCount];
+            for (var i = 0; i < paramCount; i++) {
+                final var idx = i;
+                parameterValueSetters.add(new ParameterValueSetter(v -> mqlv2ParamValues[idx] = v));
+            }
+        } else {
+            this.mqlv2ParamValues = null;
+            parseParameters(command, parameterValueSetters);
+        }
     }
 
     @Override
@@ -70,6 +83,13 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
         closeLastOpenResultSet();
         checkAllParametersSet();
         checkSupportedQueryCommand(command);
+        if (mqlv2ParamValues != null) {
+            var original = command.getString("mqlv2").getValue();
+            var substituted = substituteMqlv2Params(original, mqlv2ParamValues);
+            var substitutedCommand = command.clone();
+            substitutedCommand.put("mqlv2", new org.bson.BsonString(substituted));
+            return executeQuery(substitutedCommand);
+        }
         return executeQuery(command);
     }
 
@@ -88,7 +108,9 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
                 throw new SQLException(format("Parameter with index [%d] is not set", i + 1));
             }
         }
-        checkComparatorNotComparingWithNullValues(command);
+        if (mqlv2ParamValues == null) {
+            checkComparatorNotComparingWithNullValues(command);
+        }
     }
 
     @Override
@@ -269,6 +291,64 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
     private void setParameter(int parameterIndex, BsonValue parameterValue) {
         var parameterValueSetter = parameterValueSetters.get(parameterIndex - 1);
         parameterValueSetter.accept(parameterValue);
+    }
+
+    // Assumes {?N} indices are contiguous starting from 0, as Hibernate always generates them.
+    static int countMqlv2Params(String text) {
+        var max = -1;
+        var pattern = java.util.regex.Pattern.compile("\\{\\?(\\d+)\\}");
+        var matcher = pattern.matcher(text);
+        while (matcher.find()) {
+            max = Math.max(max, Integer.parseInt(matcher.group(1)));
+        }
+        return max + 1; // 0 if no params found (-1 + 1)
+    }
+
+    static String substituteMqlv2Params(String text, org.bson.BsonValue[] paramValues)
+            throws java.sql.SQLFeatureNotSupportedException {
+        var result = text;
+        for (var i = 0; i < paramValues.length; i++) {
+            result = result.replace("{?" + i + "}", renderBsonAsMqlv2Literal(paramValues[i]));
+        }
+        return result;
+    }
+
+    static String renderBsonAsMqlv2Literal(org.bson.BsonValue value)
+            throws java.sql.SQLFeatureNotSupportedException {
+        return switch (value.getBsonType()) {
+            case STRING -> {
+                var raw = value.asString().getValue();
+                var sb = new StringBuilder(raw.length() + 2);
+                sb.append('"');
+                for (var i = 0; i < raw.length(); i++) {
+                    char c = raw.charAt(i);
+                    switch (c) {
+                        case '"' -> sb.append("\\\"");
+                        case '\\' -> sb.append("\\\\");
+                        case '\n' -> sb.append("\\n");
+                        case '\r' -> sb.append("\\r");
+                        case '\t' -> sb.append("\\t");
+                        default -> {
+                            if (c < 0x20) {
+                                sb.append(String.format("\\u%04x", (int) c));
+                            } else {
+                                sb.append(c);
+                            }
+                        }
+                    }
+                }
+                sb.append('"');
+                yield sb.toString();
+            }
+            case INT32, INT64 -> Long.toString(value.asNumber().longValue());
+            case DOUBLE -> Double.toString(value.asDouble().getValue());
+            case BOOLEAN -> Boolean.toString(value.asBoolean().getValue());
+            case NULL -> "null";
+            case DATE_TIME -> "date(\"" + java.time.Instant.ofEpochMilli(
+                    value.asDateTime().getValue()).toString() + "\")";
+            default -> throw new java.sql.SQLFeatureNotSupportedException(
+                    "Unsupported BsonValue type for MQLv2 parameter: " + value.getBsonType());
+        };
     }
 
     private static void parseParameters(BsonDocument command, List<ParameterValueSetter> parameterValueSetters) {

@@ -111,6 +111,9 @@ class MongoStatement implements StatementAdapter {
     ResultSet executeQuery(BsonDocument command) throws SQLException {
         try {
             var commandDescription = getCommandDescription(command);
+            if (commandDescription == CommandDescription.MQLV2) {
+                return executeMqlv2Query(command);
+            }
             var collection = getCollection(commandDescription, command);
             var pipeline = command.getArray("pipeline").stream()
                     .map(BsonValue::asDocument)
@@ -124,6 +127,24 @@ class MongoStatement implements StatementAdapter {
             startTransactionIfNeeded();
             return resultSet = new MongoResultSet(
                     collection.aggregate(clientSession, pipeline).cursor(), fieldNames);
+        } catch (BSONException bsonException) {
+            throw createSyntaxErrorException("%s: [%s]", command, bsonException);
+        } catch (RuntimeException exception) {
+            throw handleExecuteQueryOrUpdateException(exception);
+        }
+    }
+
+    private ResultSet executeMqlv2Query(BsonDocument command) throws SQLException {
+        try {
+            var mqlv2Text = command.getString("mqlv2").getValue();
+            var fieldNames = command.getArray("_mqlv2FieldNames").stream()
+                    .map(v -> v.asString().getValue())
+                    .toList();
+            startTransactionIfNeeded();
+            var cursor = mongoDatabase
+                    .mqlv2(clientSession, () -> mqlv2Text, org.bson.BsonDocument.class)
+                    .cursor();
+            return resultSet = new MongoResultSet(cursor, fieldNames);
         } catch (BSONException bsonException) {
             throw createSyntaxErrorException("%s: [%s]", command, bsonException);
         } catch (RuntimeException exception) {
@@ -456,7 +477,9 @@ class MongoStatement implements StatementAdapter {
         /** See <a href="https://www.mongodb.com/docs/manual/reference/command/delete/">{@code delete}</a>. */
         DELETE("delete", false, true),
         /** See <a href="https://www.mongodb.com/docs/manual/reference/command/aggregate/">{@code aggregate}</a>. */
-        AGGREGATE("aggregate", true, false);
+        AGGREGATE("aggregate", true, false),
+        /** MQLv2 query command. */
+        MQLV2("mqlv2", true, false);
 
         private final String commandName;
         private final boolean isQuery;
@@ -496,6 +519,7 @@ class MongoStatement implements StatementAdapter {
                 case "update" -> UPDATE;
                 case "delete" -> DELETE;
                 case "aggregate" -> AGGREGATE;
+                case "mqlv2" -> MQLV2;
                 default -> throw new SQLFeatureNotSupportedException("Unsupported command: %s".formatted(commandName));
             };
         }
