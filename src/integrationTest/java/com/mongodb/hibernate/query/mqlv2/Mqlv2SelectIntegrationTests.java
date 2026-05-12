@@ -58,7 +58,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     // ---- Test entities ----
 
-    @Entity
+    @Entity(name = "Customer")
     @Table(name = "customers")
     static class Customer {
         @Id
@@ -76,7 +76,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         }
     }
 
-    @Entity
+    @Entity(name = "Order")
     @Table(name = "orders")
     static class Order {
         @Id
@@ -121,7 +121,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @Test
     void testBasicSelect() {
-        sessionFactoryScope.inTransaction(session -> {
+        sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery("from Customer", Customer.class).getResultList();
             assertThat(result).hasSize(3);
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
@@ -132,7 +132,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @Test
     void testWhereWithLiteralComparison() {
-        sessionFactoryScope.inTransaction(session -> {
+        sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery("from Customer c where c.age > 25", Customer.class)
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Carol");
@@ -141,7 +141,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @Test
     void testWhereWithParameter() {
-        sessionFactoryScope.inTransaction(session -> {
+        sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery("from Customer c where c.name = :name", Customer.class)
                     .setParameter("name", "Alice")
                     .getResultList();
@@ -152,7 +152,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @Test
     void testWhereWithAndConjunction() {
-        sessionFactoryScope.inTransaction(session -> {
+        sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery(
                             "from Customer c where c.age > 20 and c.age < 32", Customer.class)
                     .getResultList();
@@ -162,7 +162,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @Test
     void testWhereWithNotEqual() {
-        sessionFactoryScope.inTransaction(session -> {
+        sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery("from Order o where o.status != 'shipped'", Order.class)
                     .getResultList();
             assertThat(result).hasSize(2); // pending + cancelled
@@ -171,7 +171,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @Test
     void testOrderByDescWithLimit() {
-        sessionFactoryScope.inTransaction(session -> {
+        sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery("from Customer c order by c.age desc limit 2", Customer.class)
                     .getResultList();
             assertThat(result).hasSize(2);
@@ -182,7 +182,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @Test
     void testOrderByAsc() {
-        sessionFactoryScope.inTransaction(session -> {
+        sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery("from Customer c order by c.age asc", Customer.class)
                     .getResultList();
             assertThat(result).hasSize(3);

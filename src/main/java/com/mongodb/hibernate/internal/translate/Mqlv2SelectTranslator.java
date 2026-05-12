@@ -47,6 +47,8 @@ import org.hibernate.sql.ast.tree.expression.CaseSearchedExpression;
 import org.hibernate.sql.ast.tree.expression.CaseSimpleExpression;
 import org.hibernate.sql.ast.tree.expression.CastTarget;
 import org.hibernate.sql.ast.tree.expression.Collation;
+import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
+import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.sql.ast.tree.expression.ColumnReference;
 import org.hibernate.sql.ast.tree.expression.Distinct;
 import org.hibernate.sql.ast.tree.expression.Duration;
@@ -64,6 +66,7 @@ import org.hibernate.sql.ast.tree.expression.NestedColumnReference;
 import org.hibernate.sql.ast.tree.expression.Over;
 import org.hibernate.sql.ast.tree.expression.Overflow;
 import org.hibernate.sql.ast.tree.expression.QueryLiteral;
+import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.expression.SelfRenderingExpression;
 import org.hibernate.sql.ast.tree.expression.SqlSelectionExpression;
 import org.hibernate.sql.ast.tree.expression.SqlTuple;
@@ -71,7 +74,6 @@ import org.hibernate.sql.ast.tree.expression.Star;
 import org.hibernate.sql.ast.tree.expression.Summarization;
 import org.hibernate.sql.ast.tree.expression.TrimSpecification;
 import org.hibernate.sql.ast.tree.expression.UnaryOperation;
-import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.from.FunctionTableReference;
 import org.hibernate.sql.ast.tree.from.NamedTableReference;
 import org.hibernate.sql.ast.tree.from.QueryPartTableReference;
@@ -270,7 +272,13 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
 
         for (var sqlSelection : selectClause.getSqlSelections()) {
             if (sqlSelection.isVirtual()) continue;
-            if (!(sqlSelection.getExpression() instanceof ColumnReference cr)) {
+            var selExpr = sqlSelection.getExpression();
+            ColumnReference cr;
+            if (selExpr instanceof ColumnReference directCr) {
+                cr = directCr;
+            } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
+                cr = bvpi.getColumnReference();
+            } else {
                 throw new FeatureNotSupportedException("Only column references are supported in SELECT");
             }
             var outputName = (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty())
@@ -318,7 +326,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     private void appendExprText(StringBuilder sb, Expression expression) {
-        if (expression instanceof ColumnReference cr) {
+        if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
+            appendExprText(sb, bvpi.getColumnReference());
+        } else if (expression instanceof ColumnReference cr) {
             if (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty()) {
                 sb.append(cr.getQualifier()).append(".").append(cr.getColumnExpression());
             } else {
@@ -326,6 +336,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             }
         } else if (expression instanceof QueryLiteral<?> ql) {
             appendLiteralText(sb, ql.getLiteralValue());
+        } else if (expression instanceof UnparsedNumericLiteral<?> unl) {
+            sb.append(unl.getLiteralValue());
+        } else if (expression instanceof SqmParameterInterpretation spi) {
+            appendExprText(sb, spi.getResolvedExpression());
         } else if (expression instanceof JdbcParameter jp) {
             sb.append("{?").append(parameterBinders.size()).append("}");
             parameterBinders.add(jp.getParameterBinder());
