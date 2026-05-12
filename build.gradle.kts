@@ -30,7 +30,10 @@ plugins {
     alias(libs.plugins.nexus.publish)
 }
 
-repositories { mavenCentral() }
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
 
 java {
     toolchain { languageVersion = JavaLanguageVersion.of(17) } // Remember to update javadoc links
