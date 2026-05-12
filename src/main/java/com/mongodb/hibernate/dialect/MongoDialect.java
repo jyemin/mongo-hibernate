@@ -25,6 +25,7 @@ import com.mongodb.hibernate.internal.dialect.TestMongoDialect;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayConstructorFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayContainsFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayIncludesFunction;
+import com.mongodb.hibernate.internal.translate.Mqlv2TranslatorFactory;
 import com.mongodb.hibernate.internal.translate.MongoTranslatorFactory;
 import com.mongodb.hibernate.internal.type.MongoArrayJdbcType;
 import com.mongodb.hibernate.internal.type.MongoStructJdbcType;
@@ -155,8 +156,13 @@ import org.jspecify.annotations.Nullable;
 public sealed class MongoDialect extends Dialect permits TestMongoDialect {
     private static final DatabaseVersion MINIMUM_DBMS_VERSION = DatabaseVersion.make(7);
 
+    private final boolean mqlv2Enabled;
+
     public MongoDialect(DialectResolutionInfo info) {
         super(info);
+        var configValues = info.getConfigurationValues();
+        var flag = configValues.get("mongo.hibernate.mqlv2.enabled");
+        mqlv2Enabled = Boolean.parseBoolean(flag instanceof String s ? s : String.valueOf(flag));
     }
 
     /**
@@ -195,7 +201,7 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
 
     @Override
     public SqlAstTranslatorFactory getSqlAstTranslatorFactory() {
-        return new MongoTranslatorFactory();
+        return mqlv2Enabled ? new Mqlv2TranslatorFactory() : new MongoTranslatorFactory();
     }
 
     @Override
