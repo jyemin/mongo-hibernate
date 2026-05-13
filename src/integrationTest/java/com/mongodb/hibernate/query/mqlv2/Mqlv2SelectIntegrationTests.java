@@ -574,39 +574,39 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     @Test
     void testExists() {
         sessionFactoryScope.inSession(session -> {
-            // all 3 customers have at least one order
+            // Alice (id=1) has orders with total 150 and 80; Bob (id=2) has total 200; Carol (id=3) has total 50 only
+            // EXISTS (total > 100): Alice ✓, Bob ✓, Carol ✗
             var result = session.createSelectionQuery(
-                            "from Customer c where exists (select 1 from Order o where o.customerId = c.id)",
+                            "from Customer c where exists (select 1 from Order o where o.customerId = c.id and o.total > 100)",
                             Customer.class)
                     .getResultList();
             assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+                    .containsExactlyInAnyOrder("Alice", "Bob");
         });
     }
 
     @Test
     void testNotExists() {
         sessionFactoryScope.inSession(session -> {
-            // no customers have orders with total > 500, so all 3 pass NOT EXISTS
+            // NOT EXISTS (total > 100): only Carol has no orders with total > 100
             var result = session.createSelectionQuery(
-                            "from Customer c where not exists (select 1 from Order o where o.customerId = c.id and o.total > 500)",
+                            "from Customer c where not exists (select 1 from Order o where o.customerId = c.id and o.total > 100)",
                             Customer.class)
                     .getResultList();
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+            assertThat(result).hasSize(1);
+            assertThat(result.get(0).name).isEqualTo("Carol");
         });
     }
 
     @Test
     void testExistsUncorrelated() {
         sessionFactoryScope.inSession(session -> {
-            // Uncorrelated: exists (select 1 from Order) — there are orders, so all customers match
+            // Uncorrelated EXISTS: no orders have total > 1000, so subquery returns nothing → 0 customers
             var result = session.createSelectionQuery(
-                            "from Customer c where exists (select 1 from Order o)",
+                            "from Customer c where exists (select 1 from Order o where o.total > 1000)",
                             Customer.class)
                     .getResultList();
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+            assertThat(result).isEmpty();
         });
     }
 
