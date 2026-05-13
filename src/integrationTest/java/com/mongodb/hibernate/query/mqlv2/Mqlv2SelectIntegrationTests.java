@@ -680,4 +680,23 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testScalarSubquery() {
+        sessionFactoryScope.inSession(session -> {
+            // (name, order_count) per customer
+            // Alice (id=1): 2 orders (10, 11), Bob (id=2): 1 order (12), Carol (id=3): 1 order (13)
+            var result = session.createSelectionQuery(
+                            "select c.name, (select count(o) from Order o where o.customerId = c.id) from Customer c",
+                            Object[].class)
+                    .getResultList();
+            assertThat(result).hasSize(3);
+            assertThat(result)
+                    .extracting(r -> r[0], r -> r[1])
+                    .containsExactlyInAnyOrder(
+                            tuple("Alice", 2L),
+                            tuple("Bob", 1L),
+                            tuple("Carol", 1L));
+        });
+    }
+
 }

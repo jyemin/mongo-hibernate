@@ -804,6 +804,23 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             } else {
                 throw new FeatureNotSupportedException("Unsupported function: " + fn.getFunctionName() + "()");
             }
+        } else if (expression instanceof SelectStatement ss) {
+            var innerSpec = ss.getQueryPart().getFirstQuerySpec();
+            // Only single-column aggregate subqueries are supported
+            var selections = innerSpec.getSelectClause().getSqlSelections().stream()
+                    .filter(s -> !s.isVirtual())
+                    .toList();
+            if (selections.size() != 1 || !isAggregateFunction(selections.get(0).getExpression())) {
+                throw new FeatureNotSupportedException(
+                        "Scalar subquery in SELECT must project a single aggregate function");
+            }
+            var aggFn = (SelfRenderingFunctionSqlAstExpression) selections.get(0).getExpression();
+            var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+            var outerQualifiers = collectOuterQualifiers(outerSpec);
+            var correlatedBindings = new LinkedHashMap<String, String>();
+            var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
+            var wrapped = wrapWithLet(innerPipeline, correlatedBindings);
+            sb.append(aggFn.getFunctionName()).append("(").append(wrapped).append(")");
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported expression: " + expression.getClass().getSimpleName());
