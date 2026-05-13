@@ -600,6 +600,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             collectHavingOnlyAggsInExpr(cp.getRightHandExpression(), result);
         } else if (predicate instanceof Junction junction) {
             for (var p : junction.getPredicates()) collectHavingOnlyAggsInPredicate(p, result);
+        } else if (predicate instanceof GroupedPredicate gp) {
+            collectHavingOnlyAggsInPredicate(gp.getSubPredicate(), result);
         } else if (predicate instanceof NegatedPredicate np) {
             collectHavingOnlyAggsInPredicate(np.getPredicate(), result);
         } else if (predicate instanceof BooleanExpressionPredicate bp) {
@@ -861,6 +863,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                 appendPredicateText(sb, preds.get(i));
             }
             sb.append(")");
+        } else if (predicate instanceof GroupedPredicate gp) {
+            appendPredicateText(sb, gp.getSubPredicate());
         } else if (predicate instanceof NegatedPredicate np) {
             sb.append("(not ");
             appendPredicateText(sb, np.getPredicate());

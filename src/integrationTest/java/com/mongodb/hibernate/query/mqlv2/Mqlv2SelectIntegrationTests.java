@@ -587,6 +587,58 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testHavingOrConjunctionWithTwoNonSelectAggregates() {
+        sessionFactoryScope.inSession(session -> {
+            // OR: shipped (count=2>1) included, pending (sum=80>70) included, cancelled (sum=50) excluded
+            var result = session.createSelectionQuery(
+                            "select o.status from Order o group by o.status"
+                                    + " having count(o.id) > 1 or sum(o.total) > 70",
+                            String.class)
+                    .getResultList();
+            assertThat(result).containsExactlyInAnyOrder("shipped", "pending");
+        });
+    }
+
+    @Test
+    void testHavingNegatedNonSelectAggregate() {
+        sessionFactoryScope.inSession(session -> {
+            // NOT (count > 1): shipped excluded (count=2), pending and cancelled included (count=1)
+            var result = session.createSelectionQuery(
+                            "select o.status from Order o group by o.status"
+                                    + " having not (count(o.id) > 1)",
+                            String.class)
+                    .getResultList();
+            assertThat(result).containsExactlyInAnyOrder("pending", "cancelled");
+        });
+    }
+
+    @Test
+    void testHavingArithmeticOnNonSelectAggregate() {
+        sessionFactoryScope.inSession(session -> {
+            // count * 2: shipped=4 > 3 included, pending=2 and cancelled=2 excluded
+            var result = session.createSelectionQuery(
+                            "select o.status from Order o group by o.status"
+                                    + " having count(o.id) * 2 > 3",
+                            String.class)
+                    .getResultList();
+            assertThat(result).containsExactly("shipped");
+        });
+    }
+
+    @Test
+    void testHavingInListWithNonSelectAggregate() {
+        sessionFactoryScope.inSession(session -> {
+            // count(o.id) in (1): pending and cancelled (count=1) included, shipped (count=2) excluded
+            var result = session.createSelectionQuery(
+                            "select o.status from Order o group by o.status"
+                                    + " having count(o.id) in (1)",
+                            String.class)
+                    .getResultList();
+            assertThat(result).containsExactlyInAnyOrder("pending", "cancelled");
+        });
+    }
+
     // ---- Scalar aggregates (no GROUP BY) ----
 
     @Test
