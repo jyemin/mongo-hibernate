@@ -66,13 +66,15 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
         String name;
         int age;
+        boolean active;
 
         Customer() {}
 
-        Customer(int id, String name, int age) {
+        Customer(int id, String name, int age, boolean active) {
             this.id = id;
             this.name = name;
             this.age = age;
+            this.active = active;
         }
     }
 
@@ -99,9 +101,9 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     // ---- Test data ----
 
     private static final List<Customer> CUSTOMERS = List.of(
-            new Customer(1, "Alice", 30),
-            new Customer(2, "Bob", 25),
-            new Customer(3, "Carol", 35));
+            new Customer(1, "Alice", 30, true),
+            new Customer(2, "Bob", 25, false),
+            new Customer(3, "Carol", 35, true));
 
     private static final List<Order> ORDERS = List.of(
             new Order(10, 1, 150.0, "shipped"),
@@ -228,6 +230,15 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .setParameter("status", null, String.class)
                     .getResultList();
             assertThat(result).isEmpty();
+        });
+    }
+
+    @Test
+    void testWhereBooleanField() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery("from Customer c where c.active", Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Carol");
         });
     }
 
