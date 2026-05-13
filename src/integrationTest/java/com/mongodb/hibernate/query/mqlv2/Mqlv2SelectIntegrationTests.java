@@ -18,6 +18,7 @@ package com.mongodb.hibernate.query.mqlv2;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.groups.Tuple.tuple;
 import static org.hibernate.cfg.AvailableSettings.DIALECT;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
@@ -420,6 +421,86 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).hasSize(4);
             assertThat(result.stream().map(o -> o.id)).containsExactlyInAnyOrder(10, 11, 12, 13);
+        });
+    }
+
+    // ---- Task: GROUP BY ----
+
+    @Test
+    void testGroupByCount() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select o.status, count(o.id) from Order o group by o.status", Object[].class)
+                    .getResultList();
+            assertThat(result).hasSize(3);
+            assertThat(result)
+                    .extracting(r -> r[0], r -> r[1])
+                    .containsExactlyInAnyOrder(
+                            tuple("shipped", 2L), tuple("pending", 1L), tuple("cancelled", 1L));
+        });
+    }
+
+    @Test
+    void testGroupBySum() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select o.status, sum(o.total) from Order o group by o.status", Object[].class)
+                    .getResultList();
+            assertThat(result).hasSize(3);
+            assertThat(result)
+                    .extracting(r -> r[0], r -> r[1])
+                    .containsExactlyInAnyOrder(
+                            tuple("shipped", 350.0), tuple("pending", 80.0), tuple("cancelled", 50.0));
+        });
+    }
+
+    @Test
+    void testGroupByMultipleAggregates() {
+        sessionFactoryScope.inSession(session -> {
+            // shipped: count=2, sum=350, min=150, max=200
+            var result = session.createSelectionQuery(
+                            "select o.status, count(o.id), sum(o.total), min(o.total), max(o.total)"
+                                    + " from Order o where o.status = 'shipped' group by o.status",
+                            Object[].class)
+                    .getSingleResult();
+            assertThat(result[0]).isEqualTo("shipped");
+            assertThat(result[1]).isEqualTo(2L);
+            assertThat(result[2]).isEqualTo(350.0);
+            assertThat(result[3]).isEqualTo(150.0);
+            assertThat(result[4]).isEqualTo(200.0);
+        });
+    }
+
+    @Test
+    void testGroupByMultipleKeys() {
+        sessionFactoryScope.inSession(session -> {
+            // Each order has a unique (customerId, status) pair → 4 groups
+            var result = session.createSelectionQuery(
+                            "select o.customerId, o.status, count(o.id) from Order o"
+                                    + " group by o.customerId, o.status",
+                            Object[].class)
+                    .getResultList();
+            assertThat(result).hasSize(4);
+            assertThat(result)
+                    .extracting(r -> r[0], r -> r[1], r -> r[2])
+                    .containsExactlyInAnyOrder(
+                            tuple(1, "shipped", 1L),
+                            tuple(1, "pending", 1L),
+                            tuple(2, "shipped", 1L),
+                            tuple(3, "cancelled", 1L));
+        });
+    }
+
+    @Test
+    void testHavingNotSupported() {
+        sessionFactoryScope.inSession(session -> {
+            assertThatThrownBy(() -> session.createSelectionQuery(
+                            "select o.status, count(o.id) from Order o group by o.status"
+                                    + " having count(o.id) > 1",
+                            Object[].class)
+                    .getResultList())
+                    .isInstanceOf(FeatureNotSupportedException.class)
+                    .hasMessageContaining("HAVING");
         });
     }
 

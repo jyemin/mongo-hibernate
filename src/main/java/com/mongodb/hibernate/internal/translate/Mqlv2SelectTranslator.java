@@ -174,13 +174,26 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         var root = querySpec.getFromClause().getRoots().get(0);
         hasJoins = !root.getTableGroupJoins().isEmpty();
 
+        var groupByExprs = querySpec.getGroupByClauseExpressions();
+        var havingRestrictions = querySpec.getHavingClauseRestrictions();
+        if (havingRestrictions != null && !havingRestrictions.isEmpty()) {
+            throw new FeatureNotSupportedException("HAVING is not yet supported in MQLv2");
+        }
+
         var sb = new StringBuilder();
         appendFrom(sb, root);
         appendJoins(sb, root);
         appendMatch(sb, querySpec);
+
+        List<@Nullable String> aggNames = null;
+        if (!groupByExprs.isEmpty()) {
+            aggNames = buildAggNames(querySpec.getSelectClause());
+            appendGroup(sb, groupByExprs, querySpec.getSelectClause(), aggNames);
+        }
+
         appendSort(sb, querySpec);
         appendLimit(sb, querySpec, queryOptions);
-        var fieldNames = appendFormat(sb, querySpec.getSelectClause());
+        var fieldNames = appendFormat(sb, querySpec.getSelectClause(), aggNames);
         if (querySpec.getSelectClause().isDistinct()) {
             sb.append(" | distinct");
         }
@@ -275,26 +288,115 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         appendExprText(sb, fetchExpr);
     }
 
-    private List<String> appendFormat(StringBuilder sb, SelectClause selectClause) {
+    private List<@Nullable String> buildAggNames(SelectClause selectClause) {
+        var result = new ArrayList<@Nullable String>();
+        var aggIdx = 0;
+        for (var sel : selectClause.getSqlSelections()) {
+            if (sel.isVirtual()) continue;
+            result.add(isAggregateFunction(sel.getExpression()) ? "_agg" + aggIdx++ : null);
+        }
+        return result;
+    }
+
+    private static final Set<String> AGGREGATE_FUNCTION_NAMES = Set.of("count", "sum", "avg", "min", "max");
+
+    private static boolean isAggregateFunction(Expression expr) {
+        return expr instanceof SelfRenderingFunctionSqlAstExpression fn
+                && AGGREGATE_FUNCTION_NAMES.contains(fn.getFunctionName());
+    }
+
+    private void appendGroup(
+            StringBuilder sb,
+            List<Expression> groupByExprs,
+            SelectClause selectClause,
+            List<@Nullable String> aggNames) {
+        sb.append(" | group (");
+        for (var i = 0; i < groupByExprs.size(); i++) {
+            if (i > 0) sb.append(", ");
+            var expr = groupByExprs.get(i);
+            var keyName = simpleColumnName(expr);
+            sb.append(keyName).append("=");
+            appendExprText(sb, expr);
+        }
+        sb.append(") (");
+        var selections =
+                selectClause.getSqlSelections().stream().filter(s -> !s.isVirtual()).toList();
+        var first = true;
+        for (var i = 0; i < selections.size(); i++) {
+            var aggName = aggNames.get(i);
+            if (aggName == null) continue;
+            if (!first) sb.append(", ");
+            first = false;
+            sb.append(aggName).append("=");
+            appendAggFunctionText(
+                    sb, (SelfRenderingFunctionSqlAstExpression) selections.get(i).getExpression());
+        }
+        sb.append(")");
+    }
+
+    private void appendAggFunctionText(StringBuilder sb, SelfRenderingFunctionSqlAstExpression fn) {
+        var name = fn.getFunctionName();
+        var args = fn.getArguments();
+        sb.append(name).append("(");
+        if (args.isEmpty() || args.get(0) instanceof Star) {
+            // count(*) / count() → count($): count all elements in the group
+            sb.append("$");
+        } else {
+            if (!(args.get(0) instanceof Expression argExpr)) {
+                throw new FeatureNotSupportedException(name + "() requires a field argument in MQLv2");
+            }
+            sb.append("$->").append(simpleColumnName(argExpr));
+        }
+        sb.append(")");
+    }
+
+    private static String simpleColumnName(Expression expr) {
+        if (expr instanceof ColumnReference cr) {
+            return cr.getColumnExpression();
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            return bvpi.getColumnReference().getColumnExpression();
+        } else {
+            throw new FeatureNotSupportedException(
+                    "Expected simple column reference; got: " + expr.getClass().getSimpleName());
+        }
+    }
+
+    private List<String> appendFormat(
+            StringBuilder sb, SelectClause selectClause, @Nullable List<@Nullable String> aggNames) {
         var fieldNames = new ArrayList<String>();
         var formatParts = new ArrayList<String>();
         var syntheticIdx = 0;
 
-        for (var sqlSelection : selectClause.getSqlSelections()) {
-            if (sqlSelection.isVirtual()) continue;
-            var selExpr = sqlSelection.getExpression();
+        var selections =
+                selectClause.getSqlSelections().stream().filter(s -> !s.isVirtual()).toList();
+        for (var i = 0; i < selections.size(); i++) {
+            var selExpr = selections.get(i).getExpression();
+            var aggName = aggNames != null ? aggNames.get(i) : null;
+
             String key;
-            if (selExpr instanceof ColumnReference cr) {
+            String valueText;
+            if (aggName != null) {
+                key = "_f" + syntheticIdx++;
+                valueText = aggName;
+            } else if (selExpr instanceof ColumnReference cr) {
                 key = cr.getColumnExpression();
+                var valSb = new StringBuilder();
+                appendExprText(valSb, selExpr);
+                valueText = valSb.toString();
             } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
                 key = bvpi.getColumnReference().getColumnExpression();
+                var valSb = new StringBuilder();
+                appendExprText(valSb, selExpr);
+                valueText = valSb.toString();
             } else {
                 key = "_f" + syntheticIdx++;
+                var valSb = new StringBuilder();
+                appendExprText(valSb, selExpr);
+                valueText = valSb.toString();
             }
+
             fieldNames.add(key);
-            var valSb = new StringBuilder();
-            appendExprText(valSb, selExpr);
-            formatParts.add(key + ": " + valSb);
+            formatParts.add(key + ": " + valueText);
         }
 
         sb.append(" | format {");

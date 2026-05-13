@@ -237,11 +237,11 @@ public final class ValueConversions {
     }
 
     public static long toLongDomainValue(BsonValue value) {
-        return toDomainValue(value.asInt64());
-    }
-
-    private static long toDomainValue(BsonInt64 value) {
-        return value.longValue();
+        return switch (value.getBsonType()) {
+            case INT32 -> value.asInt32().intValue();
+            case INT64 -> value.asInt64().longValue();
+            default -> throw new IllegalArgumentException("Cannot convert " + value.getBsonType() + " to long");
+        };
     }
 
     public static float toFloatDomainValue(BsonValue value) {
@@ -253,11 +253,12 @@ public final class ValueConversions {
     }
 
     public static double toDoubleDomainValue(BsonValue value) {
-        return toDomainValue(value.asDouble());
-    }
-
-    private static double toDomainValue(BsonDouble value) {
-        return value.getValue();
+        return switch (value.getBsonType()) {
+            case DOUBLE -> value.asDouble().getValue();
+            case INT32 -> value.asInt32().intValue();
+            case INT64 -> value.asInt64().longValue();
+            default -> throw new IllegalArgumentException("Cannot convert " + value.getBsonType() + " to double");
+        };
     }
 
     public static BigDecimal toBigDecimalDomainValue(BsonValue value) {
