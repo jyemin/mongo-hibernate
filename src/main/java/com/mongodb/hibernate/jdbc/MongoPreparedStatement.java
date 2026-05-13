@@ -53,7 +53,7 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
     private final List<BsonDocument> commandBatch;
     private final List<ParameterValueSetter> parameterValueSetters;
     // Non-null only for MQLv2 commands; indexed by $pN parameter index.
-    private final org.bson.BsonValue @org.jspecify.annotations.Nullable [] mqlv2ParamValues;
+    private final BsonValue @org.jspecify.annotations.Nullable [] mqlv2ParamValues;
 
     MongoPreparedStatement(
             MongoDatabase mongoDatabase, ClientSession clientSession, MongoConnection mongoConnection, String mql)
@@ -64,15 +64,13 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
         this.commandBatch = new ArrayList<>();
         this.parameterValueSetters = new ArrayList<>();
         if (command.containsKey("mqlv2")) {
-            var mqlv2Text = command.getString("mqlv2").getValue();
-            var paramCount = countMqlv2Params(mqlv2Text);
-            this.mqlv2ParamValues = new org.bson.BsonValue[paramCount];
+            var paramCount = command.getInt32("_mqlv2ParamCount").getValue();
+            this.mqlv2ParamValues = new BsonValue[paramCount];
             for (var i = 0; i < paramCount; i++) {
                 final var idx = i;
                 parameterValueSetters.add(new ParameterValueSetter(v -> mqlv2ParamValues[idx] = v));
             }
         } else {
-
             this.mqlv2ParamValues = null;
             parseParameters(command, parameterValueSetters);
         }
@@ -85,12 +83,12 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
         checkAllParametersSet();
         checkSupportedQueryCommand(command);
         if (mqlv2ParamValues != null) {
-            var letDoc = new org.bson.BsonDocument();
+            var letDoc = new BsonDocument();
             for (var i = 0; i < mqlv2ParamValues.length; i++) {
                 letDoc.put("p" + i, mqlv2ParamValues[i]);
             }
             var commandWithLet = command.clone();
-            commandWithLet.put("_mqlv2Let", letDoc);
+            commandWithLet.put("let", letDoc);
             return executeQuery(commandWithLet);
         }
         return executeQuery(command);
@@ -294,17 +292,6 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
     private void setParameter(int parameterIndex, BsonValue parameterValue) {
         var parameterValueSetter = parameterValueSetters.get(parameterIndex - 1);
         parameterValueSetter.accept(parameterValue);
-    }
-
-    // Assumes $pN indices are contiguous starting from 0, as Hibernate always generates them.
-    static int countMqlv2Params(String text) {
-        var max = -1;
-        var pattern = java.util.regex.Pattern.compile("\\$p(\\d+)\\b");
-        var matcher = pattern.matcher(text);
-        while (matcher.find()) {
-            max = Math.max(max, Integer.parseInt(matcher.group(1)));
-        }
-        return max + 1; // 0 if no params found (-1 + 1)
     }
 
     private static void parseParameters(BsonDocument command, List<ParameterValueSetter> parameterValueSetters) {

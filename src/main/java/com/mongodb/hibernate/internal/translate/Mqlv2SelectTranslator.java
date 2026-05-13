@@ -185,7 +185,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         var mqlv2Text = sb.toString();
         var fieldNamesArray = new BsonArray(fieldNames.stream().map(BsonString::new).toList());
         var commandDoc = new BsonDocument("mqlv2", new BsonString(mqlv2Text))
-                .append("_mqlv2FieldNames", fieldNamesArray);
+                .append("_mqlv2FieldNames", fieldNamesArray)
+                .append("_mqlv2ParamCount", new org.bson.BsonInt32(parameterBinders.size()));
         var commandJson = commandDoc.toJson();
 
         var affectedTableNames = collectAffectedTableNames(root);
