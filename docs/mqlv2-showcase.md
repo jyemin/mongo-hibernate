@@ -36,10 +36,10 @@ can map result documents back to Hibernate without parsing the MQLv2 text.
 
 HQL named/positional parameters (`:name`, `?1`) are passed server-side via
 MQLv2's `let` binding: the translator emits `$p0`, `$p1`, … in the query
-text; `MongoPreparedStatement` builds `{let: {p0: <value>, …}}` and appends
-it to the command document before execution. HQL literal values are rendered
-inline in the MQLv2 text. This avoids any client-side text manipulation of
-parameter values.
+text; `MongoPreparedStatement` builds a `let` document and clones the command
+with `let` added before execution. HQL literal values are rendered inline in
+the MQLv2 text. This avoids any client-side text manipulation of parameter
+values.
 
 ---
 
