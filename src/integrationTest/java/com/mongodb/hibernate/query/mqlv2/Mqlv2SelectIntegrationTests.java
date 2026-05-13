@@ -209,6 +209,28 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testEqualityWithNullParam() {
+        sessionFactoryScope.inSession(session -> {
+            // SQL 3VL: col = null is always null (unknown), never true — use IS NULL instead
+            var result = session.createSelectionQuery("from Order o where o.status = :status", Order.class)
+                    .setParameter("status", null, String.class)
+                    .getResultList();
+            assertThat(result).isEmpty();
+        });
+    }
+
+    @Test
+    void testInequalityWithNullParam() {
+        sessionFactoryScope.inSession(session -> {
+            // SQL 3VL: col != null is always null (unknown), never true — use IS NOT NULL instead
+            var result = session.createSelectionQuery("from Order o where o.status != :status", Order.class)
+                    .setParameter("status", null, String.class)
+                    .getResultList();
+            assertThat(result).isEmpty();
+        });
+    }
+
     // ---- Task 8: JOIN queries ----
 
     @Test
