@@ -56,6 +56,7 @@ import org.hibernate.sql.ast.tree.expression.CaseSimpleExpression;
 import org.hibernate.sql.ast.tree.expression.CastTarget;
 import org.hibernate.sql.ast.tree.expression.Collation;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
+import org.hibernate.query.sqm.sql.internal.EntityValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.sql.ast.tree.expression.ColumnReference;
 import org.hibernate.sql.ast.tree.expression.Distinct;
@@ -203,6 +204,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                 aggNames = buildAggNames(querySpec.getSelectClause());
                 appendGroup(sb, groupByExprs, querySpec.getSelectClause(), aggNames);
                 appendHaving(sb, querySpec);
+            } else if (selectHasAggregates(querySpec.getSelectClause())) {
+                aggNames = buildAggNames(querySpec.getSelectClause());
+                appendScalarAgg(sb, querySpec.getSelectClause(), aggNames);
             }
             appendSort(sb, querySpec);
             appendLimit(sb, querySpec, queryOptions);
@@ -253,6 +257,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             aggNames = buildAggNames(querySpec.getSelectClause());
             appendGroup(sb, querySpec.getGroupByClauseExpressions(), querySpec.getSelectClause(), aggNames);
             appendHaving(sb, querySpec);
+        } else if (selectHasAggregates(querySpec.getSelectClause())) {
+            aggNames = buildAggNames(querySpec.getSelectClause());
+            appendScalarAgg(sb, querySpec.getSelectClause(), aggNames);
         }
         appendSort(sb, querySpec);
         appendLimitToBuilder(sb, querySpec);
@@ -578,7 +585,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
 
     private String aggSignature(SelfRenderingFunctionSqlAstExpression fn) {
         var args = fn.getArguments();
-        if (args.isEmpty() || args.get(0) instanceof Star) {
+        if (args.isEmpty() || args.get(0) instanceof Star || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
             return fn.getFunctionName() + ":*";
         }
         if (args.get(0) instanceof Expression argExpr) {
@@ -639,12 +646,33 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         sb.append(")");
     }
 
+    private static boolean selectHasAggregates(SelectClause selectClause) {
+        return selectClause.getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .anyMatch(s -> isAggregateFunction(s.getExpression()));
+    }
+
+    private void appendScalarAgg(StringBuilder sb, SelectClause selectClause, List<@Nullable String> aggNames) {
+        sb.append(" | agg {");
+        var selections = selectClause.getSqlSelections().stream().filter(s -> !s.isVirtual()).toList();
+        var first = true;
+        for (var i = 0; i < selections.size(); i++) {
+            var aggName = aggNames.get(i);
+            if (aggName == null) continue;
+            if (!first) sb.append(", ");
+            first = false;
+            sb.append(aggName).append(": ");
+            appendAggFunctionText(sb, (SelfRenderingFunctionSqlAstExpression) selections.get(i).getExpression());
+        }
+        sb.append("}");
+    }
+
     private void appendAggFunctionText(StringBuilder sb, SelfRenderingFunctionSqlAstExpression fn) {
         var name = fn.getFunctionName();
         var args = fn.getArguments();
         sb.append(name).append("(");
-        if (args.isEmpty() || args.get(0) instanceof Star) {
-            // count(*) / count() → count($): count all elements in the group
+        if (args.isEmpty() || args.get(0) instanceof Star || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
+            // count(*) / count() / count(entity) → count($): count all elements
             sb.append("$");
         } else {
             if (!(args.get(0) instanceof Expression argExpr)) {

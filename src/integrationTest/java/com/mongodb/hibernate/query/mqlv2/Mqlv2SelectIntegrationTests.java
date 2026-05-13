@@ -545,6 +545,43 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    // ---- Scalar aggregates (no GROUP BY) ----
+
+    @Test
+    void testScalarCount() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery("select count(c) from Customer c", Long.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(3L);
+        });
+    }
+
+    @Test
+    void testScalarCountWithWhere() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select count(c) from Customer c where c.active = true", Long.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(2L);
+        });
+    }
+
+    @Test
+    void testScalarMultipleAggregates() {
+        sessionFactoryScope.inSession(session -> {
+            // Alice(30), Bob(25), Carol(35): count=3, sum=90, avg=30.0, min=25, max=35
+            var result = session.createSelectionQuery(
+                            "select count(c), sum(c.age), avg(c.age), min(c.age), max(c.age) from Customer c",
+                            Object[].class)
+                    .getSingleResult();
+            assertThat(result[0]).isEqualTo(3L);
+            assertThat(result[1]).isEqualTo(90L);
+            assertThat(result[2]).isEqualTo(30.0);
+            assertThat(result[3]).isEqualTo(25);
+            assertThat(result[4]).isEqualTo(35);
+        });
+    }
+
     @Test
     void testFullOuterJoin() {
         sessionFactoryScope.inSession(session -> {
