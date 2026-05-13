@@ -307,6 +307,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             Map<String, String> correlatedBindings) {
         var innerSb = new StringBuilder();
         var root = innerSpec.getFromClause().getRoots().get(0);
+        if (innerSpec.getFromClause().getRoots().size() != 1 || !root.getTableGroupJoins().isEmpty()) {
+            throw new FeatureNotSupportedException(
+                    "Subquery with joins or multiple FROM roots is not supported in MQLv2");
+        }
         var ntr = (NamedTableReference) root.getPrimaryTableReference();
         innerSb.append("from $").append(ntr.getTableExpression());
         var where = innerSpec.getWhereClauseRestrictions();
@@ -355,6 +359,21 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             sb.append("(");
             appendExprTextCorrelated(sb, bp.getExpression(), outerQualifiers, correlatedBindings);
             sb.append(bp.isNegated() ? " == false)" : " == true)");
+        } else if (predicate instanceof InListPredicate ilp) {
+            var exprs = ilp.getListExpressions();
+            var negated = ilp.isNegated();
+            var op = negated ? " != " : " == ";
+            var logic = negated ? " and " : " or ";
+            sb.append("(");
+            for (var i = 0; i < exprs.size(); i++) {
+                if (i > 0) sb.append(logic);
+                sb.append("(");
+                appendExprTextCorrelated(sb, ilp.getTestExpression(), outerQualifiers, correlatedBindings);
+                sb.append(op);
+                appendExprTextCorrelated(sb, exprs.get(i), outerQualifiers, correlatedBindings);
+                sb.append(")");
+            }
+            sb.append(")");
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported predicate in subquery: " + predicate.getClass().getSimpleName());

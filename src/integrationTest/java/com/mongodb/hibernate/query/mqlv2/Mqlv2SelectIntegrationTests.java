@@ -597,4 +597,17 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testExistsUncorrelated() {
+        sessionFactoryScope.inSession(session -> {
+            // Uncorrelated: exists (select 1 from Order) — there are orders, so all customers match
+            var result = session.createSelectionQuery(
+                            "from Customer c where exists (select 1 from Order o)",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+        });
+    }
+
 }
