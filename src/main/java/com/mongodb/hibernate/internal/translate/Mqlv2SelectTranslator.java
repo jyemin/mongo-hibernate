@@ -129,6 +129,8 @@ import org.jspecify.annotations.Nullable;
 /** Translates a Hibernate SELECT SQL AST directly to a MQLv2 text command. */
 final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuerySelect> {
 
+    private record SpecTranslation(String mqlv2, List<String> fieldNames) {}
+
     private final SessionFactoryImplementor sessionFactory;
     private final SelectStatement selectStatement;
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
@@ -202,19 +204,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             }
             mqlv2Text = sb.toString();
         } else if (queryPart instanceof QueryGroup queryGroup) {
-            mqlv2Text = translateQueryGroupToMqlv2(queryGroup);
-            // Field names come from the first QuerySpec's SELECT clause
-            var firstSpec = queryGroup.getQueryParts().get(0).getFirstQuerySpec();
-            fieldNames = firstSpec.getSelectClause().getSqlSelections().stream()
-                    .filter(s -> !s.isVirtual())
-                    .map(s -> {
-                        var expr = s.getExpression();
-                        if (expr instanceof ColumnReference cr) return cr.getColumnExpression();
-                        if (expr instanceof BasicValuedPathInterpretation<?> bvpi)
-                            return bvpi.getColumnReference().getColumnExpression();
-                        return "_f" + firstSpec.getSelectClause().getSqlSelections().indexOf(s);
-                    })
-                    .toList();
+            var specTranslation = translateQueryGroupToMqlv2(queryGroup);
+            mqlv2Text = specTranslation.mqlv2();
+            fieldNames = specTranslation.fieldNames();
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported QueryPart: " + queryPart.getClass().getSimpleName());
@@ -237,7 +229,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                 null, null);
     }
 
-    private String translateQuerySpecToMqlv2(QuerySpec querySpec) {
+    private SpecTranslation translateQuerySpecToMqlv2(QuerySpec querySpec) {
         var savedHasJoins = this.hasJoins;
         var savedAggMap = new LinkedHashMap<>(this.aggSignatureToName);
         this.hasJoins = !querySpec.getFromClause().getRoots().get(0).getTableGroupJoins().isEmpty();
@@ -256,7 +248,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         }
         appendSort(sb, querySpec);
         appendLimitToBuilder(sb, querySpec);
-        appendFormat(sb, querySpec.getSelectClause(), aggNames);
+        var fieldNames = appendFormat(sb, querySpec.getSelectClause(), aggNames);
         if (querySpec.getSelectClause().isDistinct()) {
             sb.append(" | distinct");
         }
@@ -264,53 +256,55 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         this.hasJoins = savedHasJoins;
         this.aggSignatureToName.clear();
         this.aggSignatureToName.putAll(savedAggMap);
-        return sb.toString();
+        return new SpecTranslation(sb.toString(), fieldNames);
     }
 
-    private String translateQueryGroupToMqlv2(QueryGroup queryGroup) {
+    private SpecTranslation translateQueryGroupToMqlv2(QueryGroup queryGroup) {
         var operator = queryGroup.getSetOperator();
         if (operator == SetOperator.INTERSECT_ALL || operator == SetOperator.EXCEPT_ALL) {
             throw new FeatureNotSupportedException(operator + " is not supported in MQLv2");
         }
 
         var parts = queryGroup.getQueryParts();
-        var pipelines = parts.stream()
-                .map(p -> "(" + translateQuerySpecToMqlv2(p.getFirstQuerySpec()) + ")")
-                .toList();
+        if ((operator == SetOperator.INTERSECT || operator == SetOperator.EXCEPT) && parts.size() > 2) {
+            throw new FeatureNotSupportedException(
+                    "Chained " + operator + " with more than two operands is not supported in MQLv2");
+        }
 
-        return switch (operator) {
-            case UNION_ALL -> {
-                var sb = new StringBuilder("from << ");
-                for (var i = 0; i < pipelines.size(); i++) {
-                    if (i > 0) sb.append(", ");
-                    sb.append(pipelines.get(i));
-                }
-                yield sb.append(" >> | unwind $*").toString();
-            }
-            case UNION -> {
-                var sb = new StringBuilder("from << ");
-                for (var i = 0; i < pipelines.size(); i++) {
-                    if (i > 0) sb.append(", ");
-                    sb.append(pipelines.get(i));
-                }
-                yield sb.append(" >> | unwind $* | distinct").toString();
-            }
+        var translations = parts.stream()
+                .map(p -> translateQuerySpecToMqlv2(p.getFirstQuerySpec()))
+                .toList();
+        var mqlv2Pipelines = translations.stream().map(t -> "(" + t.mqlv2() + ")").toList();
+
+        var mqlv2 = switch (operator) {
+            case UNION_ALL -> buildArraySourcePipeline(mqlv2Pipelines);
+            case UNION -> buildArraySourcePipeline(mqlv2Pipelines) + " | distinct";
             case INTERSECT -> {
-                var left = pipelines.get(0).substring(1, pipelines.get(0).length() - 1);
-                var right = pipelines.get(1).substring(1, pipelines.get(1).length() - 1);
+                var left = translations.get(0).mqlv2();
+                var right = translations.get(1).mqlv2();
                 var varName = "$__v" + correlatedVarCounter++;
                 yield left + " | match (count(let " + varName + " = $ in (" + right
                         + " | match ($ == " + varName + "))) > 0)";
             }
             case EXCEPT -> {
-                var left = pipelines.get(0).substring(1, pipelines.get(0).length() - 1);
-                var right = pipelines.get(1).substring(1, pipelines.get(1).length() - 1);
+                var left = translations.get(0).mqlv2();
+                var right = translations.get(1).mqlv2();
                 var varName = "$__v" + correlatedVarCounter++;
                 yield left + " | match (count(let " + varName + " = $ in (" + right
                         + " | match ($ == " + varName + "))) == 0)";
             }
             default -> throw new FeatureNotSupportedException("Unsupported set operator: " + operator);
         };
+        return new SpecTranslation(mqlv2, translations.get(0).fieldNames());
+    }
+
+    private static String buildArraySourcePipeline(List<String> pipelines) {
+        var sb = new StringBuilder("from << ");
+        for (var i = 0; i < pipelines.size(); i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(pipelines.get(i));
+        }
+        return sb.append(" >> | unwind $*").toString();
     }
 
     private void appendFrom(StringBuilder sb, TableGroup root) {
