@@ -353,7 +353,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         } else if (expression instanceof SqmParameterInterpretation spi) {
             appendExprText(sb, spi.getResolvedExpression());
         } else if (expression instanceof JdbcParameter jp) {
-            sb.append("{?").append(parameterBinders.size()).append("}");
+            sb.append("$p").append(parameterBinders.size());
             parameterBinders.add(jp.getParameterBinder());
         } else {
             throw new FeatureNotSupportedException(

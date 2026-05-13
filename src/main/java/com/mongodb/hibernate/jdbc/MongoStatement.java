@@ -141,10 +141,12 @@ class MongoStatement implements StatementAdapter {
                     .map(v -> v.asString().getValue())
                     .toList();
             startTransactionIfNeeded();
-            var cursor = mongoDatabase
-                    .mqlv2(clientSession, () -> mqlv2Text, org.bson.BsonDocument.class)
-                    .cursor();
-            return resultSet = new MongoResultSet(cursor, fieldNames);
+            var iterable = mongoDatabase
+                    .mqlv2(clientSession, () -> mqlv2Text, org.bson.BsonDocument.class);
+            if (command.containsKey("_mqlv2Let")) {
+                iterable = iterable.let(command.getDocument("_mqlv2Let"));
+            }
+            return resultSet = new MongoResultSet(iterable.cursor(), fieldNames);
         } catch (BSONException bsonException) {
             throw createSyntaxErrorException("%s: [%s]", command, bsonException);
         } catch (RuntimeException exception) {
