@@ -410,4 +410,30 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testRightOuterJoin() {
+        sessionFactoryScope.inSession(session -> {
+            // All 4 orders have a matching customer, so right join returns all 4 orders
+            var result = session.createSelectionQuery(
+                            "select distinct o from Customer c right join Order o on c.id = o.customerId",
+                            Order.class)
+                    .getResultList();
+            assertThat(result).hasSize(4);
+            assertThat(result.stream().map(o -> o.id)).containsExactlyInAnyOrder(10, 11, 12, 13);
+        });
+    }
+
+    @Test
+    void testFullOuterJoin() {
+        sessionFactoryScope.inSession(session -> {
+            // All customers have orders and all orders have customers, so full join returns all 3 customers
+            var result = session.createSelectionQuery(
+                            "select distinct c from Customer c full join Order o on c.id = o.customerId",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).hasSize(3);
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+        });
+    }
+
 }

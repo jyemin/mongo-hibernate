@@ -219,13 +219,14 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             var joinCollName = joinNtr.getTableExpression();
             var joinAlias = joinNtr.getIdentificationVariable();
             var joinType = tgj.getJoinType();
-            if (joinType == SqlAstJoinType.INNER) {
-                sb.append(" | join ");
-            } else if (joinType == SqlAstJoinType.LEFT) {
-                sb.append(" | join leftOuter ");
-            } else {
-                throw new FeatureNotSupportedException("Unsupported join type: " + joinType);
-            }
+            var joinKeyword = switch (joinType) {
+                case INNER -> " | join ";
+                case LEFT -> " | join leftOuter ";
+                case RIGHT -> " | join rightOuter ";
+                case FULL -> " | join fullOuter ";
+                default -> throw new FeatureNotSupportedException("Unsupported join type: " + joinType);
+            };
+            sb.append(joinKeyword);
             sb.append(joinAlias).append("=$").append(joinCollName).append(" (");
             var joinPredicate = tgj.getPredicate();
             if (joinPredicate != null) {
