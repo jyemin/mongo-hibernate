@@ -22,8 +22,10 @@ import static org.hibernate.sql.exec.spi.JdbcLockStrategy.NONE;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.bson.BsonArray;
 import org.bson.BsonDocument;
@@ -130,6 +132,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     private final SelectStatement selectStatement;
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
     private boolean hasJoins = false;
+    // Maps aggregate signature (e.g. "sum:total") → _aggN name; populated during GROUP BY translation
+    private final Map<String, String> aggSignatureToName = new LinkedHashMap<>();
 
     Mqlv2SelectTranslator(SessionFactoryImplementor sessionFactory, SelectStatement selectStatement) {
         this.sessionFactory = sessionFactory;
@@ -175,10 +179,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         hasJoins = !root.getTableGroupJoins().isEmpty();
 
         var groupByExprs = querySpec.getGroupByClauseExpressions();
-        var havingRestrictions = querySpec.getHavingClauseRestrictions();
-        if (havingRestrictions != null && !havingRestrictions.isEmpty()) {
-            throw new FeatureNotSupportedException("HAVING is not yet supported in MQLv2");
-        }
 
         var sb = new StringBuilder();
         appendFrom(sb, root);
@@ -189,6 +189,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         if (!groupByExprs.isEmpty()) {
             aggNames = buildAggNames(querySpec.getSelectClause());
             appendGroup(sb, groupByExprs, querySpec.getSelectClause(), aggNames);
+            appendHaving(sb, querySpec);
         }
 
         appendSort(sb, querySpec);
@@ -250,10 +251,17 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     private void appendMatch(StringBuilder sb, QuerySpec querySpec) {
-        var where = querySpec.getWhereClauseRestrictions();
-        if (where == null || where.isEmpty()) return;
+        appendMatchStage(sb, querySpec.getWhereClauseRestrictions());
+    }
+
+    private void appendHaving(StringBuilder sb, QuerySpec querySpec) {
+        appendMatchStage(sb, querySpec.getHavingClauseRestrictions());
+    }
+
+    private void appendMatchStage(StringBuilder sb, @Nullable Predicate predicate) {
+        if (predicate == null || predicate.isEmpty()) return;
         sb.append(" | match ");
-        appendPredicateText(sb, where);
+        appendPredicateText(sb, predicate);
     }
 
     private void appendSort(StringBuilder sb, QuerySpec querySpec) {
@@ -293,9 +301,42 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         var aggIdx = 0;
         for (var sel : selectClause.getSqlSelections()) {
             if (sel.isVirtual()) continue;
-            result.add(isAggregateFunction(sel.getExpression()) ? "_agg" + aggIdx++ : null);
+            if (isAggregateFunction(sel.getExpression())) {
+                var name = "_agg" + aggIdx++;
+                aggSignatureToName.put(aggSignature((SelfRenderingFunctionSqlAstExpression) sel.getExpression()), name);
+                result.add(name);
+            } else {
+                result.add(null);
+            }
         }
         return result;
+    }
+
+    private String aggSignature(SelfRenderingFunctionSqlAstExpression fn) {
+        var args = fn.getArguments();
+        if (args.isEmpty() || args.get(0) instanceof Star) {
+            return fn.getFunctionName() + ":*";
+        }
+        if (args.get(0) instanceof Expression argExpr) {
+            return fn.getFunctionName() + ":" + aggColumnSignature(argExpr);
+        }
+        return fn.getFunctionName() + ":?";
+    }
+
+    // Includes the table qualifier (when present) so that count(a.id) and count(b.id)
+    // in a joined query produce distinct signatures.
+    private String aggColumnSignature(Expression expr) {
+        if (expr instanceof ColumnReference cr) {
+            if (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty()) {
+                return cr.getQualifier() + "." + cr.getColumnExpression();
+            }
+            return cr.getColumnExpression();
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            return aggColumnSignature(bvpi.getColumnReference());
+        } else {
+            throw new FeatureNotSupportedException(
+                    "Expected simple column reference in aggregate; got: " + expr.getClass().getSimpleName());
+        }
     }
 
     private static final Set<String> AGGREGATE_FUNCTION_NAMES = Set.of("count", "sum", "avg", "min", "max");
@@ -473,19 +514,27 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             appendExprText(sb, bae.getRightHandOperand());
             sb.append(")");
         } else if (expression instanceof SelfRenderingFunctionSqlAstExpression fn) {
-            if (!"extract".equals(fn.getFunctionName())) {
+            if (isAggregateFunction(expression)) {
+                var aggName = aggSignatureToName.get(aggSignature(fn));
+                if (aggName == null) {
+                    throw new FeatureNotSupportedException(
+                            "Aggregate function in expression not found in SELECT: " + fn.getFunctionName() + "()");
+                }
+                sb.append(aggName);
+            } else if ("extract".equals(fn.getFunctionName())) {
+                var args = fn.getArguments();
+                if (args.size() != 2 || !(args.get(0) instanceof ExtractUnit eu)) {
+                    throw new FeatureNotSupportedException("Unsupported extract() form");
+                }
+                if (!(args.get(1) instanceof Expression dateExpr)) {
+                    throw new FeatureNotSupportedException("Non-expression date argument in extract()");
+                }
+                sb.append(mqlv2ExtractName(eu.getUnit())).append("(");
+                appendExprText(sb, dateExpr);
+                sb.append(")");
+            } else {
                 throw new FeatureNotSupportedException("Unsupported function: " + fn.getFunctionName() + "()");
             }
-            var args = fn.getArguments();
-            if (args.size() != 2 || !(args.get(0) instanceof ExtractUnit eu)) {
-                throw new FeatureNotSupportedException("Unsupported extract() form");
-            }
-            if (!(args.get(1) instanceof Expression dateExpr)) {
-                throw new FeatureNotSupportedException("Non-expression date argument in extract()");
-            }
-            sb.append(mqlv2ExtractName(eu.getUnit())).append("(");
-            appendExprText(sb, dateExpr);
-            sb.append(")");
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported expression: " + expression.getClass().getSimpleName());

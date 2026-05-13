@@ -492,15 +492,43 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     }
 
     @Test
-    void testHavingNotSupported() {
+    void testHavingWithCount() {
         sessionFactoryScope.inSession(session -> {
-            assertThatThrownBy(() -> session.createSelectionQuery(
+            // Only "shipped" has count > 1 (orders 10 and 12 are both shipped)
+            var result = session.createSelectionQuery(
                             "select o.status, count(o.id) from Order o group by o.status"
                                     + " having count(o.id) > 1",
                             Object[].class)
+                    .getResultList();
+            assertThat(result).hasSize(1);
+            assertThat(result.get(0)[0]).isEqualTo("shipped");
+            assertThat(result.get(0)[1]).isEqualTo(2L);
+        });
+    }
+
+    @Test
+    void testHavingWithSum() {
+        sessionFactoryScope.inSession(session -> {
+            // shipped=350, pending=80, cancelled=50 — only shipped exceeds 100
+            var result = session.createSelectionQuery(
+                            "select o.status, sum(o.total) from Order o group by o.status"
+                                    + " having sum(o.total) > 100",
+                            Object[].class)
+                    .getResultList();
+            assertThat(result).hasSize(1);
+            assertThat(result.get(0)[0]).isEqualTo("shipped");
+            assertThat(result.get(0)[1]).isEqualTo(350.0);
+        });
+    }
+
+    @Test
+    void testHavingAggregateNotInSelectThrows() {
+        sessionFactoryScope.inSession(session -> {
+            assertThatThrownBy(() -> session.createSelectionQuery(
+                            "select o.status from Order o group by o.status having count(o.id) > 1",
+                            String.class)
                     .getResultList())
-                    .isInstanceOf(FeatureNotSupportedException.class)
-                    .hasMessageContaining("HAVING");
+                    .isInstanceOf(FeatureNotSupportedException.class);
         });
     }
 
