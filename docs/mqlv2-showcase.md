@@ -258,7 +258,7 @@ Use `IS NULL` / `IS NOT NULL` rather than `= null` / `!= null`.
 
 ---
 
-### ORDER BY DESC + LIMIT
+### ORDER BY DESC + LIMIT (HQL clause)
 
 ```
 HQL:   from Customer c order by c.age desc limit 2
@@ -267,6 +267,24 @@ MQLv2: from $customers
        | sort age desc
        | limit 2
        | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### ORDER BY DESC + LIMIT (setMaxResults)
+
+`setMaxResults(n)` binds the limit via a `let` variable so the same cached translation works for any value of `n`.
+
+```
+Java:  session.createSelectionQuery("from Customer c order by c.age desc", Customer.class)
+              .setMaxResults(2).getResultList()
+
+MQLv2: from $customers
+       | sort age desc
+       | limit $p0
+       | format {_id: _id, active: active, age: age, name: name}
+
+       let: {p0: 2}
 ```
 
 ---
