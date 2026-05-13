@@ -17,12 +17,15 @@
 package com.mongodb.hibernate.query.mqlv2;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hibernate.cfg.AvailableSettings.DIALECT;
 
+import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.junit.MongoExtension;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import java.time.Instant;
 import java.util.List;
 import org.hibernate.testing.orm.junit.DomainModel;
 import org.hibernate.testing.orm.junit.ServiceRegistry;
@@ -87,14 +90,16 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         int customerId;
         double total;
         String status;
+        Instant orderDate;
 
         Order() {}
 
-        Order(int id, int customerId, double total, String status) {
+        Order(int id, int customerId, double total, String status, Instant orderDate) {
             this.id = id;
             this.customerId = customerId;
             this.total = total;
             this.status = status;
+            this.orderDate = orderDate;
         }
     }
 
@@ -106,10 +111,10 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             new Customer(3, "Carol", 35, true));
 
     private static final List<Order> ORDERS = List.of(
-            new Order(10, 1, 150.0, "shipped"),
-            new Order(11, 1, 80.0, "pending"),
-            new Order(12, 2, 200.0, "shipped"),
-            new Order(13, 3, 50.0, "cancelled"));
+            new Order(10, 1, 150.0, "shipped",   Instant.parse("2023-03-15T10:00:00Z")),
+            new Order(11, 1, 80.0,  "pending",   Instant.parse("2024-07-04T14:30:00Z")),
+            new Order(12, 2, 200.0, "shipped",   Instant.parse("2023-11-20T09:15:45Z")),
+            new Order(13, 3, 50.0,  "cancelled", Instant.parse("2024-01-08T18:45:00Z")));
 
     @BeforeEach
     void setUp() {
@@ -230,6 +235,132 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .setParameter("status", null, String.class)
                     .getResultList();
             assertThat(result).isEmpty();
+        });
+    }
+
+    // ---- Arithmetic and date-part expressions in SELECT ----
+
+    @Test
+    void testSelectArithmetic() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select c.age * 2 from Customer c where c.id = 1", Integer.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(60); // Alice age 30 * 2
+        });
+    }
+
+    @Test
+    void testSelectArithmeticWithParameter() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select c.age + :bonus from Customer c where c.id = 2", Integer.class)
+                    .setParameter("bonus", 5)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(30); // Bob age 25 + 5
+        });
+    }
+
+    @Test
+    void testSelectYear() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select year(o.orderDate) from Order o where o.id = 10", Integer.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(2023);
+        });
+    }
+
+    @Test
+    void testSelectMonth() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select month(o.orderDate) from Order o where o.id = 11", Integer.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(7); // July
+        });
+    }
+
+    @Test
+    void testSelectDayOfMonth() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select day(o.orderDate) from Order o where o.id = 10", Integer.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(15);
+        });
+    }
+
+    @Test
+    void testSelectHour() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select hour(o.orderDate) from Order o where o.id = 10", Integer.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(10); // 10:00:00Z
+        });
+    }
+
+    @Test
+    void testSelectMinute() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select minute(o.orderDate) from Order o where o.id = 11", Integer.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(30); // 14:30:00Z
+        });
+    }
+
+    @Test
+    void testSelectSecond() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select second(o.orderDate) from Order o where o.id = 12", Float.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(45.0f); // 09:15:45Z
+        });
+    }
+
+    @Test
+    void testArithmeticInWhere() {
+        sessionFactoryScope.inSession(session -> {
+            // age * 2 > 55: Alice 60 ✓, Bob 50 ✗, Carol 70 ✓
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.age * 2 > 55", Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Carol");
+        });
+    }
+
+    @Test
+    void testExtractInWhere() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "from Order o where year(o.orderDate) = 2023", Order.class)
+                    .getResultList();
+            assertThat(result.stream().map(o -> o.id)).containsExactlyInAnyOrder(10, 12);
+        });
+    }
+
+    @Test
+    void testUnsupportedFunctionInSelect() {
+        sessionFactoryScope.inSession(session -> {
+            assertThatThrownBy(() -> session.createSelectionQuery(
+                            "select upper(c.name) from Customer c", String.class)
+                    .getResultList())
+                    .isInstanceOf(FeatureNotSupportedException.class)
+                    .hasMessageContaining("Unsupported function: upper()");
+        });
+    }
+
+    @Test
+    void testUnsupportedExtractUnitInSelect() {
+        sessionFactoryScope.inSession(session -> {
+            assertThatThrownBy(() -> session.createSelectionQuery(
+                            "select week(o.orderDate) from Order o", Integer.class)
+                    .getResultList())
+                    .isInstanceOf(FeatureNotSupportedException.class)
+                    .hasMessageContaining("Unsupported extract() unit:");
         });
     }
 

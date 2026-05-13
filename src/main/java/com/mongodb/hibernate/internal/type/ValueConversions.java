@@ -244,6 +244,14 @@ public final class ValueConversions {
         return value.longValue();
     }
 
+    public static float toFloatDomainValue(BsonValue value) {
+        return switch (value.getBsonType()) {
+            case INT32 -> (float) value.asInt32().intValue();
+            case DOUBLE -> (float) value.asDouble().getValue();
+            default -> throw new IllegalArgumentException("Cannot convert " + value.getBsonType() + " to float");
+        };
+    }
+
     public static double toDoubleDomainValue(BsonValue value) {
         return toDomainValue(value.asDouble());
     }

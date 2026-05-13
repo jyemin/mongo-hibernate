@@ -33,7 +33,10 @@ import org.hibernate.internal.util.collections.Stack;
 import org.hibernate.persister.internal.SqlFragmentPredicate;
 import org.hibernate.query.SortDirection;
 import org.hibernate.query.spi.QueryOptions;
+import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.ComparisonOperator;
+import org.hibernate.query.sqm.TemporalUnit;
+import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.sql.ast.Clause;
 import org.hibernate.sql.ast.SqlAstJoinType;
 import org.hibernate.sql.ast.SqlAstNodeRenderingMode;
@@ -274,23 +277,23 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     private List<String> appendFormat(StringBuilder sb, SelectClause selectClause) {
         var fieldNames = new ArrayList<String>();
         var formatParts = new ArrayList<String>();
+        var syntheticIdx = 0;
 
         for (var sqlSelection : selectClause.getSqlSelections()) {
             if (sqlSelection.isVirtual()) continue;
             var selExpr = sqlSelection.getExpression();
-            ColumnReference cr;
-            if (selExpr instanceof ColumnReference directCr) {
-                cr = directCr;
+            String key;
+            if (selExpr instanceof ColumnReference cr) {
+                key = cr.getColumnExpression();
             } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
-                cr = bvpi.getColumnReference();
+                key = bvpi.getColumnReference().getColumnExpression();
             } else {
-                throw new FeatureNotSupportedException("Only column references are supported in SELECT");
+                key = "_f" + syntheticIdx++;
             }
-            var col = cr.getColumnExpression();
-            fieldNames.add(col);
+            fieldNames.add(key);
             var valSb = new StringBuilder();
-            appendExprText(valSb, cr);
-            formatParts.add(col + ": " + valSb);
+            appendExprText(valSb, selExpr);
+            formatParts.add(key + ": " + valSb);
         }
 
         sb.append(" | format {");
@@ -360,6 +363,26 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         } else if (expression instanceof JdbcParameter jp) {
             sb.append("$p").append(parameterBinders.size());
             parameterBinders.add(jp.getParameterBinder());
+        } else if (expression instanceof BinaryArithmeticExpression bae) {
+            sb.append("(");
+            appendExprText(sb, bae.getLeftHandOperand());
+            sb.append(" ").append(arithmeticOpText(bae.getOperator())).append(" ");
+            appendExprText(sb, bae.getRightHandOperand());
+            sb.append(")");
+        } else if (expression instanceof SelfRenderingFunctionSqlAstExpression fn) {
+            if (!"extract".equals(fn.getFunctionName())) {
+                throw new FeatureNotSupportedException("Unsupported function: " + fn.getFunctionName() + "()");
+            }
+            var args = fn.getArguments();
+            if (args.size() != 2 || !(args.get(0) instanceof ExtractUnit eu)) {
+                throw new FeatureNotSupportedException("Unsupported extract() form");
+            }
+            if (!(args.get(1) instanceof Expression dateExpr)) {
+                throw new FeatureNotSupportedException("Non-expression date argument in extract()");
+            }
+            sb.append(mqlv2ExtractName(eu.getUnit())).append("(");
+            appendExprText(sb, dateExpr);
+            sb.append(")");
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported expression: " + expression.getClass().getSimpleName());
@@ -396,6 +419,30 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             throw new FeatureNotSupportedException(
                     "Unsupported literal type: " + value.getClass().getSimpleName());
         }
+    }
+
+    private static String arithmeticOpText(BinaryArithmeticOperator op) {
+        return switch (op) {
+            case ADD -> "+";
+            case SUBTRACT -> "-";
+            case MULTIPLY -> "*";
+            case DIVIDE, DIVIDE_PORTABLE, QUOT -> "/";
+            default -> throw new FeatureNotSupportedException("Unsupported arithmetic operator: " + op);
+        };
+    }
+
+    private static String mqlv2ExtractName(TemporalUnit unit) {
+        return switch (unit) {
+            case YEAR -> "year";
+            case MONTH -> "month";
+            case DAY, DAY_OF_MONTH -> "dayOfMonth";
+            case DAY_OF_YEAR -> "dayOfYear";
+            case DAY_OF_WEEK -> "dayOfWeek";
+            case HOUR -> "hour";
+            case MINUTE -> "minute";
+            case SECOND -> "second";
+            default -> throw new FeatureNotSupportedException("Unsupported extract() unit: " + unit);
+        };
     }
 
     private static String comparisonOpSurface(ComparisonOperator op) {
