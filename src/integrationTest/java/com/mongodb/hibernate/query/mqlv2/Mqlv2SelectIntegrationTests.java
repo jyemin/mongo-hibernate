@@ -558,6 +558,35 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testHavingMixedSelectAndNonSelectAggregate() {
+        sessionFactoryScope.inSession(session -> {
+            // count(o.id) in SELECT (_agg0); sum(o.total) in HAVING only (_agg1)
+            // shipped: count=2, sum=350 — passes both conditions
+            var result = session.createSelectionQuery(
+                            "select o.status, count(o.id) from Order o group by o.status"
+                                    + " having sum(o.total) > 100",
+                            Object[].class)
+                    .getResultList();
+            assertThat(result).hasSize(1);
+            assertThat(result.get(0)[0]).isEqualTo("shipped");
+            assertThat(result.get(0)[1]).isEqualTo(2L);
+        });
+    }
+
+    @Test
+    void testHavingAndConjunctionWithTwoNonSelectAggregates() {
+        sessionFactoryScope.inSession(session -> {
+            // Both count and sum in HAVING only — shipped satisfies both, others don't
+            var result = session.createSelectionQuery(
+                            "select o.status from Order o group by o.status"
+                                    + " having count(o.id) > 1 and sum(o.total) > 100",
+                            String.class)
+                    .getResultList();
+            assertThat(result).containsExactly("shipped");
+        });
+    }
+
     // ---- Scalar aggregates (no GROUP BY) ----
 
     @Test
