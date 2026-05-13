@@ -636,4 +636,34 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testAnySubQuery() {
+        sessionFactoryScope.inSession(session -> {
+            // c.id > any (customerIds of orders with total > 100)
+            // orders with total > 100: cust=1 (Alice), cust=2 (Bob)  →  subquery values: {1, 2}
+            // c.id > any {1, 2}: Alice(1) > 1? No. Bob(2) > 1? Yes. Carol(3) > 1? Yes.
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.id > any (select o.customerId from Order o where o.total > 100)",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Bob", "Carol");
+        });
+    }
+
+    @Test
+    void testAllSubQuery() {
+        sessionFactoryScope.inSession(session -> {
+            // c.id > all (customerIds of orders with total > 100)
+            // orders with total > 100: cust=1, cust=2  →  subquery values: {1, 2}
+            // c.id > all {1, 2}: Alice(1) > 2? No. Bob(2) > 2? No. Carol(3) > 2? Yes.
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.id > all (select o.customerId from Order o where o.total > 100)",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).hasSize(1);
+            assertThat(result.get(0).name).isEqualTo("Carol");
+        });
+    }
+
 }

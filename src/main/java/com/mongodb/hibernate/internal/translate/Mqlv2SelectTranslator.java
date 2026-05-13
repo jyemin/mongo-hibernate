@@ -600,8 +600,61 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         return fieldNames;
     }
 
+    /**
+     * Translates {@code x op ANY(subquery)} (isAll=false) or {@code x op ALL(subquery)} (isAll=true).
+     *
+     * <ul>
+     *   <li>ANY: {@code count(let $__vN = x in (inner | match (col op $__vN))) > 0}</li>
+     *   <li>ALL: {@code count(let $__vN = x in (inner | match (col inverse_op $__vN))) == 0}</li>
+     * </ul>
+     */
+    private void appendAnyAllPredicate(
+            StringBuilder sb, ComparisonPredicate cp, SelectStatement subquery, boolean isAll) {
+        var innerSpec = subquery.getQueryPart().getFirstQuerySpec();
+        var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .findFirst()
+                .orElseThrow()
+                .getExpression();
+        var projectedColName = simpleColumnName(projectedExpr);
+
+        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+        var outerQualifiers = collectOuterQualifiers(outerSpec);
+        var correlatedBindings = new LinkedHashMap<String, String>();
+
+        var testVarName = "$__v" + correlatedVarCounter++;
+        var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
+
+        String matchOp;
+        String countCmp;
+        if (isAll) {
+            matchOp = allMatchOp(cp.getOperator());
+            countCmp = " == 0)";
+        } else {
+            matchOp = anyMatchOp(cp.getOperator());
+            countCmp = " > 0)";
+        }
+        innerPipeline = innerPipeline + " | match (" + projectedColName + " " + matchOp + " " + testVarName + ")";
+
+        var letSb = new StringBuilder("let ").append(testVarName).append(" = ");
+        appendExprText(letSb, cp.getLeftHandExpression());
+        for (var entry : correlatedBindings.entrySet()) {
+            letSb.append(", ").append(entry.getValue()).append(" = ");
+            var key = entry.getKey();
+            var dotIdx = key.indexOf('.');
+            letSb.append(dotIdx >= 0 ? key.substring(dotIdx + 1) : key);
+        }
+        letSb.append(" in (").append(innerPipeline).append(")");
+
+        sb.append("(count(").append(letSb).append(")").append(countCmp);
+    }
+
     private void appendPredicateText(StringBuilder sb, Predicate predicate) {
-        if (predicate instanceof ComparisonPredicate cp) {
+        if (predicate instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr) {
+            appendAnyAllPredicate(sb, cp, anyExpr.getSubquery(), false);
+        } else if (predicate instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Every everyExpr) {
+            appendAnyAllPredicate(sb, cp, everyExpr.getSubquery(), true);
+        } else if (predicate instanceof ComparisonPredicate cp) {
             sb.append("(");
             appendExprText(sb, cp.getLeftHandExpression());
             sb.append(" ").append(comparisonOpSurface(cp.getOperator())).append(" ");
@@ -820,6 +873,46 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             case LESS_THAN_OR_EQUAL -> "<=";
             case GREATER_THAN -> ">";
             case GREATER_THAN_OR_EQUAL -> ">=";
+            default -> throw new FeatureNotSupportedException("Unsupported comparison operator: " + op);
+        };
+    }
+
+    /**
+     * Returns the operator string for {@code col matchOp $__v0} in an ANY match stage.
+     *
+     * <p>For {@code x op ANY(subquery)} we want to count rows {@code e} in the subquery where
+     * {@code x op e}, i.e., {@code $__v0 op col}. Written with the column on the left:
+     * {@code col swapOp $__v0}, where swapOp reverses the operand order.
+     */
+    private static String anyMatchOp(ComparisonOperator op) {
+        // swap operand order: a > b becomes b < a
+        return switch (op) {
+            case EQUAL -> "==";
+            case NOT_EQUAL -> "!=";
+            case LESS_THAN -> ">";
+            case LESS_THAN_OR_EQUAL -> ">=";
+            case GREATER_THAN -> "<";
+            case GREATER_THAN_OR_EQUAL -> "<=";
+            default -> throw new FeatureNotSupportedException("Unsupported comparison operator: " + op);
+        };
+    }
+
+    /**
+     * Returns the operator string for {@code col matchOp $__v0} in an ALL match stage.
+     *
+     * <p>For {@code x op ALL(subquery)} we count rows {@code e} in the subquery where
+     * {@code NOT (x op e)}, i.e., {@code x inverseOp e}, i.e., {@code $__v0 inverseOp col}.
+     * Written with the column on the left: {@code col swapInverseOp $__v0}.
+     */
+    private static String allMatchOp(ComparisonOperator op) {
+        // negate then swap operand order
+        return switch (op) {
+            case EQUAL -> "!=";
+            case NOT_EQUAL -> "==";
+            case LESS_THAN -> "<=";
+            case LESS_THAN_OR_EQUAL -> "<";
+            case GREATER_THAN -> ">=";
+            case GREATER_THAN_OR_EQUAL -> ">";
             default -> throw new FeatureNotSupportedException("Unsupported comparison operator: " + op);
         };
     }
