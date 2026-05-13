@@ -113,7 +113,7 @@ MQLv2: from $customers
 HQL:   from Customer c where c.age > 20 and c.age < 32
 
 MQLv2: from $customers
-       | match ((age > 20) && (age < 32))
+       | match ((age > 20) and (age < 32))
        | format {_id: _id, active: active, age: age, name: name}
 ```
 
@@ -458,10 +458,178 @@ in the MQLv2 text and do not appear in the `let` document.
 
 ---
 
+## Subqueries and Set Operations
+
+### IN list
+
+```
+HQL:   from Customer c where c.age in (25, 30)
+
+MQLv2: from $customers
+       | match ((age == 25) or (age == 30))
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### NOT IN list
+
+```
+HQL:   from Customer c where c.age not in (25, 30)
+
+MQLv2: from $customers
+       | match ((age != 25) and (age != 30))
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### EXISTS
+
+```
+HQL:   from Customer c where exists (select 1 from Order o where o.customerId = c.id)
+
+MQLv2: from $customers
+       | match (count(let $__v0 = _id in (from $orders | match (customerId == $__v0))) > 0)
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### NOT EXISTS
+
+```
+HQL:   from Customer c where not exists (select 1 from Order o where o.customerId = c.id)
+
+MQLv2: from $customers
+       | match (count(let $__v0 = _id in (from $orders | match (customerId == $__v0))) == 0)
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### IN subquery
+
+```
+HQL:   from Customer c where c.id in (select o.customerId from Order o where o.total > 100)
+
+MQLv2: from $customers
+       | match (count(let $__v0 = _id in (from $orders | match (total > 100) | format {customerId: customerId} | match (customerId == $__v0))) > 0)
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### NOT IN subquery
+
+```
+HQL:   from Customer c where c.id not in (select o.customerId from Order o)
+
+MQLv2: from $customers
+       | match (count(let $__v0 = _id in (from $orders | format {customerId: customerId} | match (customerId == $__v0))) == 0)
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### ANY subquery
+
+```
+HQL:   from Customer c where c.id > any (select o.customerId from Order o where o.total > 100)
+
+MQLv2: from $customers
+       | match (count(let $__v0 = _id in (from $orders | match (total > 100) | format {customerId: customerId} | match (customerId < $__v0))) > 0)
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+(Note: SOME is an alias for ANY and produces identical MQLv2.)
+
+---
+
+### ALL subquery
+
+```
+HQL:   from Customer c where c.id > all (select o.customerId from Order o where o.total > 100)
+
+MQLv2: from $customers
+       | match (count(let $__v0 = _id in (from $orders | match (total > 100) | format {customerId: customerId} | match (customerId >= $__v0))) == 0)
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### Scalar subquery in SELECT
+
+```
+HQL:   select c.name, (select count(o) from Order o where o.customerId = c.id) from Customer c
+
+MQLv2: from $customers
+       | format {name: name, _f0: count(let $__v0 = _id in (from $orders | match (customerId == $__v0)))}
+```
+
+The subpipeline `count(pipeline)` returns the cardinality of the subpipeline result — analogous to SQL `COUNT(*)`.
+
+---
+
+### UNION ALL
+
+```
+HQL:   from Customer c where c.age > 30 union all from Customer c where c.active = true
+
+MQLv2: from << (from $customers | match (age > 30) | format {_id: _id, active: active, age: age, name: name}),
+              (from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name}) >>
+       | unwind $*
+```
+
+`UNION ALL` keeps duplicates. Use `from << (p1), (p2) >> | unwind $*` to concatenate two subpipelines into a flat stream.
+
+---
+
+### UNION
+
+```
+HQL:   from Customer c where c.age > 30 union from Customer c where c.active = true
+
+MQLv2: from << (from $customers | match (age > 30) | format {_id: _id, active: active, age: age, name: name}),
+              (from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name}) >>
+       | unwind $*
+       | distinct
+```
+
+---
+
+### INTERSECT
+
+```
+HQL:   from Customer c where c.age > 30 intersect from Customer c where c.active = true
+
+MQLv2: from $customers | match (age > 30) | format {_id: _id, active: active, age: age, name: name}
+       | match (count(let $__v0 = $ in (from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name} | match ($ == $__v0))) > 0)
+```
+
+`$ == $__v0` tests whole-document equality — valid because both sides project the same columns.
+
+---
+
+### EXCEPT
+
+```
+HQL:   from Customer c where c.active = true except from Customer c where c.age > 30
+
+MQLv2: from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name}
+       | match (count(let $__v0 = $ in (from $customers | match (age > 30) | format {_id: _id, active: active, age: age, name: name} | match ($ == $__v0))) == 0)
+```
+
+---
+
 ## Known limitations (current scope)
 
 - OFFSET / skip — MQLv2 has no skip stage; throws `FeatureNotSupportedException`
 - HAVING referencing aggregates not in SELECT — throws `FeatureNotSupportedException`
 - Scalar aggregates (no GROUP BY) — throws `FeatureNotSupportedException`
-- Subqueries — not supported
+- INTERSECT ALL / EXCEPT ALL — throws `FeatureNotSupportedException`
+- Scalar subquery with non-count aggregate — throws `FeatureNotSupportedException`
+- Subquery in ORDER BY or HAVING position — throws `FeatureNotSupportedException`
+- Multi-column IN subquery: `(a, b) IN (SELECT x, y …)` — throws `FeatureNotSupportedException`
+- Subquery in FROM (derived table via `QueryPartTableGroup`) — throws `FeatureNotSupportedException`
 - INSERT / UPDATE / DELETE — handled by existing MQLv1 path
