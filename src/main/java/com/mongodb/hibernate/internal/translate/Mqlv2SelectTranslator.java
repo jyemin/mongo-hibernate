@@ -649,6 +649,48 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                 sb.append(")");
             }
             sb.append(")");
+        } else if (predicate instanceof InSubQueryPredicate isp) {
+            var innerSpec = isp.getSubQuery().getQueryPart().getFirstQuerySpec();
+            var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
+                    .filter(s -> !s.isVirtual())
+                    .findFirst()
+                    .orElseThrow(() -> new FeatureNotSupportedException(
+                            "IN subquery must project at least one column"))
+                    .getExpression();
+            var projectedColName = simpleColumnName(projectedExpr);
+
+            var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+            var outerQualifiers = collectOuterQualifiers(outerSpec);
+            var correlatedBindings = new LinkedHashMap<String, String>();
+
+            // Bind the test expression as the first $__vN variable
+            var testVarName = "$__v" + correlatedVarCounter++;
+
+            var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
+            // Add match stage: projected column == test variable
+            innerPipeline = innerPipeline + " | match (" + projectedColName + " == " + testVarName + ")";
+
+            // Build the let expression manually:
+            // first binding = test expression, then any correlated outer bindings from appendQuerySpecPipeline
+            var letSb = new StringBuilder("let ").append(testVarName).append(" = ");
+            var testSb = new StringBuilder();
+            appendExprText(testSb, isp.getTestExpression());
+            letSb.append(testSb);
+            for (var entry : correlatedBindings.entrySet()) {
+                letSb.append(", ").append(entry.getValue()).append(" = ");
+                // strip qualifier prefix (same as wrapWithLet)
+                var key = entry.getKey();
+                var dotIdx = key.indexOf('.');
+                letSb.append(dotIdx >= 0 ? key.substring(dotIdx + 1) : key);
+            }
+            letSb.append(" in (").append(innerPipeline).append(")");
+
+            var countExpr = "count(" + letSb + ")";
+            if (isp.isNegated()) {
+                sb.append("(").append(countExpr).append(" == 0)");
+            } else {
+                sb.append("(").append(countExpr).append(" > 0)");
+            }
         } else if (predicate instanceof ExistsPredicate ep) {
             var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
             var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();

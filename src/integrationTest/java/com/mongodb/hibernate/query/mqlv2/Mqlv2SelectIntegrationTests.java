@@ -610,4 +610,30 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testInSubQuery() {
+        sessionFactoryScope.inSession(session -> {
+            // orders with total > 100: id=10 (cust=1, Alice), id=12 (cust=2, Bob)
+            // Carol (id=3) has only order 13 with total=50, not included
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.id in (select o.customerId from Order o where o.total > 100)",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Alice", "Bob");
+        });
+    }
+
+    @Test
+    void testNotInSubQuery() {
+        sessionFactoryScope.inSession(session -> {
+            // all 3 customer ids appear in orders, so NOT IN returns empty
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.id not in (select o.customerId from Order o)",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).isEmpty();
+        });
+    }
+
 }
