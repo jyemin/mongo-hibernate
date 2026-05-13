@@ -483,6 +483,21 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             sb.append("(");
             appendExprText(sb, bp.getExpression());
             sb.append(bp.isNegated() ? " == false)" : " == true)");
+        } else if (predicate instanceof InListPredicate ilp) {
+            var exprs = ilp.getListExpressions();
+            var negated = ilp.isNegated();
+            var op = negated ? " != " : " == ";
+            var logic = negated ? " and " : " or ";
+            sb.append("(");
+            for (var i = 0; i < exprs.size(); i++) {
+                if (i > 0) sb.append(logic);
+                sb.append("(");
+                appendExprText(sb, ilp.getTestExpression());
+                sb.append(op);
+                appendExprText(sb, exprs.get(i));
+                sb.append(")");
+            }
+            sb.append(")");
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported predicate: " + predicate.getClass().getSimpleName());
