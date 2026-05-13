@@ -423,6 +423,34 @@ MQLv2: from c1_0=$customers
 
 ---
 
+### Scalar aggregate — count
+
+Without GROUP BY, aggregate functions use `| agg {key: fn($)}`.
+`count(c)` and `count(*)` both map to `count($)`.
+
+```
+HQL:   select count(c) from Customer c
+
+MQLv2: from $customers
+       | agg {_agg0: count($)}
+       | format {_f0: _agg0}
+```
+
+---
+
+### Scalar aggregate — multiple aggregates
+
+```
+HQL:   select count(c), sum(c.age), avg(c.age), min(c.age), max(c.age)
+       from Customer c
+
+MQLv2: from $customers
+       | agg {_agg0: count($), _agg1: sum($->age), _agg2: avg($->age), _agg3: min($->age), _agg4: max($->age)}
+       | format {_f0: _agg0, _f1: _agg1, _f2: _agg2, _f3: _agg3, _f4: _agg4}
+```
+
+---
+
 ### GROUP BY — count
 
 Aggregate expressions are assigned synthetic `_aggN` names in the group
@@ -637,7 +665,6 @@ MQLv2: from $customers | match (active == true) | format {_id: _id, active: acti
 ## Known limitations (current scope)
 
 - OFFSET / skip — MQLv2 has no skip stage; throws `FeatureNotSupportedException`
-- Scalar aggregates (no GROUP BY) — throws `FeatureNotSupportedException`
 - HAVING referencing aggregates not in SELECT — throws `FeatureNotSupportedException`
 - INTERSECT ALL / EXCEPT ALL — throws `FeatureNotSupportedException`
 - Scalar subquery with non-count aggregate — throws `FeatureNotSupportedException`

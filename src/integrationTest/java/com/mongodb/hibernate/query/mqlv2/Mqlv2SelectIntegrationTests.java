@@ -557,6 +557,15 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     }
 
     @Test
+    void testScalarCountStar() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery("select count(*) from Customer c", Long.class)
+                    .getSingleResult();
+            assertThat(result).isEqualTo(3L);
+        });
+    }
+
+    @Test
     void testScalarCountWithWhere() {
         sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery(
