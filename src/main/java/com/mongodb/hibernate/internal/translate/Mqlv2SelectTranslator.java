@@ -139,6 +139,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     private final SessionFactoryImplementor sessionFactory;
     private final SelectStatement selectStatement;
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
+    private @org.jspecify.annotations.Nullable LimitJdbcParameter limitJdbcParameter = null;
     private boolean hasJoins = false;
     // Maps aggregate signature (e.g. "sum:total") → _aggN name; populated during GROUP BY translation
     private final Map<String, String> aggSignatureToName = new LinkedHashMap<>();
@@ -233,7 +234,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         var mappingProducer = mappingProducerProvider.buildMappingProducer(selectStatement, sessionFactory);
         return new JdbcOperationQuerySelect(
                 commandJson, parameterBinders, mappingProducer, affectedTableNames, 0, MAX_VALUE, emptyMap(), NONE,
-                null, null);
+                null, limitJdbcParameter);
     }
 
     private SpecTranslation translateQuerySpecToMqlv2(QuerySpec querySpec) {
@@ -392,7 +393,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         if (limit != null && limit.getMaxRows() != null) {
             var basicIntegerType = sessionFactory.getTypeConfiguration().getBasicTypeForJavaType(Integer.class);
             sb.append(" | limit ");
-            appendExprText(sb, new LimitJdbcParameter(basicIntegerType));
+            limitJdbcParameter = new LimitJdbcParameter(basicIntegerType);
+            appendExprText(sb, limitJdbcParameter);
         } else {
             appendLimitToBuilder(sb, querySpec);
         }
