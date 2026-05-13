@@ -310,7 +310,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     private void appendFrom(StringBuilder sb, TableGroup root) {
-        var ntr = (NamedTableReference) root.getPrimaryTableReference();
+        var tableRef = root.getPrimaryTableReference();
+        if (!(tableRef instanceof NamedTableReference ntr)) {
+            throw new FeatureNotSupportedException("Subquery in FROM (derived table) is not supported in MQLv2");
+        }
         var collName = ntr.getTableExpression();
         if (!hasJoins) {
             sb.append("from $").append(collName);

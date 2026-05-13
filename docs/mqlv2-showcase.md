@@ -19,10 +19,11 @@ Mqlv2SelectTranslator
   │
   ▼  MongoPreparedStatement.executeQuery()
      builds let doc: {p0: <value>, p1: <value>, …}
-     appends to command: {"mqlv2": "…", "let": {p0: …}}
   │
-  ▼  MongoStatement routes to mongoDatabase.runCommand("mqlv2", …)
-     server resolves $p0/$p1/… from the let document
+  ▼  MongoStatement.executeMqlv2Query()
+     mongoDatabase.mqlv2(session, () -> mqlv2Text, BsonDocument.class)
+                  .let({p0: …, p1: …})
+                  .cursor()
   │
   ▼
 MongoResultSet  (reuses existing infrastructure)
@@ -33,13 +34,6 @@ stay on the existing MQLv1 aggregation pipeline path unchanged.
 
 `_mqlv2FieldNames` carries the projected field names so `MongoResultSet`
 can map result documents back to Hibernate without parsing the MQLv2 text.
-
-HQL named/positional parameters (`:name`, `?1`) are passed server-side via
-MQLv2's `let` binding: the translator emits `$p0`, `$p1`, … in the query
-text; `MongoPreparedStatement` builds a `let` document and clones the command
-with `let` added before execution. HQL literal values are rendered inline in
-the MQLv2 text. This avoids any client-side text manipulation of parameter
-values.
 
 ---
 
@@ -65,6 +59,26 @@ class Order {
     Instant orderDate;
 }
 ```
+
+---
+
+## Parameter binding
+
+HQL named/positional parameters (`:name`, `?1`) are passed to the server via
+the `let` document. The MQLv2 text references them as `$p0`, `$p1`, …; the
+server resolves each variable from the corresponding `let` entry.
+
+HQL literal values (`25`, `'shipped'`, `true`, etc.) are rendered **inline**
+in the MQLv2 text and do not appear in the `let` document.
+
+| Java type | Example value | MQLv2 reference | let value |
+|---|---|---|---|
+| `String` | `"Alice"` | `$p0` | `"Alice"` |
+| `int` / `long` | `42` | `$p0` | `42` |
+| `double` | `100.0` | `$p0` | `100.0` |
+| `boolean` | `true` | `$p0` | `true` |
+| `null` | — | `$p0` | `null` |
+| `Instant` | `2024-01-15T00:00:00Z` | `$p0` | `ISODate("2024-01-15T00:00:00Z")` |
 
 ---
 
@@ -164,6 +178,83 @@ MQLv2: from $orders
        | match (year(orderDate) == 2023)
        | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}
 ```
+
+---
+
+### WHERE — IN list
+
+```
+HQL:   from Customer c where c.age in (25, 30)
+
+MQLv2: from $customers
+       | match ((age == 25) or (age == 30))
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### WHERE — NOT IN list
+
+```
+HQL:   from Customer c where c.age not in (25, 30)
+
+MQLv2: from $customers
+       | match ((age != 25) and (age != 30))
+       | format {_id: _id, active: active, age: age, name: name}
+```
+
+---
+
+### WHERE — IS NULL / IS NOT NULL
+
+MQLv2 follows SQL three-valued logic (3VL): `== null` is always `null`
+(unknown), never `true`. Use `isNullish()` for null checks.
+
+```
+HQL:   from Order o where o.status is null
+
+MQLv2: from $orders
+       | match isNullish(status)
+       | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}
+```
+
+```
+HQL:   from Order o where o.status is not null
+
+MQLv2: from $orders
+       | match (not isNullish(status))
+       | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}
+```
+
+---
+
+### NULL semantics — equality with null parameter
+
+Both queries below return zero rows regardless of the data.
+
+```
+HQL:   from Order o where o.status = :status   [:status = null]
+
+MQLv2: from $orders
+       | match (status == $p0)
+       | format {…}
+
+       let: {p0: null}
+       → 0 rows (null == null is null, not true)
+```
+
+```
+HQL:   from Order o where o.status != :status   [:status = null]
+
+MQLv2: from $orders
+       | match (status != $p0)
+       | format {…}
+
+       let: {p0: null}
+       → 0 rows ("shipped" != null is null, not true)
+```
+
+Use `IS NULL` / `IS NOT NULL` rather than `= null` / `!= null`.
 
 ---
 
@@ -314,59 +405,6 @@ MQLv2: from c1_0=$customers
 
 ---
 
-### IS NULL / IS NOT NULL
-
-MQLv2 follows SQL three-valued logic (3VL): `== null` is always `null`
-(unknown), never `true`. Use `isNullish()` for null checks.
-
-```
-HQL:   from Order o where o.status is null
-
-MQLv2: from $orders
-       | match isNullish(status)
-       | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}
-```
-
-```
-HQL:   from Order o where o.status is not null
-
-MQLv2: from $orders
-       | match (not isNullish(status))
-       | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}
-```
-
----
-
-### NULL semantics — equality with null parameter
-
-Both queries below return zero rows regardless of the data.
-
-```
-HQL:   from Order o where o.status = :status   [:status = null]
-
-MQLv2: from $orders
-       | match (status == $p0)
-       | format {…}
-
-       let: {p0: null}
-       → 0 rows (null == null is null, not true)
-```
-
-```
-HQL:   from Order o where o.status != :status   [:status = null]
-
-MQLv2: from $orders
-       | match (status != $p0)
-       | format {…}
-
-       let: {p0: null}
-       → 0 rows ("shipped" != null is null, not true)
-```
-
-Use `IS NULL` / `IS NOT NULL` rather than `= null` / `!= null`.
-
----
-
 ### GROUP BY — count
 
 Aggregate expressions are assigned synthetic `_aggN` names in the group
@@ -438,52 +476,6 @@ MQLv2: from $orders
 
 ---
 
-## Parameter binding
-
-HQL named/positional parameters (`:name`, `?1`) are passed to the server via
-the `let` document. The MQLv2 text references them as `$p0`, `$p1`, …; the
-server resolves each variable from the corresponding `let` entry.
-
-HQL literal values (`25`, `'shipped'`, `true`, etc.) are rendered **inline**
-in the MQLv2 text and do not appear in the `let` document.
-
-| Java type | Example value | MQLv2 reference | let value |
-|---|---|---|---|
-| `String` | `"Alice"` | `$p0` | `"Alice"` |
-| `int` / `long` | `42` | `$p0` | `42` |
-| `double` | `100.0` | `$p0` | `100.0` |
-| `boolean` | `true` | `$p0` | `true` |
-| `null` | — | `$p0` | `null` |
-| `Instant` | `2024-01-15T00:00:00Z` | `$p0` | `ISODate("2024-01-15T00:00:00Z")` |
-
----
-
-## Subqueries and Set Operations
-
-### IN list
-
-```
-HQL:   from Customer c where c.age in (25, 30)
-
-MQLv2: from $customers
-       | match ((age == 25) or (age == 30))
-       | format {_id: _id, active: active, age: age, name: name}
-```
-
----
-
-### NOT IN list
-
-```
-HQL:   from Customer c where c.age not in (25, 30)
-
-MQLv2: from $customers
-       | match ((age != 25) and (age != 30))
-       | format {_id: _id, active: active, age: age, name: name}
-```
-
----
-
 ### EXISTS
 
 ```
@@ -542,7 +534,7 @@ MQLv2: from $customers
        | format {_id: _id, active: active, age: age, name: name}
 ```
 
-(Note: SOME is an alias for ANY and produces identical MQLv2.)
+`SOME` is an alias for `ANY` and produces identical MQLv2.
 
 ---
 
@@ -556,6 +548,8 @@ MQLv2: from $customers
        | format {_id: _id, active: active, age: age, name: name}
 ```
 
+`ALL` uses `== 0` because the condition must hold for every row in the subquery result — zero rows may violate it.
+
 ---
 
 ### Scalar subquery in SELECT
@@ -567,7 +561,7 @@ MQLv2: from $customers
        | format {name: name, _f0: count(let $__v0 = _id in (from $orders | match (customerId == $__v0)))}
 ```
 
-The subpipeline `count(pipeline)` returns the cardinality of the subpipeline result — analogous to SQL `COUNT(*)`.
+`count(pipeline)` returns the cardinality of the subpipeline — analogous to SQL `COUNT(*)`.
 
 ---
 
@@ -581,7 +575,7 @@ MQLv2: from << (from $customers | match (age > 30) | format {_id: _id, active: a
        | unwind $*
 ```
 
-`UNION ALL` keeps duplicates. Use `from << (p1), (p2) >> | unwind $*` to concatenate two subpipelines into a flat stream.
+`UNION ALL` keeps duplicates. `from << (p1), (p2) >> | unwind $*` concatenates subpipelines into a flat stream.
 
 ---
 
@@ -607,7 +601,7 @@ MQLv2: from $customers | match (age > 30) | format {_id: _id, active: active, ag
        | match (count(let $__v0 = $ in (from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name} | match ($ == $__v0))) > 0)
 ```
 
-`$ == $__v0` tests whole-document equality — valid because both sides project the same columns.
+`$ == $__v0` tests whole-document equality — valid because both sides of a set operation project the same columns.
 
 ---
 
@@ -625,11 +619,10 @@ MQLv2: from $customers | match (active == true) | format {_id: _id, active: acti
 ## Known limitations (current scope)
 
 - OFFSET / skip — MQLv2 has no skip stage; throws `FeatureNotSupportedException`
-- HAVING referencing aggregates not in SELECT — throws `FeatureNotSupportedException`
+- `setMaxResults()` on the JDBC `Statement` — use the HQL `limit` clause instead; throws `FeatureNotSupportedException`
 - Scalar aggregates (no GROUP BY) — throws `FeatureNotSupportedException`
+- HAVING referencing aggregates not in SELECT — throws `FeatureNotSupportedException`
 - INTERSECT ALL / EXCEPT ALL — throws `FeatureNotSupportedException`
 - Scalar subquery with non-count aggregate — throws `FeatureNotSupportedException`
-- Subquery in ORDER BY or HAVING position — throws `FeatureNotSupportedException`
-- Multi-column IN subquery: `(a, b) IN (SELECT x, y …)` — throws `FeatureNotSupportedException`
-- Subquery in FROM (derived table via `QueryPartTableGroup`) — throws `FeatureNotSupportedException`
+- Subquery in FROM (derived table) — throws `FeatureNotSupportedException`
 - INSERT / UPDATE / DELETE — handled by existing MQLv1 path
