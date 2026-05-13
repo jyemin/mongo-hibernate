@@ -699,4 +699,84 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    // ---- Task 6: Set operations ----
+
+    @Test
+    void testUnionAll() {
+        sessionFactoryScope.inSession(session -> {
+            // age > 30: Carol(35)
+            // active = true: Alice(30), Carol(35)
+            // UNION ALL preserves duplicates → Carol appears twice
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.age > 30 union all from Customer c where c.active = true",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).hasSize(3);
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Carol", "Alice", "Carol");
+        });
+    }
+
+    @Test
+    void testUnion() {
+        sessionFactoryScope.inSession(session -> {
+            // age > 30: Carol. active = true: Alice, Carol. UNION deduplicates → Alice, Carol
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.age > 30 union from Customer c where c.active = true",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).hasSize(2);
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Carol", "Alice");
+        });
+    }
+
+    @Test
+    void testIntersect() {
+        sessionFactoryScope.inSession(session -> {
+            // age > 30: Carol. active = true: Alice, Carol. Intersection → Carol only
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.age > 30 intersect from Customer c where c.active = true",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).hasSize(1);
+            assertThat(result.get(0).name).isEqualTo("Carol");
+        });
+    }
+
+    @Test
+    void testExcept() {
+        sessionFactoryScope.inSession(session -> {
+            // active = true: Alice, Carol. EXCEPT age > 30 (Carol) → Alice only
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.active = true except from Customer c where c.age > 30",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).hasSize(1);
+            assertThat(result.get(0).name).isEqualTo("Alice");
+        });
+    }
+
+    @Test
+    void testIntersectAllThrows() {
+        sessionFactoryScope.inSession(session -> {
+            assertThatThrownBy(() -> session.createSelectionQuery(
+                            "from Customer c where c.age > 30 intersect all from Customer c where c.active = true",
+                            Customer.class)
+                    .getResultList())
+                    .isInstanceOf(FeatureNotSupportedException.class);
+        });
+    }
+
+    @Test
+    void testExceptAllThrows() {
+        sessionFactoryScope.inSession(session -> {
+            assertThatThrownBy(() -> session.createSelectionQuery(
+                            "from Customer c where c.active = true except all from Customer c where c.age > 30",
+                            Customer.class)
+                    .getResultList())
+                    .isInstanceOf(FeatureNotSupportedException.class);
+        });
+    }
+
 }

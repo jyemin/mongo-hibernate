@@ -37,6 +37,7 @@ import org.hibernate.query.SortDirection;
 import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.ComparisonOperator;
+import org.hibernate.query.sqm.SetOperator;
 import org.hibernate.query.sqm.TemporalUnit;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.sql.ast.Clause;
@@ -175,45 +176,141 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     public JdbcOperationQuerySelect translate(
             @Nullable JdbcParameterBindings jdbcParameterBindings, QueryOptions queryOptions) {
 
-        var querySpec = selectStatement.getQueryPart().getFirstQuerySpec();
-        var root = querySpec.getFromClause().getRoots().get(0);
-        hasJoins = !root.getTableGroupJoins().isEmpty();
+        var queryPart = selectStatement.getQueryPart();
+        String mqlv2Text;
+        List<String> fieldNames;
 
-        var groupByExprs = querySpec.getGroupByClauseExpressions();
-
-        var sb = new StringBuilder();
-        appendFrom(sb, root);
-        appendJoins(sb, root);
-        appendMatch(sb, querySpec);
-
-        List<@Nullable String> aggNames = null;
-        if (!groupByExprs.isEmpty()) {
-            aggNames = buildAggNames(querySpec.getSelectClause());
-            appendGroup(sb, groupByExprs, querySpec.getSelectClause(), aggNames);
-            appendHaving(sb, querySpec);
+        if (queryPart instanceof QuerySpec querySpec) {
+            var root = querySpec.getFromClause().getRoots().get(0);
+            hasJoins = !root.getTableGroupJoins().isEmpty();
+            var groupByExprs = querySpec.getGroupByClauseExpressions();
+            var sb = new StringBuilder();
+            appendFrom(sb, root);
+            appendJoins(sb, root);
+            appendMatch(sb, querySpec);
+            List<@Nullable String> aggNames = null;
+            if (!groupByExprs.isEmpty()) {
+                aggNames = buildAggNames(querySpec.getSelectClause());
+                appendGroup(sb, groupByExprs, querySpec.getSelectClause(), aggNames);
+                appendHaving(sb, querySpec);
+            }
+            appendSort(sb, querySpec);
+            appendLimit(sb, querySpec, queryOptions);
+            fieldNames = appendFormat(sb, querySpec.getSelectClause(), aggNames);
+            if (querySpec.getSelectClause().isDistinct()) {
+                sb.append(" | distinct");
+            }
+            mqlv2Text = sb.toString();
+        } else if (queryPart instanceof QueryGroup queryGroup) {
+            mqlv2Text = translateQueryGroupToMqlv2(queryGroup);
+            // Field names come from the first QuerySpec's SELECT clause
+            var firstSpec = queryGroup.getQueryParts().get(0).getFirstQuerySpec();
+            fieldNames = firstSpec.getSelectClause().getSqlSelections().stream()
+                    .filter(s -> !s.isVirtual())
+                    .map(s -> {
+                        var expr = s.getExpression();
+                        if (expr instanceof ColumnReference cr) return cr.getColumnExpression();
+                        if (expr instanceof BasicValuedPathInterpretation<?> bvpi)
+                            return bvpi.getColumnReference().getColumnExpression();
+                        return "_f" + firstSpec.getSelectClause().getSqlSelections().indexOf(s);
+                    })
+                    .toList();
+        } else {
+            throw new FeatureNotSupportedException(
+                    "Unsupported QueryPart: " + queryPart.getClass().getSimpleName());
         }
 
-        appendSort(sb, querySpec);
-        appendLimit(sb, querySpec, queryOptions);
-        var fieldNames = appendFormat(sb, querySpec.getSelectClause(), aggNames);
-        if (querySpec.getSelectClause().isDistinct()) {
-            sb.append(" | distinct");
-        }
-
-        var mqlv2Text = sb.toString();
         var fieldNamesArray = new BsonArray(fieldNames.stream().map(BsonString::new).toList());
         var commandDoc = new BsonDocument("mqlv2", new BsonString(mqlv2Text))
                 .append("_mqlv2FieldNames", fieldNamesArray)
                 .append("_mqlv2ParamCount", new org.bson.BsonInt32(parameterBinders.size()));
         var commandJson = commandDoc.toJson();
 
-        var affectedTableNames = collectAffectedTableNames(root);
+        // For affected table names, walk the first QuerySpec's root
+        var firstSpec = queryPart.getFirstQuerySpec();
+        var affectedTableNames = collectAffectedTableNames(firstSpec.getFromClause().getRoots().get(0));
         var mappingProducerProvider =
                 sessionFactory.getServiceRegistry().requireService(JdbcValuesMappingProducerProvider.class);
         var mappingProducer = mappingProducerProvider.buildMappingProducer(selectStatement, sessionFactory);
         return new JdbcOperationQuerySelect(
                 commandJson, parameterBinders, mappingProducer, affectedTableNames, 0, MAX_VALUE, emptyMap(), NONE,
                 null, null);
+    }
+
+    private String translateQuerySpecToMqlv2(QuerySpec querySpec) {
+        var savedHasJoins = this.hasJoins;
+        var savedAggMap = new LinkedHashMap<>(this.aggSignatureToName);
+        this.hasJoins = !querySpec.getFromClause().getRoots().get(0).getTableGroupJoins().isEmpty();
+        this.aggSignatureToName.clear();
+
+        var sb = new StringBuilder();
+        var root = querySpec.getFromClause().getRoots().get(0);
+        appendFrom(sb, root);
+        appendJoins(sb, root);
+        appendMatch(sb, querySpec);
+        List<@Nullable String> aggNames = null;
+        if (!querySpec.getGroupByClauseExpressions().isEmpty()) {
+            aggNames = buildAggNames(querySpec.getSelectClause());
+            appendGroup(sb, querySpec.getGroupByClauseExpressions(), querySpec.getSelectClause(), aggNames);
+            appendHaving(sb, querySpec);
+        }
+        appendSort(sb, querySpec);
+        appendLimitToBuilder(sb, querySpec);
+        appendFormat(sb, querySpec.getSelectClause(), aggNames);
+        if (querySpec.getSelectClause().isDistinct()) {
+            sb.append(" | distinct");
+        }
+
+        this.hasJoins = savedHasJoins;
+        this.aggSignatureToName.clear();
+        this.aggSignatureToName.putAll(savedAggMap);
+        return sb.toString();
+    }
+
+    private String translateQueryGroupToMqlv2(QueryGroup queryGroup) {
+        var operator = queryGroup.getSetOperator();
+        if (operator == SetOperator.INTERSECT_ALL || operator == SetOperator.EXCEPT_ALL) {
+            throw new FeatureNotSupportedException(operator + " is not supported in MQLv2");
+        }
+
+        var parts = queryGroup.getQueryParts();
+        var pipelines = parts.stream()
+                .map(p -> "(" + translateQuerySpecToMqlv2(p.getFirstQuerySpec()) + ")")
+                .toList();
+
+        return switch (operator) {
+            case UNION_ALL -> {
+                var sb = new StringBuilder("from << ");
+                for (var i = 0; i < pipelines.size(); i++) {
+                    if (i > 0) sb.append(", ");
+                    sb.append(pipelines.get(i));
+                }
+                yield sb.append(" >> | unwind $*").toString();
+            }
+            case UNION -> {
+                var sb = new StringBuilder("from << ");
+                for (var i = 0; i < pipelines.size(); i++) {
+                    if (i > 0) sb.append(", ");
+                    sb.append(pipelines.get(i));
+                }
+                yield sb.append(" >> | unwind $* | distinct").toString();
+            }
+            case INTERSECT -> {
+                var left = pipelines.get(0).substring(1, pipelines.get(0).length() - 1);
+                var right = pipelines.get(1).substring(1, pipelines.get(1).length() - 1);
+                var varName = "$__v" + correlatedVarCounter++;
+                yield left + " | match (count(let " + varName + " = $ in (" + right
+                        + " | match ($ == " + varName + "))) > 0)";
+            }
+            case EXCEPT -> {
+                var left = pipelines.get(0).substring(1, pipelines.get(0).length() - 1);
+                var right = pipelines.get(1).substring(1, pipelines.get(1).length() - 1);
+                var varName = "$__v" + correlatedVarCounter++;
+                yield left + " | match (count(let " + varName + " = $ in (" + right
+                        + " | match ($ == " + varName + "))) == 0)";
+            }
+            default -> throw new FeatureNotSupportedException("Unsupported set operator: " + operator);
+        };
     }
 
     private void appendFrom(StringBuilder sb, TableGroup root) {
@@ -288,6 +385,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             throw new FeatureNotSupportedException(
                     "Use HQL LIMIT clause; setMaxResults() is not yet supported in MQLv2 mode");
         }
+        appendLimitToBuilder(sb, querySpec);
+    }
+
+    private void appendLimitToBuilder(StringBuilder sb, QuerySpec querySpec) {
         var fetchExpr = querySpec.getFetchClauseExpression();
         if (fetchExpr == null) return;
         if (querySpec.getOffsetClauseExpression() != null) {
