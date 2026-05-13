@@ -189,6 +189,26 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result.stream().map(c -> c.name)).containsExactly("Bob", "Alice", "Carol");
         });
     }
+    // ---- Task 9: IS NULL / IS NOT NULL ----
+
+    @Test
+    void testIsNull() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery("from Order o where o.status is null", Order.class)
+                    .getResultList();
+            assertThat(result).isEmpty();
+        });
+    }
+
+    @Test
+    void testIsNotNull() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery("from Order o where o.status is not null", Order.class)
+                    .getResultList();
+            assertThat(result).hasSize(4);
+        });
+    }
+
     // ---- Task 8: JOIN queries ----
 
     @Test

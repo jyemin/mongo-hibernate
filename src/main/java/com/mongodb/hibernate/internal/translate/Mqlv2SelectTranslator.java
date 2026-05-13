@@ -321,6 +321,16 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             sb.append("(not ");
             appendPredicateText(sb, np.getPredicate());
             sb.append(")");
+        } else if (predicate instanceof NullnessPredicate np) {
+            if (np.isNegated()) {
+                sb.append("(not isNullish(");
+                appendExprText(sb, np.getExpression());
+                sb.append("))");
+            } else {
+                sb.append("isNullish(");
+                appendExprText(sb, np.getExpression());
+                sb.append(")");
+            }
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported predicate: " + predicate.getClass().getSimpleName());
