@@ -666,4 +666,18 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testSomeSubQuery() {
+        sessionFactoryScope.inSession(session -> {
+            // SOME is a SQL alias for ANY — same behavior expected
+            // c.id > some (customerIds of orders with total > 100) → {1, 2} → Bob and Carol
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.id > some (select o.customerId from Order o where o.total > 100)",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Bob", "Carol");
+        });
+    }
+
 }

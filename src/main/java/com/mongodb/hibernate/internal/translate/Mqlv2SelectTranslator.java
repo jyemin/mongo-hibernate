@@ -614,7 +614,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
                 .findFirst()
-                .orElseThrow()
+                .orElseThrow(() -> new FeatureNotSupportedException(
+                        "ANY/ALL subquery must project at least one column"))
                 .getExpression();
         var projectedColName = simpleColumnName(projectedExpr);
 
