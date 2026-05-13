@@ -673,9 +673,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             // Build the let expression manually:
             // first binding = test expression, then any correlated outer bindings from appendQuerySpecPipeline
             var letSb = new StringBuilder("let ").append(testVarName).append(" = ");
-            var testSb = new StringBuilder();
-            appendExprText(testSb, isp.getTestExpression());
-            letSb.append(testSb);
+            appendExprText(letSb, isp.getTestExpression());
             for (var entry : correlatedBindings.entrySet()) {
                 letSb.append(", ").append(entry.getValue()).append(" = ");
                 // strip qualifier prefix (same as wrapWithLet)
