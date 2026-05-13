@@ -571,4 +571,30 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testExists() {
+        sessionFactoryScope.inSession(session -> {
+            // all 3 customers have at least one order
+            var result = session.createSelectionQuery(
+                            "from Customer c where exists (select 1 from Order o where o.customerId = c.id)",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+        });
+    }
+
+    @Test
+    void testNotExists() {
+        sessionFactoryScope.inSession(session -> {
+            // no customers have orders with total > 500, so all 3 pass NOT EXISTS
+            var result = session.createSelectionQuery(
+                            "from Customer c where not exists (select 1 from Order o where o.customerId = c.id and o.total > 500)",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+        });
+    }
+
 }
