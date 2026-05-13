@@ -197,6 +197,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result.stream().map(c -> c.name)).containsExactly("Bob", "Alice", "Carol");
         });
     }
+
     // ---- Task 9: IS NULL / IS NOT NULL ----
 
     @Test

@@ -380,9 +380,17 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     private void appendLimit(StringBuilder sb, QuerySpec querySpec, QueryOptions queryOptions) {
-        if (queryOptions.getLimit() != null && queryOptions.getLimit().getMaxRows() != null) {
+        var limit = queryOptions.getLimit();
+        if (limit != null && limit.getFirstRow() != null) {
+            throw new FeatureNotSupportedException("OFFSET is not supported in MQLv2");
+        }
+        if (limit != null && limit.getMaxRows() != null) {
+            // MQLv2's limit stage requires a literal integer — it does not accept variable references ($pN).
+            // The driver iterable also has no .limit() method. Hibernate caches translated queries and reuses
+            // the same result for different setMaxResults() values, so baking a literal here would silently
+            // apply the wrong limit on cache hits. Use the HQL limit clause instead.
             throw new FeatureNotSupportedException(
-                    "Use HQL LIMIT clause; setMaxResults() is not yet supported in MQLv2 mode");
+                    "setMaxResults() is not supported in MQLv2 mode; use the HQL limit clause instead");
         }
         appendLimitToBuilder(sb, querySpec);
     }
@@ -1434,4 +1442,5 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     public void visitColumnWriteFragment(ColumnWriteFragment columnWriteFragment) {
         throw new FeatureNotSupportedException();
     }
+
 }
