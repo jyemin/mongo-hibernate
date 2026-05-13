@@ -505,7 +505,7 @@ MQLv2: from $orders
 
 ---
 
-### HAVING
+### HAVING — aggregate in SELECT
 
 The HAVING predicate becomes a `| match` stage after `| group`. Aggregate
 references in HAVING resolve to the same `_aggN` names used in SELECT.
@@ -518,6 +518,23 @@ MQLv2: from $orders
        | group (status=status) (_agg0=count($->_id))
        | match (_agg0 > 1)
        | format {status: status, _f0: _agg0}
+```
+
+---
+
+### HAVING — aggregate not in SELECT
+
+Aggregates referenced only in HAVING are computed in the group stage under
+a synthetic `_aggN` name and dropped by the format stage.
+
+```
+HQL:   select o.status from Order o
+       group by o.status having count(o.id) > 1
+
+MQLv2: from $orders
+       | group (status=status) (_agg0=count($->_id))
+       | match (_agg0 > 1)
+       | format {status: status}
 ```
 
 ---
@@ -665,7 +682,6 @@ MQLv2: from $customers | match (active == true) | format {_id: _id, active: acti
 ## Known limitations (current scope)
 
 - OFFSET / skip — MQLv2 has no skip stage; throws `FeatureNotSupportedException`
-- HAVING referencing aggregates not in SELECT — throws `FeatureNotSupportedException`
 - INTERSECT ALL / EXCEPT ALL — throws `FeatureNotSupportedException`
 - Scalar subquery with non-count aggregate — throws `FeatureNotSupportedException`
 - Subquery in FROM (derived table) — throws `FeatureNotSupportedException`

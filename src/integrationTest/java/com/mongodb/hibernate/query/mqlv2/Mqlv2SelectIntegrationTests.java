@@ -535,13 +535,26 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     }
 
     @Test
-    void testHavingAggregateNotInSelectThrows() {
+    void testHavingAggregateNotInSelect() {
         sessionFactoryScope.inSession(session -> {
-            assertThatThrownBy(() -> session.createSelectionQuery(
+            // count(o.id) is in HAVING but not SELECT — shipped has 2 orders, others have 1
+            var result = session.createSelectionQuery(
                             "select o.status from Order o group by o.status having count(o.id) > 1",
                             String.class)
-                    .getResultList())
-                    .isInstanceOf(FeatureNotSupportedException.class);
+                    .getResultList();
+            assertThat(result).containsExactly("shipped");
+        });
+    }
+
+    @Test
+    void testHavingSumNotInSelect() {
+        sessionFactoryScope.inSession(session -> {
+            // sum(o.total) in HAVING but not SELECT: shipped=350, pending=80, cancelled=50
+            var result = session.createSelectionQuery(
+                            "select o.status from Order o group by o.status having sum(o.total) > 100",
+                            String.class)
+                    .getResultList();
+            assertThat(result).containsExactly("shipped");
         });
     }
 

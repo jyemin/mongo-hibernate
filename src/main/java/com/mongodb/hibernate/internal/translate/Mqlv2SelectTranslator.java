@@ -202,7 +202,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             List<@Nullable String> aggNames = null;
             if (!groupByExprs.isEmpty()) {
                 aggNames = buildAggNames(querySpec.getSelectClause());
-                appendGroup(sb, groupByExprs, querySpec.getSelectClause(), aggNames);
+                var havingOnlyAggs = collectHavingOnlyAggs(querySpec.getHavingClauseRestrictions());
+                appendGroup(sb, groupByExprs, querySpec.getSelectClause(), aggNames, havingOnlyAggs);
                 appendHaving(sb, querySpec);
             } else if (selectHasAggregates(querySpec.getSelectClause())) {
                 aggNames = buildAggNames(querySpec.getSelectClause());
@@ -255,7 +256,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         List<@Nullable String> aggNames = null;
         if (!querySpec.getGroupByClauseExpressions().isEmpty()) {
             aggNames = buildAggNames(querySpec.getSelectClause());
-            appendGroup(sb, querySpec.getGroupByClauseExpressions(), querySpec.getSelectClause(), aggNames);
+            var havingOnlyAggs = collectHavingOnlyAggs(querySpec.getHavingClauseRestrictions());
+            appendGroup(sb, querySpec.getGroupByClauseExpressions(), querySpec.getSelectClause(), aggNames, havingOnlyAggs);
             appendHaving(sb, querySpec);
         } else if (selectHasAggregates(querySpec.getSelectClause())) {
             aggNames = buildAggNames(querySpec.getSelectClause());
@@ -583,6 +585,47 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         return result;
     }
 
+    private Map<String, SelfRenderingFunctionSqlAstExpression> collectHavingOnlyAggs(@Nullable Predicate predicate) {
+        var result = new LinkedHashMap<String, SelfRenderingFunctionSqlAstExpression>();
+        if (predicate != null && !predicate.isEmpty()) {
+            collectHavingOnlyAggsInPredicate(predicate, result);
+        }
+        return result;
+    }
+
+    private void collectHavingOnlyAggsInPredicate(
+            Predicate predicate, Map<String, SelfRenderingFunctionSqlAstExpression> result) {
+        if (predicate instanceof ComparisonPredicate cp) {
+            collectHavingOnlyAggsInExpr(cp.getLeftHandExpression(), result);
+            collectHavingOnlyAggsInExpr(cp.getRightHandExpression(), result);
+        } else if (predicate instanceof Junction junction) {
+            for (var p : junction.getPredicates()) collectHavingOnlyAggsInPredicate(p, result);
+        } else if (predicate instanceof NegatedPredicate np) {
+            collectHavingOnlyAggsInPredicate(np.getPredicate(), result);
+        } else if (predicate instanceof BooleanExpressionPredicate bp) {
+            collectHavingOnlyAggsInExpr(bp.getExpression(), result);
+        } else if (predicate instanceof InListPredicate ilp) {
+            collectHavingOnlyAggsInExpr(ilp.getTestExpression(), result);
+            for (var e : ilp.getListExpressions()) collectHavingOnlyAggsInExpr(e, result);
+        }
+    }
+
+    private void collectHavingOnlyAggsInExpr(
+            Expression expr, Map<String, SelfRenderingFunctionSqlAstExpression> result) {
+        if (isAggregateFunction(expr)) {
+            var fn = (SelfRenderingFunctionSqlAstExpression) expr;
+            var sig = aggSignature(fn);
+            if (!aggSignatureToName.containsKey(sig)) {
+                var name = "_agg" + aggSignatureToName.size();
+                aggSignatureToName.put(sig, name);
+                result.put(name, fn);
+            }
+        } else if (expr instanceof BinaryArithmeticExpression bae) {
+            collectHavingOnlyAggsInExpr(bae.getLeftHandOperand(), result);
+            collectHavingOnlyAggsInExpr(bae.getRightHandOperand(), result);
+        }
+    }
+
     private String aggSignature(SelfRenderingFunctionSqlAstExpression fn) {
         var args = fn.getArguments();
         if (args.isEmpty() || args.get(0) instanceof Star || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
@@ -621,7 +664,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             StringBuilder sb,
             List<Expression> groupByExprs,
             SelectClause selectClause,
-            List<@Nullable String> aggNames) {
+            List<@Nullable String> aggNames,
+            Map<String, SelfRenderingFunctionSqlAstExpression> havingOnlyAggs) {
         sb.append(" | group (");
         for (var i = 0; i < groupByExprs.size(); i++) {
             if (i > 0) sb.append(", ");
@@ -642,6 +686,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             sb.append(aggName).append("=");
             appendAggFunctionText(
                     sb, (SelfRenderingFunctionSqlAstExpression) selections.get(i).getExpression());
+        }
+        for (var entry : havingOnlyAggs.entrySet()) {
+            if (!first) sb.append(", ");
+            first = false;
+            sb.append(entry.getKey()).append("=");
+            appendAggFunctionText(sb, entry.getValue());
         }
         sb.append(")");
     }
