@@ -34,10 +34,12 @@ stay on the existing MQLv1 aggregation pipeline path unchanged.
 `_mqlv2FieldNames` carries the projected field names so `MongoResultSet`
 can map result documents back to Hibernate without parsing the MQLv2 text.
 
-Parameters are passed server-side via MQLv2's `let` binding: the translator
-emits `$p0`, `$p1`, … in the query text; `MongoPreparedStatement` builds
-`{let: {p0: <value>, …}}` and appends it to the command document before
-execution. This avoids any client-side text manipulation.
+HQL named/positional parameters (`:name`, `?1`) are passed server-side via
+MQLv2's `let` binding: the translator emits `$p0`, `$p1`, … in the query
+text; `MongoPreparedStatement` builds `{let: {p0: <value>, …}}` and appends
+it to the command document before execution. HQL literal values are rendered
+inline in the MQLv2 text. This avoids any client-side text manipulation of
+parameter values.
 
 ---
 
@@ -85,10 +87,8 @@ MQLv2: from $customers
 HQL:   from Customer c where c.age > 25
 
 MQLv2: from $customers
-       | match (age > $p0)
+       | match (age > 25)
        | format {_id: _id, active: active, age: age, name: name}
-
-       let: {p0: 25}
 ```
 
 ---
@@ -113,10 +113,8 @@ MQLv2: from $customers
 HQL:   from Customer c where c.age > 20 and c.age < 32
 
 MQLv2: from $customers
-       | match ((age > $p0) && (age < $p1))
+       | match ((age > 20) && (age < 32))
        | format {_id: _id, active: active, age: age, name: name}
-
-       let: {p0: 20, p1: 32}
 ```
 
 ---
@@ -127,10 +125,8 @@ MQLv2: from $customers
 HQL:   from Order o where o.status != 'shipped'
 
 MQLv2: from $orders
-       | match (status != $p0)
+       | match (status != "shipped")
        | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}
-
-       let: {p0: "shipped"}
 ```
 
 ---
@@ -153,10 +149,8 @@ MQLv2: from $customers
 HQL:   from Customer c where c.age * 2 > 55
 
 MQLv2: from $customers
-       | match ((age * 2) > $p0)
+       | match ((age * 2) > 55)
        | format {_id: _id, active: active, age: age, name: name}
-
-       let: {p0: 55}
 ```
 
 ---
@@ -167,10 +161,8 @@ MQLv2: from $customers
 HQL:   from Order o where year(o.orderDate) = 2023
 
 MQLv2: from $orders
-       | match (year(orderDate) == $p0)
+       | match (year(orderDate) == 2023)
        | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}
-
-       let: {p0: 2023}
 ```
 
 ---
@@ -208,10 +200,8 @@ MQLv2: from $customers
 HQL:   select c.age * 2 from Customer c where c.id = 1
 
 MQLv2: from $customers
-       | match (_id == $p0)
+       | match (_id == 1)
        | format {_f0: (age * 2)}
-
-       let: {p0: 1}
 ```
 
 ---
@@ -239,10 +229,8 @@ Date-part functions (`year`, `month`, `day`, `hour`, `minute`) return
 HQL:   select year(o.orderDate) from Order o where o.id = 10
 
 MQLv2: from $orders
-       | match (_id == $p0)
+       | match (_id == 10)
        | format {_f0: year(orderDate)}
-
-       let: {p0: 10}
 ```
 
 Supported units: `year`, `month`, `day` → `dayOfMonth`, `dayOfYear`,
@@ -277,11 +265,9 @@ HQL:   select distinct c
 
 MQLv2: from c1_0=$customers
        | join o1_0=$orders (c1_0._id == o1_0.customerId)
-       | match (o1_0.total > $p0)
+       | match (o1_0.total > 100)
        | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}
        | distinct
-
-       let: {p0: 100}
 ```
 
 ---
@@ -359,9 +345,10 @@ Both queries below return zero rows regardless of the data.
 HQL:   from Order o where o.status = :status   [:status = null]
 
 MQLv2: from $orders
-       | match (status == null)
+       | match (status == $p0)
        | format {…}
 
+       let: {p0: null}
        → 0 rows (null == null is null, not true)
 ```
 
@@ -369,9 +356,10 @@ MQLv2: from $orders
 HQL:   from Order o where o.status != :status   [:status = null]
 
 MQLv2: from $orders
-       | match (status != null)
+       | match (status != $p0)
        | format {…}
 
+       let: {p0: null}
        → 0 rows ("shipped" != null is null, not true)
 ```
 
@@ -413,11 +401,9 @@ HQL:   select o.status, count(o.id), sum(o.total), min(o.total), max(o.total)
        from Order o where o.status = 'shipped' group by o.status
 
 MQLv2: from $orders
-       | match (status == $p0)
+       | match (status == "shipped")
        | group (status=status) (_agg0=count($->_id), _agg1=sum($->total), _agg2=min($->total), _agg3=max($->total))
        | format {status: status, _f0: _agg0, _f1: _agg1, _f2: _agg2, _f3: _agg3}
-
-       let: {p0: "shipped"}
 ```
 
 ---
@@ -446,19 +432,20 @@ HQL:   select o.status, count(o.id) from Order o
 
 MQLv2: from $orders
        | group (status=status) (_agg0=count($->_id))
-       | match (_agg0 > $p0)
+       | match (_agg0 > 1)
        | format {status: status, _f0: _agg0}
-
-       let: {p0: 1}
 ```
 
 ---
 
 ## Parameter binding
 
-Parameters are passed to the server via the `let` document. The MQLv2 text
-references them as `$p0`, `$p1`, …; the server resolves each variable from
-the corresponding `let` entry.
+HQL named/positional parameters (`:name`, `?1`) are passed to the server via
+the `let` document. The MQLv2 text references them as `$p0`, `$p1`, …; the
+server resolves each variable from the corresponding `let` entry.
+
+HQL literal values (`25`, `'shipped'`, `true`, etc.) are rendered **inline**
+in the MQLv2 text and do not appear in the `let` document.
 
 | Java type | Example value | MQLv2 reference | let value |
 |---|---|---|---|
