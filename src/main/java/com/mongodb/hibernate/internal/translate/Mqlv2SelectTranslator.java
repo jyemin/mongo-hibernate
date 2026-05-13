@@ -806,21 +806,27 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             }
         } else if (expression instanceof SelectStatement ss) {
             var innerSpec = ss.getQueryPart().getFirstQuerySpec();
-            // Only single-column aggregate subqueries are supported
             var selections = innerSpec.getSelectClause().getSqlSelections().stream()
                     .filter(s -> !s.isVirtual())
                     .toList();
-            if (selections.size() != 1 || !isAggregateFunction(selections.get(0).getExpression())) {
+            if (selections.size() != 1) {
                 throw new FeatureNotSupportedException(
-                        "Scalar subquery in SELECT must project a single aggregate function");
+                        "Scalar subquery in SELECT must project exactly one column");
             }
-            var aggFn = (SelfRenderingFunctionSqlAstExpression) selections.get(0).getExpression();
+            var selExpr = selections.get(0).getExpression();
+            // Only count() is supported: MQLv2 count(pipeline) returns the pipeline cardinality.
+            // Other aggregates (sum, avg, min, max) have no equivalent pipeline-argument form in MQLv2.
+            if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression fn)
+                    || !"count".equals(fn.getFunctionName())) {
+                throw new FeatureNotSupportedException(
+                        "Scalar subquery in SELECT must use count(); other aggregates are not supported");
+            }
             var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
             var outerQualifiers = collectOuterQualifiers(outerSpec);
             var correlatedBindings = new LinkedHashMap<String, String>();
             var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
             var wrapped = wrapWithLet(innerPipeline, correlatedBindings);
-            sb.append(aggFn.getFunctionName()).append("(").append(wrapped).append(")");
+            sb.append("count(").append(wrapped).append(")");
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported expression: " + expression.getClass().getSimpleName());
