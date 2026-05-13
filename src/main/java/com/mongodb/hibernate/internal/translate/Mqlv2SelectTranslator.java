@@ -137,6 +137,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     private boolean hasJoins = false;
     // Maps aggregate signature (e.g. "sum:total") → _aggN name; populated during GROUP BY translation
     private final Map<String, String> aggSignatureToName = new LinkedHashMap<>();
+    // Intentionally global (not reset per subquery branch): $__vN names only need to be unique across
+    // the whole translation, and sharing the counter avoids collisions between nested correlated bindings.
     private int correlatedVarCounter = 0;
 
     Mqlv2SelectTranslator(SessionFactoryImplementor sessionFactory, SelectStatement selectStatement) {
