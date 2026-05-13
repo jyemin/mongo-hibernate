@@ -198,6 +198,18 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         });
     }
 
+    @Test
+    void testSetMaxResults() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery("from Customer c order by c.age desc", Customer.class)
+                    .setMaxResults(2)
+                    .getResultList();
+            assertThat(result).hasSize(2);
+            // top 2 by age desc: Carol (35), Alice (30)
+            assertThat(result.stream().map(c -> c.name)).containsExactly("Carol", "Alice");
+        });
+    }
+
     // ---- Task 9: IS NULL / IS NOT NULL ----
 
     @Test

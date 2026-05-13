@@ -21,6 +21,8 @@ import static java.util.Collections.emptyMap;
 import static org.hibernate.sql.exec.spi.JdbcLockStrategy.NONE;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -112,9 +114,12 @@ import org.hibernate.sql.ast.tree.select.SelectStatement;
 import org.hibernate.sql.ast.tree.select.SortSpecification;
 import org.hibernate.sql.ast.tree.update.Assignment;
 import org.hibernate.sql.ast.tree.update.UpdateStatement;
+import org.hibernate.sql.exec.internal.AbstractJdbcParameter;
+import org.hibernate.sql.exec.spi.ExecutionContext;
 import org.hibernate.sql.exec.spi.JdbcOperationQuerySelect;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 import org.hibernate.sql.exec.spi.JdbcParameterBindings;
+import org.hibernate.type.BasicType;
 import org.hibernate.sql.model.ast.ColumnWriteFragment;
 import org.hibernate.sql.model.internal.TableDeleteCustomSql;
 import org.hibernate.sql.model.internal.TableDeleteStandard;
@@ -385,14 +390,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             throw new FeatureNotSupportedException("OFFSET is not supported in MQLv2");
         }
         if (limit != null && limit.getMaxRows() != null) {
-            // MQLv2's limit stage requires a literal integer — it does not accept variable references ($pN).
-            // The driver iterable also has no .limit() method. Hibernate caches translated queries and reuses
-            // the same result for different setMaxResults() values, so baking a literal here would silently
-            // apply the wrong limit on cache hits. Use the HQL limit clause instead.
-            throw new FeatureNotSupportedException(
-                    "setMaxResults() is not supported in MQLv2 mode; use the HQL limit clause instead");
+            var basicIntegerType = sessionFactory.getTypeConfiguration().getBasicTypeForJavaType(Integer.class);
+            sb.append(" | limit ");
+            appendExprText(sb, new LimitJdbcParameter(basicIntegerType));
+        } else {
+            appendLimitToBuilder(sb, querySpec);
         }
-        appendLimitToBuilder(sb, querySpec);
     }
 
     private void appendLimitToBuilder(StringBuilder sb, QuerySpec querySpec) {
@@ -1441,6 +1444,30 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     @Override
     public void visitColumnWriteFragment(ColumnWriteFragment columnWriteFragment) {
         throw new FeatureNotSupportedException();
+    }
+
+    private static final class LimitJdbcParameter extends AbstractJdbcParameter {
+
+        LimitJdbcParameter(BasicType<Integer> type) {
+            super(type);
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public void bindParameterValue(
+                PreparedStatement statement,
+                int startPosition,
+                JdbcParameterBindings jdbcParamBindings,
+                ExecutionContext executionContext)
+                throws SQLException {
+            getJdbcMapping()
+                    .getJdbcValueBinder()
+                    .bind(
+                            statement,
+                            executionContext.getQueryOptions().getLimit().getMaxRows(),
+                            startPosition,
+                            executionContext.getSession());
+        }
     }
 
 }

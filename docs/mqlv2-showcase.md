@@ -619,7 +619,6 @@ MQLv2: from $customers | match (active == true) | format {_id: _id, active: acti
 ## Known limitations (current scope)
 
 - OFFSET / skip — MQLv2 has no skip stage; throws `FeatureNotSupportedException`
-- `setMaxResults()` on the JDBC `Statement` — use the HQL `limit` clause instead; throws `FeatureNotSupportedException`
 - Scalar aggregates (no GROUP BY) — throws `FeatureNotSupportedException`
 - HAVING referencing aggregates not in SELECT — throws `FeatureNotSupportedException`
 - INTERSECT ALL / EXCEPT ALL — throws `FeatureNotSupportedException`
