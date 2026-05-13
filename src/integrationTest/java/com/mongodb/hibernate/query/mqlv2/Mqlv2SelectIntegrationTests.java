@@ -550,12 +550,12 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     @Test
     void testInList() {
         sessionFactoryScope.inSession(session -> {
-            // ages 25, 30, 35 → all three customers match
+            // ages 25 and 30 → Alice(30) and Bob(25) match; Carol(35) does not
             var result = session.createSelectionQuery(
-                            "from Customer c where c.age in (25, 30, 35)", Customer.class)
+                            "from Customer c where c.age in (25, 30)", Customer.class)
                     .getResultList();
             assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+                    .containsExactlyInAnyOrder("Alice", "Bob");
         });
     }
 
