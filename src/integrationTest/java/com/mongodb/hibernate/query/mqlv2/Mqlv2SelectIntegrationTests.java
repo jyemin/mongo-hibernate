@@ -189,4 +189,41 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result.stream().map(c -> c.name)).containsExactly("Bob", "Alice", "Carol");
         });
     }
+    // ---- Task 8: JOIN queries ----
+
+    @Test
+    void testInnerJoin() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select distinct c from Customer c join Order o on c.id = o.customerId",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).hasSize(3);
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+        });
+    }
+
+    @Test
+    void testInnerJoinWithWhere() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select distinct c from Customer c join Order o on c.id = o.customerId where o.total > 100",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
+        });
+    }
+
+    @Test
+    void testLeftOuterJoin() {
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select distinct c from Customer c left join Order o on c.id = o.customerId",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).hasSize(3);
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+        });
+    }
+
 }

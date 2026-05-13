@@ -178,6 +178,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         appendSort(sb, querySpec);
         appendLimit(sb, querySpec, queryOptions);
         var fieldNames = appendFormat(sb, querySpec.getSelectClause());
+        if (querySpec.getSelectClause().isDistinct()) {
+            sb.append(" | distinct");
+        }
 
         var mqlv2Text = sb.toString();
         var fieldNamesArray = new BsonArray(fieldNames.stream().map(BsonString::new).toList());
@@ -195,11 +198,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     private void appendFrom(StringBuilder sb, TableGroup root) {
-        var collName = ((NamedTableReference) root.getPrimaryTableReference()).getTableExpression();
+        var ntr = (NamedTableReference) root.getPrimaryTableReference();
+        var collName = ntr.getTableExpression();
         if (!hasJoins) {
             sb.append("from $").append(collName);
         } else {
-            var alias = root.getGroupAlias();
+            var alias = ntr.getIdentificationVariable();
             sb.append("from ").append(alias).append("=$").append(collName);
         }
     }
@@ -207,9 +211,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     private void appendJoins(StringBuilder sb, TableGroup root) {
         for (var tgj : root.getTableGroupJoins()) {
             var joinedGroup = tgj.getJoinedGroup();
-            var joinCollName =
-                    ((NamedTableReference) joinedGroup.getPrimaryTableReference()).getTableExpression();
-            var joinAlias = joinedGroup.getGroupAlias();
+            var joinNtr = (NamedTableReference) joinedGroup.getPrimaryTableReference();
+            var joinCollName = joinNtr.getTableExpression();
+            var joinAlias = joinNtr.getIdentificationVariable();
             var joinType = tgj.getJoinType();
             if (joinType == SqlAstJoinType.INNER) {
                 sb.append(" | join ");
@@ -281,13 +285,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             } else {
                 throw new FeatureNotSupportedException("Only column references are supported in SELECT");
             }
-            var outputName = (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty())
-                    ? cr.getQualifier() + "." + cr.getColumnExpression()
-                    : cr.getColumnExpression();
-            fieldNames.add(outputName);
+            var col = cr.getColumnExpression();
+            fieldNames.add(col);
             var valSb = new StringBuilder();
             appendExprText(valSb, cr);
-            formatParts.add(outputName + ": " + valSb);
+            formatParts.add(col + ": " + valSb);
         }
 
         sb.append(" | format {");
