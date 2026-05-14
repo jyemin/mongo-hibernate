@@ -358,7 +358,7 @@ HQL:   select distinct c
        from Customer c join Order o on c.id = o.customerId
 
 MQLv2: from c1_0=$customers
-       | join o1_0=$orders ((c1_0._id == o1_0.customerId))
+       | join o1_0=$orders (c1_0._id == o1_0.customerId)
        | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}
        | distinct
 ```
@@ -373,7 +373,7 @@ HQL:   select distinct c
        where o.total > 100
 
 MQLv2: from c1_0=$customers
-       | join o1_0=$orders ((c1_0._id == o1_0.customerId))
+       | join o1_0=$orders (c1_0._id == o1_0.customerId)
        | match (o1_0.total > 100)
        | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}
        | distinct
@@ -388,7 +388,7 @@ HQL:   select distinct c
        from Customer c left join Order o on c.id = o.customerId
 
 MQLv2: from c1_0=$customers
-       | join leftOuter o1_0=$orders ((c1_0._id == o1_0.customerId))
+       | join leftOuter o1_0=$orders (c1_0._id == o1_0.customerId)
        | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}
        | distinct
 ```
@@ -402,7 +402,7 @@ HQL:   select distinct o
        from Customer c right join Order o on c.id = o.customerId
 
 MQLv2: from c1_0=$customers
-       | join rightOuter o1_0=$orders ((c1_0._id == o1_0.customerId))
+       | join rightOuter o1_0=$orders (c1_0._id == o1_0.customerId)
        | format {_id: o1_0._id, customerId: o1_0.customerId, orderDate: o1_0.orderDate, status: o1_0.status, total: o1_0.total}
        | distinct
 ```
@@ -416,7 +416,7 @@ HQL:   select distinct c
        from Customer c full join Order o on c.id = o.customerId
 
 MQLv2: from c1_0=$customers
-       | join fullOuter o1_0=$orders ((c1_0._id == o1_0.customerId))
+       | join fullOuter o1_0=$orders (c1_0._id == o1_0.customerId)
        | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}
        | distinct
 ```

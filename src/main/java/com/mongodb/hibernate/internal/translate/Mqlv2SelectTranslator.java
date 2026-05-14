@@ -348,12 +348,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                 default -> throw new FeatureNotSupportedException("Unsupported join type: " + joinType);
             };
             sb.append(joinKeyword);
-            sb.append(joinAlias).append("=$").append(joinCollName).append(" (");
+            sb.append(joinAlias).append("=$").append(joinCollName);
             var joinPredicate = tgj.getPredicate();
             if (joinPredicate != null) {
+                sb.append(" ");
                 appendPredicateText(sb, joinPredicate);
             }
-            sb.append(")");
         }
     }
 

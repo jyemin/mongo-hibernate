@@ -195,33 +195,33 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
 
             // INNER JOIN — join condition gets double parens from the translator
             check(soft, "select distinct c from Customer c join Order o on c.id = o.customerId",
-                    "from c1_0=$customers | join o1_0=$orders ((c1_0._id == o1_0.customerId))"
+                    "from c1_0=$customers | join o1_0=$orders (c1_0._id == o1_0.customerId)"
                             + " | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}"
                             + " | distinct");
 
             // INNER JOIN with WHERE
             check(soft,
                     "select distinct c from Customer c join Order o on c.id = o.customerId where o.total > 100",
-                    "from c1_0=$customers | join o1_0=$orders ((c1_0._id == o1_0.customerId))"
+                    "from c1_0=$customers | join o1_0=$orders (c1_0._id == o1_0.customerId)"
                             + " | match (o1_0.total > 100)"
                             + " | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}"
                             + " | distinct");
 
             // LEFT OUTER JOIN
             check(soft, "select distinct c from Customer c left join Order o on c.id = o.customerId",
-                    "from c1_0=$customers | join leftOuter o1_0=$orders ((c1_0._id == o1_0.customerId))"
+                    "from c1_0=$customers | join leftOuter o1_0=$orders (c1_0._id == o1_0.customerId)"
                             + " | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}"
                             + " | distinct");
 
             // RIGHT OUTER JOIN
             check(soft, "select distinct o from Customer c right join Order o on c.id = o.customerId",
-                    "from c1_0=$customers | join rightOuter o1_0=$orders ((c1_0._id == o1_0.customerId))"
+                    "from c1_0=$customers | join rightOuter o1_0=$orders (c1_0._id == o1_0.customerId)"
                             + " | format {_id: o1_0._id, customerId: o1_0.customerId, orderDate: o1_0.orderDate, status: o1_0.status, total: o1_0.total}"
                             + " | distinct");
 
             // FULL OUTER JOIN
             check(soft, "select distinct c from Customer c full join Order o on c.id = o.customerId",
-                    "from c1_0=$customers | join fullOuter o1_0=$orders ((c1_0._id == o1_0.customerId))"
+                    "from c1_0=$customers | join fullOuter o1_0=$orders (c1_0._id == o1_0.customerId)"
                             + " | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}"
                             + " | distinct");
 
