@@ -192,30 +192,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         List<String> fieldNames;
 
         if (queryPart instanceof QuerySpec querySpec) {
-            var root = querySpec.getFromClause().getRoots().get(0);
-            hasJoins = !root.getTableGroupJoins().isEmpty();
-            var groupByExprs = querySpec.getGroupByClauseExpressions();
-            var sb = new StringBuilder();
-            appendFrom(sb, root);
-            appendJoins(sb, root);
-            appendMatch(sb, querySpec);
-            List<@Nullable String> aggNames = null;
-            if (!groupByExprs.isEmpty()) {
-                aggNames = buildAggNames(querySpec.getSelectClause());
-                var havingOnlyAggs = collectHavingOnlyAggs(querySpec.getHavingClauseRestrictions());
-                appendGroup(sb, groupByExprs, querySpec.getSelectClause(), aggNames, havingOnlyAggs);
-                appendHaving(sb, querySpec);
-            } else if (selectHasAggregates(querySpec.getSelectClause())) {
-                aggNames = buildAggNames(querySpec.getSelectClause());
-                appendScalarAgg(sb, querySpec.getSelectClause(), aggNames);
-            }
-            appendSort(sb, querySpec);
-            appendLimit(sb, querySpec, queryOptions);
-            fieldNames = appendFormat(sb, querySpec.getSelectClause(), aggNames);
-            if (querySpec.getSelectClause().isDistinct()) {
-                sb.append(" | distinct");
-            }
-            mqlv2Text = sb.toString();
+            var specTranslation = buildQuerySpecTranslation(querySpec, queryOptions);
+            mqlv2Text = specTranslation.mqlv2();
+            fieldNames = specTranslation.fieldNames();
         } else if (queryPart instanceof QueryGroup queryGroup) {
             var specTranslation = translateQueryGroupToMqlv2(queryGroup);
             mqlv2Text = specTranslation.mqlv2();
@@ -245,11 +224,27 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     private SpecTranslation translateQuerySpecToMqlv2(QuerySpec querySpec) {
         var savedHasJoins = this.hasJoins;
         var savedAggMap = new LinkedHashMap<>(this.aggSignatureToName);
-        this.hasJoins = !querySpec.getFromClause().getRoots().get(0).getTableGroupJoins().isEmpty();
         this.aggSignatureToName.clear();
+        try {
+            return buildQuerySpecTranslation(querySpec, null);
+        } finally {
+            this.hasJoins = savedHasJoins;
+            this.aggSignatureToName.clear();
+            this.aggSignatureToName.putAll(savedAggMap);
+        }
+    }
 
+    /**
+     * Builds the MQLv2 pipeline text and field-name list for a single QuerySpec.
+     * Pass non-null {@code queryOptions} at the top level to honour dynamic first/max rows;
+     * pass {@code null} for sub-queries (UNION members, correlated sub-queries) where only
+     * the HQL literal LIMIT clause applies.
+     */
+    private SpecTranslation buildQuerySpecTranslation(
+            QuerySpec querySpec, @Nullable QueryOptions queryOptions) {
         var sb = new StringBuilder();
         var root = querySpec.getFromClause().getRoots().get(0);
+        this.hasJoins = !root.getTableGroupJoins().isEmpty();
         appendFrom(sb, root);
         appendJoins(sb, root);
         appendMatch(sb, querySpec);
@@ -264,15 +259,15 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             appendScalarAgg(sb, querySpec.getSelectClause(), aggNames);
         }
         appendSort(sb, querySpec);
-        appendLimitToBuilder(sb, querySpec);
+        if (queryOptions != null) {
+            appendLimit(sb, querySpec, queryOptions);
+        } else {
+            appendLimitToBuilder(sb, querySpec);
+        }
         var fieldNames = appendFormat(sb, querySpec.getSelectClause(), aggNames);
         if (querySpec.getSelectClause().isDistinct()) {
             sb.append(" | distinct");
         }
-
-        this.hasJoins = savedHasJoins;
-        this.aggSignatureToName.clear();
-        this.aggSignatureToName.putAll(savedAggMap);
         return new SpecTranslation(sb.toString(), fieldNames);
     }
 
@@ -481,6 +476,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             sb.append("(");
             appendExprTextCorrelated(sb, bp.getExpression(), outerQualifiers, correlatedBindings);
             sb.append(bp.isNegated() ? " == false)" : " == true)");
+        } else if (predicate instanceof GroupedPredicate gp) {
+            appendPredicateTextCorrelated(sb, gp.getSubPredicate(), outerQualifiers, correlatedBindings);
         } else if (predicate instanceof InListPredicate ilp) {
             var exprs = ilp.getListExpressions();
             var negated = ilp.isNegated();
@@ -529,14 +526,15 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     /**
-     * Wraps innerPipeline with let bindings for all entries in correlatedBindings.
+     * Wraps innerPipeline with let bindings for all entries in correlatedBindings (EXISTS pattern).
      * If correlatedBindings is empty, returns "(innerPipeline)" without a let clause.
      *
-     * <p>correlatedBindings maps "qualifier.column" → "$__vN". The outer query is always a
-     * simple (non-join) scan, so the binding value uses just the unqualified column name.
+     * <p>correlatedBindings maps "qualifier.column" → "$__vN". When the outer query is a simple
+     * scan ({@code hasJoins=false}) the binding value is the unqualified column name; when the
+     * outer query has joins ({@code hasJoins=true}) the full "qualifier.column" path is used so
+     * the reference is unambiguous in MQLv2's aliased-join document context.
      */
-    private static String wrapWithLet(
-            String innerPipeline, Map<String, String> correlatedBindings) {
+    private String wrapWithLet(String innerPipeline, Map<String, String> correlatedBindings) {
         if (correlatedBindings.isEmpty()) {
             return "(" + innerPipeline + ")";
         }
@@ -545,13 +543,37 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         for (var entry : correlatedBindings.entrySet()) {
             if (!first) sb.append(", ");
             first = false;
-            // entry.getKey() = "qualifier.column" → use unqualified column name as the outer field ref
-            var dotIdx = entry.getKey().indexOf('.');
-            var fieldName = dotIdx >= 0 ? entry.getKey().substring(dotIdx + 1) : entry.getKey();
-            sb.append(entry.getValue()).append(" = ").append(fieldName);
+            sb.append(entry.getValue()).append(" = ").append(correlatedFieldExpr(entry.getKey()));
         }
         sb.append(" in (").append(innerPipeline).append(")");
         return sb.toString();
+    }
+
+    /**
+     * Wraps innerPipeline with a head binding followed by correlated bindings (IN/ANY/ALL pattern).
+     * Produces: {@code let headVarName = headValueText[, $__vN = field, ...] in (innerPipeline)}.
+     */
+    private String wrapWithLet(
+            String innerPipeline, String headVarName, String headValueText,
+            Map<String, String> correlatedBindings) {
+        var sb = new StringBuilder("let ").append(headVarName).append(" = ").append(headValueText);
+        for (var entry : correlatedBindings.entrySet()) {
+            sb.append(", ").append(entry.getValue()).append(" = ").append(correlatedFieldExpr(entry.getKey()));
+        }
+        sb.append(" in (").append(innerPipeline).append(")");
+        return sb.toString();
+    }
+
+    /**
+     * Returns the MQLv2 field expression for a correlated outer binding key ("qualifier.column").
+     * Uses the qualified form in a join context so the reference is unambiguous.
+     */
+    private String correlatedFieldExpr(String qualifiedKey) {
+        if (hasJoins) {
+            return qualifiedKey;
+        }
+        var dotIdx = qualifiedKey.indexOf('.');
+        return dotIdx >= 0 ? qualifiedKey.substring(dotIdx + 1) : qualifiedKey;
     }
 
     private static Set<String> collectOuterQualifiers(QuerySpec outerSpec) {
@@ -730,9 +752,32 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             if (!(args.get(0) instanceof Expression argExpr)) {
                 throw new FeatureNotSupportedException(name + "() requires a field argument in MQLv2");
             }
-            sb.append("$->").append(simpleColumnName(argExpr));
+            sb.append("$->");
+            appendAggFieldRef(sb, argExpr);
         }
         sb.append(")");
+    }
+
+    /**
+     * Appends the field reference for an aggregate function argument using {@code ->} at every
+     * level so that MQLv2's auto-mapping over the group sequence is preserved end-to-end.
+     * Without joins: emits {@code column}. With joins: emits {@code qualifier->column}.
+     */
+    private void appendAggFieldRef(StringBuilder sb, Expression expr) {
+        ColumnReference cr;
+        if (expr instanceof ColumnReference c) {
+            cr = c;
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            cr = bvpi.getColumnReference();
+        } else {
+            throw new FeatureNotSupportedException(
+                    "Expected column reference in aggregate; got: " + expr.getClass().getSimpleName());
+        }
+        if (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty()) {
+            sb.append(cr.getQualifier()).append("->").append(cr.getColumnExpression());
+        } else {
+            sb.append(cr.getColumnExpression());
+        }
     }
 
     private static String simpleColumnName(Expression expr) {
@@ -765,19 +810,15 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                 valueText = aggName;
             } else if (selExpr instanceof ColumnReference cr) {
                 key = cr.getColumnExpression();
-                var valSb = new StringBuilder();
-                appendExprText(valSb, selExpr);
-                valueText = valSb.toString();
+                // After a group stage, the key field is named by simpleColumnName (= key),
+                // so reference it directly rather than via the pre-group qualified path.
+                valueText = aggNames != null ? key : appendExprTextToString(selExpr);
             } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
                 key = bvpi.getColumnReference().getColumnExpression();
-                var valSb = new StringBuilder();
-                appendExprText(valSb, selExpr);
-                valueText = valSb.toString();
+                valueText = aggNames != null ? key : appendExprTextToString(selExpr);
             } else {
                 key = "_f" + syntheticIdx++;
-                var valSb = new StringBuilder();
-                appendExprText(valSb, selExpr);
-                valueText = valSb.toString();
+                valueText = appendExprTextToString(selExpr);
             }
 
             fieldNames.add(key);
@@ -830,17 +871,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         }
         innerPipeline = innerPipeline + " | match (" + projectedColName + " " + matchOp + " " + testVarName + ")";
 
-        var letSb = new StringBuilder("let ").append(testVarName).append(" = ");
-        appendExprText(letSb, cp.getLeftHandExpression());
-        for (var entry : correlatedBindings.entrySet()) {
-            letSb.append(", ").append(entry.getValue()).append(" = ");
-            var key = entry.getKey();
-            var dotIdx = key.indexOf('.');
-            letSb.append(dotIdx >= 0 ? key.substring(dotIdx + 1) : key);
-        }
-        letSb.append(" in (").append(innerPipeline).append(")");
-
-        sb.append("(count(").append(letSb).append(")").append(countCmp);
+        var headSb = new StringBuilder();
+        appendExprText(headSb, cp.getLeftHandExpression());
+        var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
+        sb.append("(count(").append(letExpr).append(")").append(countCmp);
     }
 
     private void appendPredicateText(StringBuilder sb, Predicate predicate) {
@@ -919,20 +953,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             // Add match stage: projected column == test variable
             innerPipeline = innerPipeline + " | match (" + projectedColName + " == " + testVarName + ")";
 
-            // Build the let expression manually:
-            // first binding = test expression, then any correlated outer bindings from appendQuerySpecPipeline
-            var letSb = new StringBuilder("let ").append(testVarName).append(" = ");
-            appendExprText(letSb, isp.getTestExpression());
-            for (var entry : correlatedBindings.entrySet()) {
-                letSb.append(", ").append(entry.getValue()).append(" = ");
-                // strip qualifier prefix (same as wrapWithLet)
-                var key = entry.getKey();
-                var dotIdx = key.indexOf('.');
-                letSb.append(dotIdx >= 0 ? key.substring(dotIdx + 1) : key);
-            }
-            letSb.append(" in (").append(innerPipeline).append(")");
-
-            var countExpr = "count(" + letSb + ")";
+            var headSb = new StringBuilder();
+            appendExprText(headSb, isp.getTestExpression());
+            var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
+            var countExpr = "count(" + letExpr + ")";
             if (isp.isNegated()) {
                 sb.append("(").append(countExpr).append(" == 0)");
             } else {
@@ -951,6 +975,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             throw new FeatureNotSupportedException(
                     "Unsupported predicate: " + predicate.getClass().getSimpleName());
         }
+    }
+
+    private String appendExprTextToString(Expression expression) {
+        var sb = new StringBuilder();
+        appendExprText(sb, expression);
+        return sb.toString();
     }
 
     private void appendExprText(StringBuilder sb, Expression expression) {

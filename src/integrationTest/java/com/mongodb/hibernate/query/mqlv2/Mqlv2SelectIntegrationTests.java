@@ -37,6 +37,7 @@ import org.hibernate.testing.orm.junit.SessionFactoryScope;
 import org.hibernate.testing.orm.junit.SessionFactoryScopeAware;
 import org.hibernate.testing.orm.junit.Setting;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -929,6 +930,95 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                             Customer.class)
                     .getResultList())
                     .isInstanceOf(FeatureNotSupportedException.class);
+        });
+    }
+
+    // ---- Bug regression tests ----
+
+    @Test
+    void testGroupByCountWithJoinOnSharedColumnName() {
+        // Bug: appendGroup uses simpleColumnName for GROUP BY keys and appendAggFunctionText
+        // uses simpleColumnName for agg arguments — both strip the table qualifier.
+        // Customer.id and Order.id share the unqualified name "id", so in a JOIN + GROUP BY
+        // query the translator emits "group (id=id) (_agg0=count($->id))" where both "id"
+        // references are ambiguous, producing wrong grouping or wrong counts.
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "select c.id, count(o.id)"
+                                    + " from Customer c join Order o on c.id = o.customerId"
+                                    + " group by c.id",
+                            Object[].class)
+                    .getResultList();
+            // Alice (c.id=1): orders 10 and 11 → count=2
+            // Bob   (c.id=2): order 12          → count=1
+            // Carol (c.id=3): order 13          → count=1
+            assertThat(result).hasSize(3);
+            assertThat(result)
+                    .extracting(r -> r[0], r -> r[1])
+                    .containsExactlyInAnyOrder(
+                            tuple(1, 2L),
+                            tuple(2, 1L),
+                            tuple(3, 1L));
+        });
+    }
+
+    @Test
+    void testCorrelatedSubqueryWithParenthesizedPredicate() {
+        sessionFactoryScope.inSession(session -> {
+            // EXISTS with explicitly grouped conjunction in the correlated subquery WHERE.
+            // Orders with total > 100: order 10 (cust=1, Alice), order 12 (cust=2, Bob).
+            var result = session.createSelectionQuery(
+                            "from Customer c"
+                                    + " where exists ("
+                                    + "   select 1 from Order o"
+                                    + "   where (o.customerId = c.id and o.total > 100))",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Alice", "Bob");
+        });
+    }
+
+    @Disabled("Haskell parseString in Lexer.hs has no escape handling: \\\" terminates the string early")
+    @Test
+    void testStringLiteralWithEmbeddedDoubleQuote() {
+        // Bug: appendLiteralText correctly emits \" for embedded double-quote characters,
+        // but the Haskell parseString in Lexer.hs has no escape handling and terminates
+        // the string at the first " it encounters, producing a malformed MQLv2 query.
+        sessionFactoryScope.inTransaction(session ->
+                session.persist(new Customer(4, "Alice \"Ace\" Smith", 28, true)));
+        sessionFactoryScope.inSession(session -> {
+            var result = session.createSelectionQuery(
+                            "from Customer c where c.name = 'Alice \"Ace\" Smith'",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result).hasSize(1);
+            assertThat(result.get(0).name).isEqualTo("Alice \"Ace\" Smith");
+        });
+    }
+
+    @Test
+    void testCorrelatedSubqueryWithOuterJoin() {
+        sessionFactoryScope.inSession(session -> {
+            // Outer query: Customer JOIN Order (both tables have a column named "id").
+            // Correlated subquery references c.id. With the bug the let-binding emits
+            // "$__v0 = id" which, in MQLv2's aliased-join context, may resolve to the
+            // wrong "id" (Order.id values 10-13 instead of Customer.id values 1-3),
+            // causing the EXISTS to match nothing and the result to be empty.
+            //
+            // Alice (c.id=1) has order 10 (total=150 > 100) → EXISTS ✓
+            // Bob   (c.id=2) has order 12 (total=200 > 100) → EXISTS ✓
+            // Carol (c.id=3) has only order 13 (total=50)   → EXISTS ✗
+            var result = session.createSelectionQuery(
+                            "select distinct c"
+                                    + " from Customer c join Order o on c.id = o.customerId"
+                                    + " where exists ("
+                                    + "   select 1 from Order o2"
+                                    + "   where o2.customerId = c.id and o2.total > 100)",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name))
+                    .containsExactlyInAnyOrder("Alice", "Bob");
         });
     }
 

@@ -318,7 +318,7 @@ MQLv2: from $customers
 ### SELECT — arithmetic with parameter
 
 ```
-HQL:   select c.age + :bonus from Customer c where c.id = 2   [:bonus = 5]
+HQL:   select c.age + :bonus from Customer c where c.id = :id   [:id = 2, :bonus = 5]
 
 MQLv2: from $customers
        | match (_id == $p0)
