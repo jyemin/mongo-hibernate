@@ -189,9 +189,9 @@ public final class ValueConversions {
         } else if (value instanceof BsonInt32 v) {
             return toDomainValue(v);
         } else if (value instanceof BsonInt64 v) {
-            return toDomainValue(v);
+            return v.longValue();
         } else if (value instanceof BsonDouble v) {
-            return toDomainValue(v);
+            return v.getValue();
         } else if (value instanceof BsonDecimal128 v) {
             return toDomainValue(v);
         } else if (value instanceof BsonString v) {
