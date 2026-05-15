@@ -44,7 +44,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @DomainModel(
         annotatedClasses = {
             Mqlv2SelectIntegrationTests.Customer.class,
-            Mqlv2SelectIntegrationTests.Order.class
+            Mqlv2SelectIntegrationTests.Order.class,
+            Mqlv2SelectIntegrationTests.LineItem.class
         })
 @SessionFactory(exportSchema = false)
 @ServiceRegistry(settings = @Setting(name = DIALECT, value = "com.mongodb.hibernate.query.mqlv2.TestMqlv2Dialect"))
@@ -105,6 +106,26 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         }
     }
 
+    @Entity(name = "LineItem")
+    @Table(name = "lineitems")
+    static class LineItem {
+        @Id
+        int id;
+
+        int orderId;
+        int quantity;
+        String shipMode;
+
+        LineItem() {}
+
+        LineItem(int id, int orderId, int quantity, String shipMode) {
+            this.id = id;
+            this.orderId = orderId;
+            this.quantity = quantity;
+            this.shipMode = shipMode;
+        }
+    }
+
     // ---- Test data ----
 
     private static final List<Customer> CUSTOMERS = List.of(
@@ -118,11 +139,23 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             new Order(12, 2, 200.0, "shipped",   Instant.parse("2023-11-20T09:15:45Z")),
             new Order(13, 3, 50.0,  "cancelled", Instant.parse("2024-01-08T18:45:00Z")));
 
+    // Order 10 (Alice, shipped): items 1=AIR, 2=TRUCK
+    // Order 11 (Alice, pending): item 3=AIR  — pending, so won't satisfy o.status='shipped'
+    // Order 12 (Bob,   shipped): item 4=AIR
+    // Order 13 (Carol, cancelled): item 5=AIR — cancelled, so won't satisfy o.status='shipped'
+    private static final List<LineItem> LINE_ITEMS = List.of(
+            new LineItem(1, 10, 30, "AIR"),
+            new LineItem(2, 10, 10, "TRUCK"),
+            new LineItem(3, 11, 50, "AIR"),
+            new LineItem(4, 12,  5, "AIR"),
+            new LineItem(5, 13, 40, "AIR"));
+
     @BeforeEach
     void setUp() {
         sessionFactoryScope.inTransaction(session -> {
             CUSTOMERS.forEach(session::persist);
             ORDERS.forEach(session::persist);
+            LINE_ITEMS.forEach(session::persist);
         });
     }
 
@@ -435,6 +468,23 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).hasSize(4);
             assertThat(result.stream().map(o -> o.id)).containsExactlyInAnyOrder(10, 11, 12, 13);
+        });
+    }
+
+    @Test
+    void testThreeWayInnerJoin() {
+        sessionFactoryScope.inSession(session -> {
+            // Alice: order 10 (shipped) has AIR line item → matches
+            // Bob:   order 12 (shipped) has AIR line item → matches
+            // Carol: order 13 (cancelled) has AIR line item, but not shipped → no match
+            var result = session.createSelectionQuery(
+                            "select distinct c from Customer c"
+                                    + " join Order o on c.id = o.customerId"
+                                    + " join LineItem li on o.id = li.orderId"
+                                    + " where o.status = 'shipped' and li.shipMode = 'AIR'",
+                            Customer.class)
+                    .getResultList();
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
     }
 
@@ -942,7 +992,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         // Customer.id and Order.id share the unqualified name "id", so in a JOIN + GROUP BY
         // query the translator emits "group (id=id) (_agg0=count($->id))" where both "id"
         // references are ambiguous, producing wrong grouping or wrong counts.
-        sessionFactoryScope.inSession(session -> {
+         sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery(
                             "select c.id, count(o.id)"
                                     + " from Customer c join Order o on c.id = o.customerId"

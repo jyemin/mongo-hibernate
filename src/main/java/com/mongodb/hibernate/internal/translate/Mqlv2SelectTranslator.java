@@ -354,6 +354,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                 sb.append(" ");
                 appendPredicateText(sb, joinPredicate);
             }
+            appendJoins(sb, joinedGroup);
         }
     }
 
@@ -579,16 +580,17 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     private static Set<String> collectOuterQualifiers(QuerySpec outerSpec) {
         var result = new LinkedHashSet<String>();
         for (var root : outerSpec.getFromClause().getRoots()) {
-            var ntr = (NamedTableReference) root.getPrimaryTableReference();
-            var alias = ntr.getIdentificationVariable();
-            if (alias != null) result.add(alias);
-            for (var tgj : root.getTableGroupJoins()) {
-                var joinNtr = (NamedTableReference) tgj.getJoinedGroup().getPrimaryTableReference();
-                var joinAlias = joinNtr.getIdentificationVariable();
-                if (joinAlias != null) result.add(joinAlias);
-            }
+            collectGroupQualifiers(root, result);
         }
         return result;
+    }
+
+    private static void collectGroupQualifiers(TableGroup group, Set<String> result) {
+        var alias = ((NamedTableReference) group.getPrimaryTableReference()).getIdentificationVariable();
+        if (alias != null) result.add(alias);
+        for (var tgj : group.getTableGroupJoins()) {
+            collectGroupQualifiers(tgj.getJoinedGroup(), result);
+        }
     }
 
     private List<@Nullable String> buildAggNames(SelectClause selectClause) {
@@ -1168,12 +1170,15 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
 
     private static Set<String> collectAffectedTableNames(TableGroup root) {
         var names = new LinkedHashSet<String>();
-        names.add(((NamedTableReference) root.getPrimaryTableReference()).getTableExpression());
-        for (var tgj : root.getTableGroupJoins()) {
-            names.add(((NamedTableReference) tgj.getJoinedGroup().getPrimaryTableReference())
-                    .getTableExpression());
-        }
+        collectAffectedTableNamesRecursive(root, names);
         return names;
+    }
+
+    private static void collectAffectedTableNamesRecursive(TableGroup group, Set<String> names) {
+        names.add(((NamedTableReference) group.getPrimaryTableReference()).getTableExpression());
+        for (var tgj : group.getTableGroupJoins()) {
+            collectAffectedTableNamesRecursive(tgj.getJoinedGroup(), names);
+        }
     }
 
     // SqlAstWalker visitor methods — only the ones used above are implemented;
