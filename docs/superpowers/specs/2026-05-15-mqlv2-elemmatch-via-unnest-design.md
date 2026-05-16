@@ -45,6 +45,7 @@ Phase 0 wrote 13 diagnostic tests that exercise the AST machinery for every HQL 
 | `WHERE EXISTS (SELECT 1 FROM LATERAL unnest(…) t WHERE …)` | `SyntaxException` at `(` after `unnest` | Hibernate's HQL grammar does not accept `LATERAL unnest(…)` inside subqueries. **The original spec's main idiom is unbuildable**; use implicit collection-path form instead. |
 | `(SELECT count(*) FROM LATERAL unnest(…) t WHERE …)` in scalar SELECT | `SyntaxException` | Same reason. Phase 4 must use implicit collection-path. |
 | `FROM Item i JOIN i.tags t WHERE t > 0` (int[] scalar sugar) | Hibernate `SqmMappingModelHelper.resolveSqmPath` AssertionError | Scalar sugar form unusable; scalar arrays must use the explicit `lateral unnest(...)` form in Phase 3. |
+| `WHERE EXISTS (SELECT 1 FROM o.tags t WHERE t > 5)` (int[] scalar EXISTS) | Same Hibernate-internal AssertionError | **Scalar EXISTS form unusable.** Phase 2's elemMatch idiom works for STRUCT ARRAYS ONLY. For scalars use existing `array_contains` (value equality) or the JOIN+DISTINCT workaround for richer predicates. |
 
 **Prerequisites Phase 0 put in place that Phases 2-4 build on:**
 
@@ -64,13 +65,13 @@ The viable alternative is `@Embeddable @Struct(name = "…")` on the element cla
 
 ### In scope
 
-- HQL `WHERE EXISTS (SELECT 1 FROM o.array a WHERE <predicate>)` → MQLv2 `array any (<predicate>)` — the canonical `$elemMatch` analog with parent-cardinality preserved. Works for both struct and scalar arrays via the same HQL form.
+- HQL `WHERE EXISTS (SELECT 1 FROM o.array a WHERE <predicate>)` → MQLv2 `array any (<predicate>)` — the canonical `$elemMatch` analog with parent-cardinality preserved. **Struct arrays only.** Scalar arrays (`int[]`, `Collection<Integer>`, etc.) trigger a Hibernate-internal SQM-resolution AssertionError under this idiom; users targeting scalar arrays should use the existing `array_contains(o.array, value)` function (value-equality) or the Phase 3 JOIN+DISTINCT workaround for richer predicates.
 - HQL plural-attribute JOIN `FROM O o JOIN o.array a WHERE <predicate>` → MQLv2 `| unwind array | match (...)` — row-multiplying join semantics. Works for struct arrays (`Tag[]` with `@Embeddable @Struct(name=…)` on Tag). Scalar arrays (`int[]`) require the explicit `FROM O o JOIN LATERAL unnest(o.array) a ON 1=1` form because Hibernate's SQM resolution of basic-array aliases triggers an internal assertion under the sugar form (`SqmMappingModelHelper.resolveSqmPath`).
 - Projection of join-alias columns: `SELECT o.id, a.sku FROM O o JOIN o.array a`.
 - Aggregates over join-alias columns: `SELECT o.id, sum(a.qty) FROM O o JOIN o.array a GROUP BY o.id`.
 - `count(*)` scalar subqueries over a collection-valued path in SELECT lists: `SELECT o.id, (SELECT count(*) FROM o.array a WHERE …) FROM O o`.
 - Element values in IN/NOT-IN subqueries: `WHERE x IN (SELECT a.col FROM o.array a)`.
-- Both struct-array and scalar-array shapes for EXISTS, scalar subqueries, and IN subqueries. The HQL form is identical (implicit collection-path); the MQLv2 emission differs only in the inner column-reference rewrite (`$.<field>` for structs vs. `$` for scalars).
+- Struct-array shape for EXISTS. Both struct-array and scalar-array shapes for scalar subqueries (`(SELECT count(*) FROM o.array a …)`) and IN subqueries — those use the implicit-collection-path form too, but Phase 0 confirmed only the struct case for EXISTS. The MQLv2 emission for the supported scalar cases differs only in the inner column-reference rewrite (`$` for scalars vs. `$.<field>` for structs).
 - Nested EXISTS over array of docs each containing an array: `WHERE EXISTS (SELECT 1 FROM o.array a WHERE EXISTS (SELECT 1 FROM a.subarray b WHERE …))`. Translates to nested `any(...)`. The unnest-alias stack tracks the innermost element rebinding.
 - Correlation: inner predicates may reference outer-query columns through the existing `$__vN` `let`-binding mechanism. No new infrastructure.
 - `NOT EXISTS`, `NOT IN` — flow through existing negation handling with `(not ...)`.
@@ -81,6 +82,7 @@ The viable alternative is `@Embeddable @Struct(name = "…")` on the element cla
 - `@JdbcTypeCode(SqlTypes.JSON)` array storage. Storage uses `@Embeddable @Struct(name=…)` only.
 - `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` on the field — Phase 0 found this fails with *"No JdbcTypeConstructor registered for SqlTypes.STRUCT_ARRAY"* under MongoDialect. The struct nature must come from `@Struct` on the embeddable class, not from `@JdbcTypeCode` on the field.
 - The HQL `LATERAL unnest(…)` form inside EXISTS subqueries or scalar SELECT subqueries. Hibernate 7's HQL grammar rejects this; use the implicit collection-path form instead.
+- Scalar-array EXISTS (`WHERE EXISTS (SELECT 1 FROM o.scalarArray a …)`). Phase 0 confirmed this triggers a Hibernate-internal SQM AssertionError on `int[]`. The translator can't reach this case — Hibernate doesn't produce a usable AST. Users targeting scalar arrays use `array_contains` or Phase 3's JOIN+DISTINCT workaround.
 - Projecting join-alias fields from inside an EXISTS subquery. Throws with a message pointing to the JOIN form.
 - Non-count scalar aggregates over unnest (`(SELECT max(a.price) FROM o.array a)`). MQLv2 has no `max(pipeline)` / `sum(pipeline)` / `avg(pipeline)` / `min(pipeline)` form; only `count(pipeline)`. Throws with a documented reason; the feature lights up automatically if MQLv2 grows the missing forms upstream.
 - HQL `index()` over arrays. Orthogonal to elemMatch; defer.

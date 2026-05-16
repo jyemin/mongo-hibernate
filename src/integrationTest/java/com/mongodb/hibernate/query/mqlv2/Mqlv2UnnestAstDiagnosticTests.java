@@ -33,13 +33,13 @@ import org.hibernate.sql.ast.tree.predicate.Junction;
 import org.hibernate.sql.ast.tree.predicate.NegatedPredicate;
 import org.hibernate.sql.ast.tree.predicate.Predicate;
 import org.hibernate.sql.ast.tree.select.SelectStatement;
-import org.jspecify.annotations.Nullable;
 import org.hibernate.testing.orm.junit.DomainModel;
 import org.hibernate.testing.orm.junit.ServiceRegistry;
 import org.hibernate.testing.orm.junit.SessionFactory;
 import org.hibernate.testing.orm.junit.SessionFactoryScope;
 import org.hibernate.testing.orm.junit.SessionFactoryScopeAware;
 import org.hibernate.testing.orm.junit.Setting;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -120,8 +120,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
 
     @Test
     void structArrayJoinWithSimplePredicateProducesUnnest() {
-        var captured = captureFromHql(
-                "select i from Item i join lateral unnest(i.structTags) t on 1=1 where t.name = 'x'");
+        var captured =
+                captureFromHql("select i from Item i join lateral unnest(i.structTags) t on 1=1 where t.name = 'x'");
         assertOuterUnnestJoin(captured);
     }
 
@@ -134,8 +134,7 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
 
     @Test
     void structArrayJoinProjectsAliasFields() {
-        var captured =
-                captureFromHqlForTuple("select t.name from Item i join lateral unnest(i.structTags) t on 1=1");
+        var captured = captureFromHqlForTuple("select t.name from Item i join lateral unnest(i.structTags) t on 1=1");
         assertOuterUnnestJoin(captured);
     }
 
@@ -149,8 +148,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
     void structArrayExistsOverImplicitCollectionPath_simplePredicate() {
         // The natural Hibernate idiom: `from i.structTags t` directly inside the EXISTS
         // subquery. Inner FROM root is FunctionTableReference("unnest").
-        var captured = captureFromHql(
-                "select i from Item i where exists (select 1 from i.structTags t where t.name = 'x')");
+        var captured =
+                captureFromHql("select i from Item i where exists (select 1 from i.structTags t where t.name = 'x')");
         assertExistsOverUnnest(captured);
     }
 
@@ -159,6 +158,27 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         var captured = captureFromHql("select i from Item i where exists ("
                 + "select 1 from i.structTags t where t.name = 'x' and t.weight > 5)");
         assertExistsOverUnnest(captured);
+    }
+
+    @Test
+    void scalarArrayExistsOverImplicitCollectionPath_triggersHibernateAssertion() {
+        // ❌ Scalar EXISTS-over-array fails the same way the scalar JOIN-sugar form fails:
+        // Hibernate's SQM resolver hits a `java.lang.AssertionError: null` when resolving a
+        // basic-array alias. Confirmed for Hibernate 7.3.4. The captured AST is empty (no
+        // joins, no ExistsPredicate) because the conversion aborts before WHERE is built.
+        //
+        // Implication: Phase 2's elemMatch idiom (`WHERE EXISTS (SELECT 1 FROM o.array a …)`)
+        // works for STRUCT ARRAYS ONLY. Scalar arrays must use the existing `array_contains`
+        // function for value-equality lookups, or — for predicates that need richer body
+        // logic — the JOIN+DISTINCT workaround (`SELECT DISTINCT i FROM Item i JOIN LATERAL
+        // unnest(i.tags) t ON 1=1 WHERE t > 5`).
+        var thrown = catchThrowable(() -> captureFromHql(
+                "select i from Item i where exists (select 1 from i.tags t where t > 5)"));
+        // captureFromHql swallows the exception; we just confirm no AST made it through.
+        var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
+        assertThat(captured)
+                .as("scalar EXISTS body should fail in SQM resolution; suppressed: %s", thrown)
+                .isNull();
     }
 
     @Test
@@ -192,9 +212,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
     @Test
     void scalarSubqueryCount_implicitCollectionPath() {
         // Implicit collection-valued path form for the scalar subquery (Phase 4 shape).
-        var captured = captureFromHqlForTuple("select i.id, "
-                + "(select count(*) from i.structTags t where t.weight > 5) "
-                + "from Item i");
+        var captured = captureFromHqlForTuple(
+                "select i.id, " + "(select count(*) from i.structTags t where t.weight > 5) " + "from Item i");
         assertScalarSubqueryWithUnnestFrom(captured);
     }
 
@@ -241,9 +260,9 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
     // -----------------------------------------------------------------------
 
     /**
-     * Triggers translation of {@code hql} against {@code Item.class}, swallows the expected
-     * translation failure, and returns the captured {@link SelectStatement} (or {@code null}
-     * if HQL parsing / SQM-to-SQL failed before the translator was invoked).
+     * Triggers translation of {@code hql} against {@code Item.class}, swallows the expected translation failure, and
+     * returns the captured {@link SelectStatement} (or {@code null} if HQL parsing / SQM-to-SQL failed before the
+     * translator was invoked).
      */
     private @Nullable SelectStatement captureFromHql(String hql) {
         return captureFromHql(hql, Item.class);
@@ -255,22 +274,17 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
     }
 
     private @Nullable SelectStatement captureFromHql(String hql, Class<?> resultType) {
-        var thrown = catchThrowable(() ->
-                sessionFactoryScope.inSession(session ->
-                        session.createQuery(hql, resultType).getResultList()));
-        var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
-        if (captured == null && thrown != null) {
-            System.out.println(
-                    ">>> [" + hql + "] no SelectStatement captured. Top-level exception: "
-                            + thrown.getClass().getName() + ": " + thrown.getMessage());
+        var thrown = catchThrowable(() -> sessionFactoryScope.inSession(
+                session -> session.createQuery(hql, resultType).getResultList()));
+        if (thrown != null) {
+            System.out.println(">>> [" + hql + "] threw: " + thrown.getClass().getName() + ": " + thrown.getMessage());
             var cause = thrown.getCause();
             while (cause != null && cause != cause.getCause()) {
-                System.out.println(
-                        ">>>   caused by: " + cause.getClass().getName() + ": " + cause.getMessage());
+                System.out.println(">>>   caused by: " + cause.getClass().getName() + ": " + cause.getMessage());
                 cause = cause.getCause();
             }
         }
-        return captured;
+        return CapturingMqlv2TranslatorFactory.takeLastCaptured();
     }
 
     /** Asserts: outer FROM root has exactly one TableGroupJoin → FunctionTableReference("unnest"). */
@@ -279,7 +293,9 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         var roots = captured.getQueryPart().getFirstQuerySpec().getFromClause().getRoots();
         assertThat(roots).hasSize(1);
         var joins = roots.get(0).getTableGroupJoins();
-        assertThat(joins).as("expected one TableGroupJoin on the outer FROM root").hasSize(1);
+        assertThat(joins)
+                .as("expected one TableGroupJoin on the outer FROM root")
+                .hasSize(1);
         var primaryRef = joins.get(0).getJoinedGroup().getPrimaryTableReference();
         assertThat(primaryRef)
                 .as("outer-FROM join target should be a FunctionTableReference")
@@ -289,15 +305,17 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
     }
 
     /**
-     * Asserts: outer WHERE contains an ExistsPredicate whose inner subquery's first FROM root
-     * has a FunctionTableReference("unnest") as its primary table reference.
+     * Asserts: outer WHERE contains an ExistsPredicate whose inner subquery's first FROM root has a
+     * FunctionTableReference("unnest") as its primary table reference.
      */
     private static void assertExistsOverUnnest(@Nullable SelectStatement captured) {
         assertThat(captured).as("no SelectStatement captured").isNotNull();
         var outerSpec = captured.getQueryPart().getFirstQuerySpec();
         var existsPredicates = new java.util.ArrayList<ExistsPredicate>();
         collectExistsPredicates(outerSpec.getWhereClauseRestrictions(), existsPredicates);
-        assertThat(existsPredicates).as("expected an ExistsPredicate in outer WHERE").hasSize(1);
+        assertThat(existsPredicates)
+                .as("expected an ExistsPredicate in outer WHERE")
+                .hasSize(1);
         var innerSpec = existsPredicates.get(0).getExpression().getQueryPart().getFirstQuerySpec();
         var innerRoots = innerSpec.getFromClause().getRoots();
         assertThat(innerRoots).as("expected one FROM root in EXISTS subquery").hasSize(1);
@@ -310,21 +328,24 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
     }
 
     /**
-     * Asserts: outer WHERE contains an ExistsPredicate whose inner subquery's first FROM root
-     * is a NamedTableReference (Item) with exactly one TableGroupJoin to a
-     * FunctionTableReference("unnest").
+     * Asserts: outer WHERE contains an ExistsPredicate whose inner subquery's first FROM root is a NamedTableReference
+     * (Item) with exactly one TableGroupJoin to a FunctionTableReference("unnest").
      */
     private static void assertExistsOverCorrelatedJoinUnnest(@Nullable SelectStatement captured) {
         assertThat(captured).as("no SelectStatement captured").isNotNull();
         var outerSpec = captured.getQueryPart().getFirstQuerySpec();
         var existsPredicates = new java.util.ArrayList<ExistsPredicate>();
         collectExistsPredicates(outerSpec.getWhereClauseRestrictions(), existsPredicates);
-        assertThat(existsPredicates).as("expected an ExistsPredicate in outer WHERE").hasSize(1);
+        assertThat(existsPredicates)
+                .as("expected an ExistsPredicate in outer WHERE")
+                .hasSize(1);
         var innerSpec = existsPredicates.get(0).getExpression().getQueryPart().getFirstQuerySpec();
         var innerRoots = innerSpec.getFromClause().getRoots();
         assertThat(innerRoots).hasSize(1);
         var innerJoins = innerRoots.get(0).getTableGroupJoins();
-        assertThat(innerJoins).as("expected one TableGroupJoin in EXISTS subquery").hasSize(1);
+        assertThat(innerJoins)
+                .as("expected one TableGroupJoin in EXISTS subquery")
+                .hasSize(1);
         var primaryRef = innerJoins.get(0).getJoinedGroup().getPrimaryTableReference();
         assertThat(primaryRef)
                 .as("EXISTS subquery join target should be a FunctionTableReference")
@@ -339,7 +360,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
      */
     private static void assertScalarSubqueryWithUnnestFrom(@Nullable SelectStatement captured) {
         assertThat(captured).as("no SelectStatement captured").isNotNull();
-        var outerSelections = captured.getQueryPart().getFirstQuerySpec().getSelectClause().getSqlSelections();
+        var outerSelections =
+                captured.getQueryPart().getFirstQuerySpec().getSelectClause().getSqlSelections();
         var subqueryUnnestFound = outerSelections.stream()
                 .map(s -> s.getExpression())
                 .filter(e -> e instanceof SelectStatement)
@@ -376,8 +398,7 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         printQuerySpec(label, "outer", captured.getQueryPart().getFirstQuerySpec());
     }
 
-    private static void printQuerySpec(
-            String label, String layer, org.hibernate.sql.ast.tree.select.QuerySpec spec) {
+    private static void printQuerySpec(String label, String layer, org.hibernate.sql.ast.tree.select.QuerySpec spec) {
         var roots = spec.getFromClause().getRoots();
         System.out.println(">>> " + label + " [" + layer + "]: from roots=" + roots.size());
         for (var root : roots) {
@@ -386,8 +407,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
             if (primaryRef instanceof FunctionTableReference ftr) {
                 refDesc += "(" + ftr.getFunctionExpression().getFunctionName() + ")";
             }
-            System.out.println(">>>   root primaryRef=" + refDesc
-                    + " tgjs=" + root.getTableGroupJoins().size());
+            System.out.println(">>>   root primaryRef=" + refDesc + " tgjs="
+                    + root.getTableGroupJoins().size());
             for (var tgj : root.getTableGroupJoins()) {
                 var jref = tgj.getJoinedGroup().getPrimaryTableReference();
                 String jrefDesc = jref.getClass().getSimpleName();
@@ -401,7 +422,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         var existsPredicates = new java.util.ArrayList<ExistsPredicate>();
         collectExistsPredicates(spec.getWhereClauseRestrictions(), existsPredicates);
         for (var ep : existsPredicates) {
-            printQuerySpec(label, layer + ".exists", ep.getExpression().getQueryPart().getFirstQuerySpec());
+            printQuerySpec(
+                    label, layer + ".exists", ep.getExpression().getQueryPart().getFirstQuerySpec());
         }
     }
 

@@ -772,19 +772,24 @@ git commit -m "MQLv2: cover correlated outer reference in EXISTS-over-unnest bod
 
 ---
 
-## Task 9: Add scalar-array EXISTS test (discovery)
+## Task 9: Document scalar-array EXISTS as unsupported
 
-**Goal:** Confirm `WHERE EXISTS (SELECT 1 FROM o.scalarArray a WHERE …)` works for scalar arrays via the same translator path. Phase 0 confirmed the AST shape for struct arrays through the implicit collection-path; the scalar variant has NOT been confirmed for EXISTS. This task discovers whether it works as the design assumes, and adjusts scope if not.
+**Goal:** Phase 0's expanded diagnostic confirmed that scalar arrays (e.g., `int[]`) cannot use the implicit-collection-path EXISTS form — `where exists (select 1 from o.tags t where t > 5)` triggers a Hibernate-internal `SqmMappingModelHelper.resolveSqmPath` AssertionError before any AST reaches the translator. There is nothing for Phase 2 to translate. This task adds one negative test in the Phase 2 test class that locks the contract.
 
 **Files:**
 - Modify: `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestExistsIntegrationTests.java`
 
-- [ ] **Step 1: Add a scalar array field to the entity**
+- [ ] **Step 1: Add a scalar-array field to the entity**
 
-Add `int[] scores;` to `Order`. Update the constructor and seed.
+Extend `Order` with `int[] scores;`. Update the constructor and seed data:
 
 ```java
-    Order(int id, int minQty, LineItem[] lineItems, int[] scores) { ... }
+    Order(int id, int minQty, LineItem[] lineItems, int[] scores) {
+        this.id = id;
+        this.minQty = minQty;
+        this.lineItems = lineItems;
+        this.scores = scores;
+    }
 ```
 
 Seed:
@@ -795,53 +800,41 @@ Seed:
         session.persist(new Order(3, 1, new LineItem[] {...}, new int[] {}));
 ```
 
-Update prior tests' expected `format` to include `scores: scores`.
+Update prior tests' expected `format` strings to include `scores: scores`.
 
-- [ ] **Step 2: Add the scalar EXISTS test**
+- [ ] **Step 2: Add the negative test**
 
 ```java
     @Test
-    void existsOverScalarArray_singlePredicate() {
+    void existsOverScalarArray_unsupported() {
+        // Phase 0 diagnostic confirmed that scalar EXISTS triggers Hibernate's
+        // SqmMappingModelHelper.resolveSqmPath AssertionError — the AST never reaches our
+        // translator. This test locks that contract: scalar EXISTS fails fast at HQL
+        // semantic analysis, with no MQLv2 ever emitted.
         var hql = "from Order o where exists (select 1 from o.scores s where s > 15)";
-        var results = sessionFactoryScope.fromSession(
-                session -> session.createSelectionQuery(hql, Order.class).getResultList());
-
-        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | match (scores any ($ > 15))"
-                        + " | format {_id: _id, minQty: minQty, lineItems: lineItems, scores: scores}");
-        // Order 1: scores include 20, 30 (matches). Orders 2 and 3 don't.
-        assertThat(results).extracting(o -> o.id).containsExactly(1);
+        assertThatThrownBy(() -> sessionFactoryScope.inSession(
+                        session -> session.createSelectionQuery(hql, Order.class).getResultList()))
+                .rootCause()
+                .isInstanceOf(AssertionError.class);
     }
 ```
 
-- [ ] **Step 3: Run the scalar test**
+- [ ] **Step 3: Run**
 
 ```
-./gradlew integrationTest --tests "com.mongodb.hibernate.query.mqlv2.Mqlv2UnnestExistsIntegrationTests.existsOverScalarArray_singlePredicate"
+./gradlew integrationTest --tests "com.mongodb.hibernate.query.mqlv2.Mqlv2UnnestExistsIntegrationTests.existsOverScalarArray_unsupported"
 ```
 
-**Three possible outcomes:**
+Expected: PASS. Confirms the failure mode is what Phase 0 saw — an AssertionError at SQM-resolution time, not a translator error.
 
-1. **PASS:** the implicit-collection-path EXISTS form works for scalar arrays too. Phase 2's scope holds; move on.
+If the test fails by NOT throwing (i.e., Hibernate 7.3.4+ has fixed the AssertionError and scalar EXISTS suddenly works), this is a positive surprise — convert the test to a positive assertion (the `existsOverStructArray_singlePredicate` template applies). Then re-evaluate Phase 2's struct-only scoping in the spec.
 
-2. **FAIL with Hibernate AssertionError in `SqmMappingModelHelper.resolveSqmPath`** (the same error Phase 0 saw on the JOIN sugar form): scalar arrays can't be used with this HQL idiom either. **Halt and report back to the human** — the design needs revisiting (likely: scalar EXISTS via explicit `lateral unnest` in the outer FROM, similar to Phase 3's scalar fallback).
-
-3. **FAIL with a translator-side `FeatureNotSupportedException`** or other recognizable translator failure: the AST shape differs from struct arrays. Inspect the captured AST via the same pattern as Phase 0's diagnostic tests and adjust the translator.
-
-The translator's body resolver in `insideAnyResolver` already handles the unqualified-reference case (`s > 15` where `s` is the alias and has no `.field`) by emitting `$.<col>`. For scalar arrays the column expression might be the synthesized "value" name registered with `UnnestFunction` in Phase 0; if so, the emission would be `$.value > 15` instead of `$ > 15`. Confirm what's actually emitted and decide whether to rewrite `$.value` → `$` in a final step.
-
-- [ ] **Step 4: Commit (depending on outcome)**
-
-If the test passes:
+- [ ] **Step 4: Commit**
 
 ```
 git add src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestExistsIntegrationTests.java
-git commit -m "MQLv2: cover EXISTS over scalar array"
+git commit -m "MQLv2: document scalar-array EXISTS as unsupported (Hibernate SQM limitation)"
 ```
-
-If the test required translator adjustments, commit those alongside the test in one commit.
-
-If outcome (2) — halt and surface to the human.
 
 ---
 
@@ -987,7 +980,6 @@ Expected: still PASS. The Phase 0 diagnostic stays in place until Phase 3 lands.
 
 ## Risks and open questions
 
-- **Scalar-array EXISTS via implicit collection-path:** Phase 0 didn't confirm this. Task 9 is the discovery step. If it fails the same way as the JOIN sugar form did (Hibernate AssertionError), Phase 2 may need to scope back to struct arrays only.
 - **Body parenthesization:** the existing translator wraps every binary predicate in `(...)`. The exact output for `(li.sku == 'WIDGET-1' AND li.qty > 0)` may have extra parens compared to the expected strings written here. Adjust expected strings to match what's emitted.
 - **Alias-stack lifecycle for nested EXISTS:** Task 10's correctness depends on the unnest-alias stack being passed/extended correctly when nesting. If a flat per-call stack proves wrong, switch to a translator-instance field that callers push/pop.
 - **MqlCapture promotion:** Task 1 is mechanical but touches the showcase test. If the showcase test breaks after the refactor, fix it before proceeding to Task 2.
