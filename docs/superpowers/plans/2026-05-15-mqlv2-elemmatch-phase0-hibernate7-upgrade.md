@@ -18,9 +18,10 @@ Files this plan creates or modifies:
 
 - **Modify:** `gradle/libs.versions.toml:21` — bump `hibernate-orm` version pin.
 - **Modify:** `build.gradle.kts:71` — bump the Hibernate Javadoc link from `/orm/6.6/javadocs/` to `/orm/7.3/javadocs/`.
-- **Modify:** `src/main/java/com/mongodb/hibernate/internal/translate/Mqlv2SelectTranslator.java` — `appendJoins` method only. Replace the unconditional cast to `NamedTableReference` with a check that throws a descriptive `FeatureNotSupportedException` when the joined group's primary table reference is a `FunctionTableReference`. This is a strictly better error message; it does not introduce a new feature.
 - **Modify (potentially many):** any file under `src/main/`, `src/test/`, `src/integrationTest/` that fails to compile or run against 7.3.4.Final. The exact set is discovery-driven — see Task 3.
-- **Create:** `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestAstDiagnosticTests.java` — the one new diagnostic test.
+- **Create:** `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/CapturingMqlv2TranslatorFactory.java` — test-only capture wrapper around the production `Mqlv2TranslatorFactory`. Stashes each `SelectStatement` passed to `buildSelectTranslator(...)` into a thread-local for inspection by tests.
+- **Create:** `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/CapturingMqlv2Dialect.java` — test-only dialect that returns the capturing factory. Installed via `@Setting(name = DIALECT, …)` on the diagnostic test class.
+- **Create:** `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestAstDiagnosticTests.java` — the one new diagnostic test. No production-code changes.
 
 ---
 
@@ -247,91 +248,18 @@ EOF
 
 ---
 
-## Task 6: Improve `appendJoins` error wording for `FunctionTableReference`
+## Task 6: Add the diagnostic test for unnest AST shape
 
-**Goal:** Replace the unconditional `(NamedTableReference) ref` cast in `Mqlv2SelectTranslator.appendJoins` with a typed check that throws a descriptive `FeatureNotSupportedException` when the joined group's primary table reference is a `FunctionTableReference`. This is a *strictly better* error message on what was already an error path — no new feature, no behavior change beyond the message text. It also makes Task 7's diagnostic test possible to write.
-
-**Files:**
-- Modify: `src/main/java/com/mongodb/hibernate/internal/translate/Mqlv2SelectTranslator.java` — method `appendJoins` (currently around line 336).
-
-- [ ] **Step 1: Read the current `appendJoins` to confirm the cast site**
-
-Open `src/main/java/com/mongodb/hibernate/internal/translate/Mqlv2SelectTranslator.java`. Find the `appendJoins` method. Confirm it starts with code equivalent to:
-
-```java
-for (var tgj : root.getTableGroupJoins()) {
-    var joinedGroup = tgj.getJoinedGroup();
-    var joinNtr = (NamedTableReference) joinedGroup.getPrimaryTableReference();
-    ...
-}
-```
-
-If the line numbers or exact code have shifted due to Task 3's edits, that is fine — the change is to the cast site.
-
-- [ ] **Step 2: Make the change**
-
-Use the `Edit` tool to replace:
-
-```java
-        for (var tgj : root.getTableGroupJoins()) {
-            var joinedGroup = tgj.getJoinedGroup();
-            var joinNtr = (NamedTableReference) joinedGroup.getPrimaryTableReference();
-```
-
-with:
-
-```java
-        for (var tgj : root.getTableGroupJoins()) {
-            var joinedGroup = tgj.getJoinedGroup();
-            var primaryRef = joinedGroup.getPrimaryTableReference();
-            if (primaryRef instanceof FunctionTableReference ftr) {
-                throw new FeatureNotSupportedException(
-                        "Join target is a set-returning function (not supported in this phase): " + ftr);
-            }
-            var joinNtr = (NamedTableReference) primaryRef;
-```
-
-The class `FunctionTableReference` is already imported at line 86. `FeatureNotSupportedException` is already imported at line 23. No new imports needed.
-
-- [ ] **Step 3: Verify compilation**
-
-Run:
-
-```
-./gradlew compileJava
-```
-
-Expected: `BUILD SUCCESSFUL`.
-
-- [ ] **Step 4: Run the full integration-test suite to verify no regression**
-
-Run:
-
-```
-./gradlew integrationTest
-```
-
-Expected: `BUILD SUCCESSFUL`. The change is a no-op for any existing test (no existing test passes a `FunctionTableReference` as a join target; everything is `NamedTableReference`). If any test fails, investigate — the failure indicates this assumption is wrong.
-
-- [ ] **Step 5: Commit**
-
-```
-git add src/main/java/com/mongodb/hibernate/internal/translate/Mqlv2SelectTranslator.java
-git commit -m "MQLv2: improve error wording when join target is a FunctionTableReference"
-```
-
----
-
-## Task 7: Add the diagnostic test for unnest AST shape
-
-**Goal:** Add ONE new integration test that confirms Hibernate 7 desugars `from O o join o.array a` into a `FunctionTableReference` whose function descriptor identifies as `unnest`. This locks the load-bearing AST-shape assumption that Phases 2–4 depend on.
+**Goal:** Add ONE new integration test that confirms Hibernate 7 desugars `from O o join o.array a` into a `FunctionTableReference` whose function descriptor identifies as `unnest`. This locks the load-bearing AST-shape assumption that Phases 2–4 depend on. **No production-code changes.** The diagnostic uses a test-only capture wrapper around the production translator factory, so the assertion is positive (about what the AST IS) rather than dependent on a thrown error message.
 
 **Files:**
+- Create: `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/CapturingMqlv2TranslatorFactory.java`
+- Create: `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/CapturingMqlv2Dialect.java`
 - Create: `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestAstDiagnosticTests.java`
 
-- [ ] **Step 1: Write the test class**
+- [ ] **Step 1: Write the capturing translator factory**
 
-Create `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestAstDiagnosticTests.java` with the following content:
+Create `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/CapturingMqlv2TranslatorFactory.java`:
 
 ```java
 /*
@@ -352,37 +280,161 @@ Create `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestAs
 
 package com.mongodb.hibernate.query.mqlv2;
 
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import com.mongodb.hibernate.internal.translate.Mqlv2TranslatorFactory;
+import org.hibernate.engine.spi.SessionFactoryImplementor;
+import org.hibernate.sql.ast.SqlAstTranslator;
+import org.hibernate.sql.ast.SqlAstTranslatorFactory;
+import org.hibernate.sql.ast.tree.MutationStatement;
+import org.hibernate.sql.ast.tree.select.SelectStatement;
+import org.hibernate.sql.exec.spi.JdbcOperationQueryMutation;
+import org.hibernate.sql.exec.spi.JdbcOperationQuerySelect;
+import org.hibernate.sql.model.ast.TableMutation;
+import org.hibernate.sql.model.jdbc.JdbcMutationOperation;
+
+/**
+ * Test-only wrapper that captures every {@link SelectStatement} passed through
+ * {@link Mqlv2TranslatorFactory#buildSelectTranslator}, exposing the most recently
+ * captured statement via a thread-local. Mutation translation is delegated unchanged.
+ *
+ * <p>Used by diagnostic tests that need to inspect the SQL AST shape Hibernate produces
+ * for a given HQL query, without modifying production code.
+ */
+public final class CapturingMqlv2TranslatorFactory implements SqlAstTranslatorFactory {
+
+    private static final ThreadLocal<SelectStatement> LAST_CAPTURED = new ThreadLocal<>();
+
+    private final Mqlv2TranslatorFactory delegate = new Mqlv2TranslatorFactory();
+
+    /** Returns and clears the most recently captured {@link SelectStatement} on this thread. */
+    public static SelectStatement takeLastCaptured() {
+        var stmt = LAST_CAPTURED.get();
+        LAST_CAPTURED.remove();
+        return stmt;
+    }
+
+    /** Clears the thread-local without consuming the captured statement. */
+    public static void reset() {
+        LAST_CAPTURED.remove();
+    }
+
+    @Override
+    public SqlAstTranslator<JdbcOperationQuerySelect> buildSelectTranslator(
+            SessionFactoryImplementor sessionFactory, SelectStatement selectStatement) {
+        LAST_CAPTURED.set(selectStatement);
+        return delegate.buildSelectTranslator(sessionFactory, selectStatement);
+    }
+
+    @Override
+    public SqlAstTranslator<? extends JdbcOperationQueryMutation> buildMutationTranslator(
+            SessionFactoryImplementor sessionFactory, MutationStatement mutationStatement) {
+        return delegate.buildMutationTranslator(sessionFactory, mutationStatement);
+    }
+
+    @Override
+    public <O extends JdbcMutationOperation> SqlAstTranslator<O> buildModelMutationTranslator(
+            TableMutation<O> tableMutation, SessionFactoryImplementor sessionFactory) {
+        return delegate.buildModelMutationTranslator(tableMutation, sessionFactory);
+    }
+}
+```
+
+- [ ] **Step 2: Write the capturing dialect**
+
+Create `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/CapturingMqlv2Dialect.java`:
+
+```java
+/*
+ * Copyright 2025-present MongoDB, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.mongodb.hibernate.query.mqlv2;
+
+import org.hibernate.engine.jdbc.dialect.spi.DialectResolutionInfo;
+import org.hibernate.sql.ast.SqlAstTranslatorFactory;
+
+/** Test-only dialect that installs {@link CapturingMqlv2TranslatorFactory}. */
+public final class CapturingMqlv2Dialect extends TestMqlv2Dialect {
+    public CapturingMqlv2Dialect(DialectResolutionInfo info) {
+        super(info);
+    }
+
+    @Override
+    public SqlAstTranslatorFactory getSqlAstTranslatorFactory() {
+        return new CapturingMqlv2TranslatorFactory();
+    }
+}
+```
+
+If `TestMqlv2Dialect` does not have a constructor that accepts `DialectResolutionInfo` (or has a different signature in Hibernate 7.x), match its actual constructor — confirm by reading `TestMqlv2Dialect.java` first.
+
+- [ ] **Step 3: Write the diagnostic test**
+
+Create `src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestAstDiagnosticTests.java`:
+
+```java
+/*
+ * Copyright 2025-present MongoDB, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package com.mongodb.hibernate.query.mqlv2;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hibernate.cfg.AvailableSettings.DIALECT;
 
-import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.junit.MongoExtension;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.sql.ast.tree.from.FunctionTableReference;
 import org.hibernate.testing.orm.junit.DomainModel;
 import org.hibernate.testing.orm.junit.ServiceRegistry;
 import org.hibernate.testing.orm.junit.SessionFactory;
 import org.hibernate.testing.orm.junit.SessionFactoryScope;
 import org.hibernate.testing.orm.junit.SessionFactoryScopeAware;
 import org.hibernate.testing.orm.junit.Setting;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
- * Diagnostic-only tests that confirm the AST-shape assumptions Phases 2–4 depend on.
- * These tests run an HQL plural-attribute-join query and assert that the failure
- * thrown by the v2 translator confirms the join target is a FunctionTableReference
- * whose toString includes "unnest" — proving Hibernate 7 desugars
- * `join o.array a` into `lateral unnest(o.array) a`.
+ * Diagnostic-only test that locks in the load-bearing AST-shape assumption Phases 2-4
+ * of the elemMatch design depend on: that Hibernate 7 desugars `from O o join o.array a`
+ * into a {@link FunctionTableReference} whose function descriptor identifies as "unnest".
  *
- * These tests have no value beyond locking in the design assumption. They will
- * be removed (or replaced with positive assertions) once Phase 3 implements
- * unwind translation.
+ * <p>Uses {@link CapturingMqlv2TranslatorFactory} via {@link CapturingMqlv2Dialect} so the
+ * assertion is positive (about what the AST IS) without requiring production-code changes.
+ * The HQL query is expected to fail at translation time (the v2 translator does not yet
+ * support {@code FunctionTableReference}), but the capture happens BEFORE the failure, so
+ * the failure does not block the assertion. This test will be removed once Phase 3 lands.
  */
 @DomainModel(annotatedClasses = {Mqlv2UnnestAstDiagnosticTests.Item.class})
 @SessionFactory(exportSchema = false)
-@ServiceRegistry(settings = @Setting(name = DIALECT, value = "com.mongodb.hibernate.query.mqlv2.TestMqlv2Dialect"))
+@ServiceRegistry(
+        settings = @Setting(name = DIALECT, value = "com.mongodb.hibernate.query.mqlv2.CapturingMqlv2Dialect"))
 @ExtendWith(MongoExtension.class)
 class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
 
@@ -393,14 +445,42 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         this.sessionFactoryScope = scope;
     }
 
+    @BeforeEach
+    void resetCapture() {
+        CapturingMqlv2TranslatorFactory.reset();
+    }
+
     @Test
-    void pluralAttributeJoinDesugarsToUnnest() {
-        assertThatThrownBy(() -> sessionFactoryScope.inSession(session ->
-                        session.createQuery("from Item i join i.tags t", Item.class).getResultList()))
-                .hasCauseInstanceOf(FeatureNotSupportedException.class)
-                .rootCause()
-                .hasMessageContaining("FunctionTableReference")
-                .hasMessageContaining("unnest");
+    void pluralAttributeJoinDesugarsToUnnestFunctionTableReference() {
+        // Trigger translation. The query will fail (the v2 translator does not yet handle
+        // FunctionTableReference), but the capture in buildSelectTranslator happens first,
+        // so we don't care about the failure mode here.
+        try {
+            sessionFactoryScope.inSession(session ->
+                    session.createQuery("from Item i join i.tags t", Item.class).getResultList());
+        } catch (Throwable ignored) {
+            // expected: translator does not yet handle FunctionTableReference
+        }
+
+        var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
+        assertThat(captured).as("CapturingMqlv2TranslatorFactory did not capture any SelectStatement").isNotNull();
+
+        var roots = captured.getQueryPart().getFirstQuerySpec().getFromClause().getRoots();
+        assertThat(roots).hasSize(1);
+        var joins = roots.get(0).getTableGroupJoins();
+        assertThat(joins).as("plural-attribute join should appear as a TableGroupJoin").hasSize(1);
+
+        var primaryRef = joins.get(0).getJoinedGroup().getPrimaryTableReference();
+        assertThat(primaryRef)
+                .as("Hibernate 7 should desugar 'join o.array a' into a FunctionTableReference; "
+                        + "got %s instead", primaryRef.getClass().getName())
+                .isInstanceOf(FunctionTableReference.class);
+
+        var ftr = (FunctionTableReference) primaryRef;
+        assertThat(ftr.toString())
+                .as("FunctionTableReference toString should identify the function as unnest; "
+                        + "if it does not, the test needs a different inspection path")
+                .containsIgnoringCase("unnest");
     }
 
     @Entity(name = "Item")
@@ -416,7 +496,9 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
 }
 ```
 
-- [ ] **Step 2: Run the new test**
+If `FunctionTableReference.toString()` does not include the function name in 7.3.4.Final (the API does not guarantee this), the test's `containsIgnoringCase("unnest")` assertion will fail informatively. The fallback is to access the function descriptor directly — `FunctionTableReference` exposes the underlying SQM/function descriptor; consult `https://docs.hibernate.org/orm/7.3/javadocs/` for the accessor name and switch the assertion. Document the finding.
+
+- [ ] **Step 4: Run the new test**
 
 Run:
 
@@ -427,33 +509,39 @@ Run:
 **Expected:** PASS. The chain of expectations is:
 1. The HQL parses cleanly under Hibernate 7 (the plural-attribute join is valid syntax).
 2. Hibernate 7 desugars the join to a `lateral unnest(i.tags) t` and produces a `TableGroupJoin` whose joined group's primary table reference is a `FunctionTableReference`.
-3. The v2 translator's `appendJoins` hits the `FunctionTableReference` branch added in Task 6 and throws `FeatureNotSupportedException` with a message containing both `"FunctionTableReference"` and `"unnest"` (the second comes from the `FunctionTableReference.toString()`, which renders the function name).
+3. The `CapturingMqlv2TranslatorFactory` captures the `SelectStatement` before the v2 translator runs.
+4. The translation then fails (the v2 translator does not handle `FunctionTableReference`) — the test swallows this failure and inspects the captured AST.
+5. The walk through `roots → joins → joinedGroup → primaryTableReference` yields a `FunctionTableReference` whose `toString()` contains `"unnest"`.
 
-If the test fails because:
-- The exception is not thrown at all → Hibernate 7 is processing this query in some other way; investigate the actual AST shape before continuing with the rest of this design.
-- The exception is thrown but the message does NOT contain `"unnest"` → the `FunctionTableReference.toString()` does not include the function name in 7.3.4.Final; adjust the test assertion to use a different inspection (e.g., reflectively access the function descriptor) and document the finding.
-- The exception is a `ClassCastException` → the change in Task 6 was not applied or has been undone.
+If the test fails:
+- "did not capture any SelectStatement" → the capturing factory is not installed; verify `CapturingMqlv2Dialect` is the configured dialect and that `getSqlAstTranslatorFactory()` is overridden correctly.
+- "should appear as a TableGroupJoin" with `hasSize(0)` → Hibernate 7 is restructuring the FROM clause in some other way; investigate the actual AST shape before continuing.
+- "should desugar 'join o.array a' into a FunctionTableReference" → Hibernate 7 is NOT desugaring plural-attribute joins to unnest as the design expects; **this is a design-breaking finding** — stop and rethink the whole plan.
+- "FunctionTableReference toString should identify the function as unnest" → `toString()` doesn't include the function name; switch to direct accessor as noted above.
 
-**Critically:** if this test fails for an *unexpected* reason, do not "fix" it by weakening the assertion. The test is a diagnostic. A surprising failure is information — surface it and rethink before proceeding to Phases 1-4.
+**Critically:** if this test fails for an *unexpected* reason, do not "fix" it by weakening the assertion. The test is a diagnostic. A surprising failure is information — surface it.
 
-- [ ] **Step 3: Commit the diagnostic test**
+- [ ] **Step 5: Commit the diagnostic test**
 
 ```
-git add src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestAstDiagnosticTests.java
+git add src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/CapturingMqlv2TranslatorFactory.java \
+        src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/CapturingMqlv2Dialect.java \
+        src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2UnnestAstDiagnosticTests.java
 git commit -m "$(cat <<'EOF'
 test: lock in unnest AST-shape assumption for elemMatch design
 
-Confirms Hibernate 7 desugars plural-attribute joins to a
-FunctionTableReference of unnest, which Phases 2-4 of the elemMatch
-design depend on. This test will be removed or rewritten as a positive
-assertion once Phase 3 lands.
+Diagnostic-only test that confirms Hibernate 7 desugars plural-attribute
+joins to a FunctionTableReference of unnest. Uses a test-only capturing
+translator factory to inspect the SQL AST directly — no production-code
+changes. This test will be removed or rewritten as a positive feature
+assertion once Phase 3 implements unwind translation.
 EOF
 )"
 ```
 
 ---
 
-## Task 8: Final verification
+## Task 7: Final verification
 
 **Goal:** Confirm the entire repository is healthy on the new Hibernate version with the diagnostic test in place.
 
@@ -483,7 +571,6 @@ Expected:
 - `git log` shows (most recent first) something like:
   ```
   <sha> test: lock in unnest AST-shape assumption for elemMatch design
-  <sha> MQLv2: improve error wording when join target is a FunctionTableReference
   <sha> build: upgrade hibernate-orm from 6.6.34.Final to 7.3.4.Final
   ```
   plus any incremental commits from Tasks 3-5 if the engineer chose to commit those iteratively (they may have been squashed into the single upgrade commit).
@@ -499,8 +586,8 @@ Out of scope for this plan. The user reviews the work in-session before any push
 - `./gradlew check` succeeds on `7.3.4.Final` (or the chosen latest stable 7.x).
 - All pre-existing tests pass with no logic changes.
 - `Mqlv2UnnestAstDiagnosticTests.pluralAttributeJoinDesugarsToUnnest` passes.
-- The translator codebase contains no new features. Only mechanical API adaptations + the improved error message in `appendJoins`.
-- The commit history is clean — distinct commits for the upgrade, the error-message refinement, and the diagnostic test.
+- The translator codebase contains no new features. Only mechanical API adaptations required by the upgrade — nothing added under `src/main`.
+- The commit history is clean — distinct commits for the upgrade and the diagnostic test.
 
 ## What this plan deliberately does not do
 
@@ -512,5 +599,5 @@ Out of scope for this plan. The user reviews the work in-session before any push
 ## Risks and how this plan addresses them
 
 - **The upgrade reveals a behavior change that no test catches.** Mitigation: Task 5 runs the full `check` task, which includes static analysis. Beyond that, there's no defense — the codebase's test coverage is its own assurance level.
-- **`FunctionTableReference.toString()` does not include the function name.** Mitigation: Task 7 Step 2 documents the alternative inspection path (reflective access to the function descriptor).
-- **A subtler AST shape than `FunctionTableReference` is what Hibernate 7 actually produces.** Mitigation: Task 7 Step 2 explicitly says "do not weaken the assertion" — investigate and bring findings back to the design before proceeding to Phase 1.
+- **`FunctionTableReference.toString()` does not include the function name.** Mitigation: Task 6 Step 3 documents the alternative inspection path (direct accessor on the function descriptor).
+- **A subtler AST shape than `FunctionTableReference` is what Hibernate 7 actually produces.** Mitigation: Task 6 Step 4 explicitly says "do not weaken the assertion" — investigate and bring findings back to the design before proceeding to Phase 1.
