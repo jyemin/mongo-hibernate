@@ -116,9 +116,13 @@ Phase 0  Hibernate 7.x upgrade            (no new features)
    ├──> Phase 4  Translator: count-of-unnest scalar subqueries,
    │              element values in IN subqueries.
    │
-   └──> Phase 5  Documentation: add elemMatch examples to the MQLv2 showcase
-                 (docs/mqlv2-showcase.md + Mqlv2ShowcaseVerificationTests) and
-                 the project README.
+   ├──> Phase 5  Documentation: add elemMatch examples to the MQLv2 showcase
+   │              (docs/mqlv2-showcase.md + Mqlv2ShowcaseVerificationTests) and
+   │              the project README.
+   │
+   └──> Phase 6  Upstream feedback: Hibernate ORM bug reports for the SQM
+                 limitations Phase 2-4 surfaced, and (possibly) MQLv2
+                 enhancement requests for anything not server-side-expressible.
 ```
 
 The phasing is chosen because:
@@ -126,6 +130,7 @@ The phasing is chosen because:
 - Phase 1 surfaces the v2 SELECT-side risk. Storage round-trip is *not* the open question — INSERT/UPDATE go through `MongoTranslatorFactory` (shared with v1) and v1 tests already cover struct-array and scalar-array storage. The open question is whether the v2 SELECT translator correctly hydrates array fields back into entity state when reading documents; `Mqlv2SelectIntegrationTests` uses no array fields, so this is currently untested under v2.
 - Phases 2-4 are largely independent: Phase 2 owns the EXISTS-over-unnest hook in `appendPredicateText`; Phase 3 owns the FROM-clause hook in `appendJoins`; Phase 4 extends the scalar-subquery and IN-subquery branches. None block one another in the codebase.
 - Phase 5 (showcase + README polish) lands after the feature phases are complete. It's user-facing documentation; the diagnostic test class is removed at this point too since the showcase test now covers the same AST shapes via positive feature assertions.
+- Phase 6 (upstream feedback) is independent of Phase 5 — bug reports and enhancement requests can be filed in parallel. If Hibernate fixes the SQM limitations Phase 2-4 documented, follow-up MR-sized work re-enables the corresponding surfaces (scalar EXISTS, scalar JOIN body predicates, nested EXISTS, IN-subqueries) without further design.
 
 ## Components
 
@@ -232,6 +237,39 @@ Once Phases 2-4 land, add a curated set of elemMatch example queries to:
 - **`README.md`** — the project's top-level README. Phase 5 adds a one-paragraph entry under the existing feature/limitation lists noting that `$elemMatch`-style queries over arrays of embedded documents are supported via standard HQL EXISTS / JOIN forms on `@Struct`-annotated embeddable arrays. Includes one short HQL example and a pointer to the showcase doc.
 
 Also: **remove the diagnostic test class `Mqlv2UnnestAstDiagnosticTests`** (and its `CapturingMqlv2TranslatorFactory` / `CapturingMqlv2Dialect` helpers) once Phase 3 lands, since the showcase test now covers the AST shapes positively. The diagnostic was scaffolding for the design and is no longer load-bearing.
+
+### Phase 6 — Upstream feedback
+
+Phases 2-4 documented several Hibernate-side limitations that block otherwise-correct MQLv2 idioms. These are bugs in Hibernate ORM (not in the MongoDB extension) and are reproducible against any dialect that registers `unnest()`. Phase 6 files them upstream so they may eventually be lifted, unblocking the corresponding HQL surfaces.
+
+**Two artifacts:**
+
+1. **`docs/upstream-feedback/hibernate-bugs/<short-name>.md`** — one markdown file per bug. Each file contains:
+   - A precise title for the upstream issue tracker (Hibernate JIRA or GitHub).
+   - The minimal reproducer in self-contained Java + HQL form, using a generic dialect (PostgreSQL or H2 — NOT MongoDB) so the issue is reproducible by Hibernate maintainers without our project.
+   - The expected vs. actual behavior, including the stack trace.
+   - The affected Hibernate version (7.3.4.Final).
+
+2. **`docs/upstream-feedback/mqlv2-enhancements/<short-name>.md`** — one file per MQLv2 enhancement request. Each contains:
+   - The MQLv2 form we'd need but don't have.
+   - The MongoDB use case it would unblock.
+   - A precise spec-style proposal (syntax + semantics).
+
+**Hibernate bug candidates identified by this design's Phase 0-4 execution:**
+
+| Symptom | Affects | Likely root cause |
+|---|---|---|
+| `java.lang.AssertionError` in `SqmMappingModelHelper.resolveSqmPath` when resolving a path through a `FunctionJoin`/`SqmFunctionJoin` | Scalar EXISTS body predicate; scalar JOIN body predicate; IN-subquery over array (struct OR scalar); scalar Phase 4 surfaces | `SqmMappingModelHelper` doesn't handle the `FunctionJoin` case in its path-resolution switch. Probably one upstream fix; reproducer uses a basic array property on any dialect that supports `unnest()`. |
+| `ClassCastException: SqmFunctionJoin cannot be cast to SqmSingularValuedJoin` | Nested EXISTS over array-of-docs-with-inner-array | Different code path in SQM-to-SQL conversion when correlating an unnest alias into a deeper subquery. Likely a separate upstream issue but related root cause. |
+| HQL grammar rejects `LATERAL unnest(…)` inside EXISTS subqueries and scalar SELECT subqueries (`SyntaxException`) | All `LATERAL unnest`-in-subquery user surfaces | Probably an intentional grammar restriction, but worth surfacing as an enhancement request: the SQL standard allows it. |
+
+**MQLv2 enhancement candidates:**
+
+| Missing capability | Server-side syntax we'd want | Currently blocked because |
+|---|---|---|
+| Non-`count` scalar aggregates over a sequence-expression in expression position | `max((from o.array | match (…)))`, `sum((from o.array | match (…)))`, etc. | MQLv2 only has `count(<pipeline>)` as an expression-position aggregate. Other aggregates exist as stages (`agg sum(…)`, `agg max(…)`) but can't be embedded as scalar expressions. Phase 4's spec documents this as out-of-scope; the enhancement request would propose adding expression-position forms. |
+
+Phase 6 has a separate plan that walks through each candidate, writes its markdown, and (optionally) files the upstream tracker entry. The candidates above are starting points — Phase 6's plan may refine them or split/merge as the reproducers are written.
 
 ## Data flow
 
