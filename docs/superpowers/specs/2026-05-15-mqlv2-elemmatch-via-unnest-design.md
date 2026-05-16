@@ -373,6 +373,8 @@ Tests are parameterized or duplicated across the two shapes for the core support
 
 **Cross-phase regression net.** Every phase keeps the entire existing test suite green. CI is the gatekeeper.
 
+**Transaction pattern (Hibernate test utilities).** MongoDB rejects the `mqlv2` command inside a multi-document transaction (`OperationNotSupportedInTransaction`). Tests must therefore use `sessionFactoryScope.inTransaction(...)` / `fromTransaction(...)` **only for writes** (e.g., `session.persist`, `session.createMutationQuery("delete from …").executeUpdate()`) and `sessionFactoryScope.inSession(...)` / `fromSession(...)` **for reads** (e.g., `session.find`, `session.createSelectionQuery(...).getResultList()`). Mixing them — for example wrapping a read in `fromTransaction` — fails at runtime with the same `mqlv2 cannot run in transaction` error. The existing `Mqlv2SelectIntegrationTests` follows this convention; new test classes in Phases 1-4 must follow it too.
+
 ## Open items resolved at design time (or by Phase 0)
 
 - **Storage shape:** `@Embeddable @Struct(name=…)` on the element class, plain `T[]` field on the parent. No `@JdbcTypeCode` on the field. Phase 0 confirmed `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` on the field fails with "No JdbcTypeConstructor registered". JSON storage out of scope.
