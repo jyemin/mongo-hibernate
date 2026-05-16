@@ -302,11 +302,17 @@ Each phase ships a dedicated integration test class:
 
 Each test method asserts **both** the emitted MQLv2 pipeline text *and* the executed result rows, using the existing `MqlCapture` `StatementInspector` pattern from `Mqlv2ShowcaseVerificationTests`. Phase 2's PR includes a small prerequisite refactor that promotes `MqlCapture` from a nested inner class of the showcase test to a shared test-support utility.
 
-**Phase 2 coverage:** single-condition body, multi-condition (AND/OR/NOT inside `any`), correlated and uncorrelated forms, NOT EXISTS, combined with non-unnest WHERE predicates, nested EXISTS (array-of-docs-with-array-of-docs), scalar-array variant (`unnest(o.intsCollection)`), parameter-binding variants.
+**Struct- and scalar-array coverage across all three phases.** Each phase exercises both array shapes on equal footing. Test entities provide both:
+- `Order.lineItems` — `LineItem[]` for the struct-array shape (continues from Phase 1's smoke test).
+- `Order.tags` — `String[]` or `int[]` for the scalar-array shape.
 
-**Phase 3 coverage:** predicates over join-alias, projection of join-alias columns, aggregates over join-alias columns, GROUP BY combinations. One explicit cardinality test — seed one Order with three matching line items, assert exactly three rows.
+Tests are parameterized or duplicated across the two shapes for the core supported HQL constructs (EXISTS, JOIN, projection, aggregation, IN-subquery). Edge cases — nested unnest, NOT EXISTS, cardinality verification — are tested once on the shape most representative of the case (typically struct, since nested unnest is most natural there), unless the scalar version would exercise meaningfully different translator codepaths.
 
-**Phase 4 coverage:** `count(*)` of unnest in scalar SELECT subqueries; element values in IN/NOT-IN subqueries; documented-throw tests for non-count scalar aggregates and projection inside EXISTS.
+**Phase 2 coverage:** single-condition body, multi-condition (AND/OR/NOT inside `any`), correlated and uncorrelated forms, NOT EXISTS, combined with non-unnest WHERE predicates, nested EXISTS (array-of-docs-with-array-of-docs — struct only), parameter-binding variants. The core EXISTS form is tested in both struct and scalar variants.
+
+**Phase 3 coverage:** predicates over join-alias, projection of join-alias columns, aggregates over join-alias columns, GROUP BY combinations — each tested in both struct and scalar variants. One explicit cardinality test — seed one Order with three matching elements, assert exactly three rows; covered once per shape since the unwind path differs trivially.
+
+**Phase 4 coverage:** `count(*)` of unnest in scalar SELECT subqueries — both shapes; element values in IN/NOT-IN subqueries — both shapes (scalar element in scalar IN-subquery; struct field projected as scalar in IN-subquery); documented-throw tests for non-count scalar aggregates and projection inside EXISTS — once per shape where the error path is distinct.
 
 `Mqlv2SelectIntegrationTests` is execution-only today; it remains so. The new unnest test classes own both pipeline-text and execution assertions for their respective HQL shapes.
 
