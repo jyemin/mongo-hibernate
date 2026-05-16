@@ -151,6 +151,57 @@ class ElemMatchIntegrationTests extends AbstractQueryIntegrationTests {
     }
 
     @Test
+    void existsAndOuterComparison_compose() {
+        assertSelectionQuery(
+                "from ElemMatchCart c where exists (from c.lineItems li where li.sku = 'WIDGET-1') and c.id > 1 order by c.id",
+                ElemMatchCart.class,
+                """
+                {
+                  "aggregate": "elemmatch_carts",
+                  "pipeline": [
+                    {
+                      "$match": {
+                        "$and": [
+                          {
+                            "lineItems": {
+                              "$elemMatch": {
+                                "sku": {
+                                  "$eq": "WIDGET-1"
+                                }
+                              }
+                            }
+                          },
+                          {
+                            "_id": {
+                              "$gt": {"$numberInt": "1"}
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "$sort": {
+                        "_id": 1
+                      }
+                    },
+                    {
+                      "$project": {
+                        "_id": true,
+                        "lineItems": true,
+                        "minQty": true
+                      }
+                    }
+                  ]
+                }""",
+                resultList -> {
+                    var ids = new ArrayList<Integer>();
+                    resultList.forEach(c -> ids.add(c.id));
+                    assertThat(ids).containsExactly(2);
+                },
+                Set.of("elemmatch_carts"));
+    }
+
+    @Test
     void existsOrBody() {
         assertSelectionQuery(
                 "from ElemMatchCart c where exists (from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5) order by c.id",
