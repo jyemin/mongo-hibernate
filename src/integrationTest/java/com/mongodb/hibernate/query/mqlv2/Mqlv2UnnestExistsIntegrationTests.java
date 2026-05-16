@@ -26,7 +26,6 @@ import jakarta.persistence.Embeddable;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import java.util.List;
 import java.util.Objects;
 import org.bson.BsonDocument;
 import org.hibernate.annotations.Struct;
@@ -41,9 +40,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
- * Phase 2 of the elemMatch design: HQL {@code WHERE EXISTS (SELECT 1 FROM o.array a WHERE …)}
- * translates to MQLv2 {@code array any (<rewritten body>)}. Each test asserts both the emitted
- * pipeline text (via {@link MqlCapture}) and the returned rows.
+ * Phase 2 of the elemMatch design: HQL {@code WHERE EXISTS (SELECT 1 FROM o.array a WHERE …)} translates to MQLv2
+ * {@code array any (<rewritten body>)}. Each test asserts both the emitted pipeline text (via {@link MqlCapture}) and
+ * the returned rows.
  */
 @DomainModel(annotatedClasses = {Mqlv2UnnestExistsIntegrationTests.Order.class})
 @SessionFactory(exportSchema = false)
@@ -75,15 +74,11 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
                     },
                     new int[] {10, 20, 30}));
             session.persist(new Order(
-                    2,
-                    5,
-                    new LineItem[] {new LineItem("GADGET-1", 10, new Tax[] {new Tax("VAT", 0.10)})},
-                    new int[] {1, 2, 3}));
+                    2, 5, new LineItem[] {new LineItem("GADGET-1", 10, new Tax[] {new Tax("VAT", 0.10)})}, new int[] {
+                        1, 2, 3
+                    }));
             session.persist(new Order(
-                    3,
-                    1,
-                    new LineItem[] {new LineItem("WIDGET-1", 0, new Tax[] {new Tax("ZERO", 0)})},
-                    new int[] {}));
+                    3, 1, new LineItem[] {new LineItem("WIDGET-1", 0, new Tax[] {new Tax("ZERO", 0)})}, new int[] {}));
         });
         MqlCapture.LAST.remove();
     }
@@ -121,8 +116,8 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
 
     @Test
     void existsOverStructArray_orDisjunctionInBody() {
-        var hql = "from Order o where exists ("
-                + "select 1 from o.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)";
+        var hql =
+                "from Order o where exists (" + "select 1 from o.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)";
         var results = sessionFactoryScope.fromSession(
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
@@ -135,8 +130,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
 
     @Test
     void existsOverStructArray_notInsideBody() {
-        var hql = "from Order o where exists ("
-                + "select 1 from o.lineItems li where not (li.sku = 'WIDGET-1'))";
+        var hql = "from Order o where exists (" + "select 1 from o.lineItems li where not (li.sku = 'WIDGET-1'))";
         var results = sessionFactoryScope.fromSession(
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
@@ -182,8 +176,8 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
         // translator. This test locks that contract: scalar EXISTS fails fast at HQL
         // semantic analysis, with no MQLv2 ever emitted.
         var hql = "from Order o where exists (select 1 from o.scores s where s > 15)";
-        assertThatThrownBy(() -> sessionFactoryScope.inSession(
-                        session -> session.createSelectionQuery(hql, Order.class).getResultList()))
+        assertThatThrownBy(() -> sessionFactoryScope.inSession(session ->
+                        session.createSelectionQuery(hql, Order.class).getResultList()))
                 .isInstanceOf(AssertionError.class);
     }
 
@@ -198,8 +192,8 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
         var hql = "from Order o where exists ("
                 + "  select 1 from o.lineItems li where exists ("
                 + "    select 1 from li.taxes t where t.code = 'ZERO'))";
-        assertThatThrownBy(() -> sessionFactoryScope.inSession(
-                        session -> session.createSelectionQuery(hql, Order.class).getResultList()))
+        assertThatThrownBy(() -> sessionFactoryScope.inSession(session ->
+                        session.createSelectionQuery(hql, Order.class).getResultList()))
                 .isInstanceOf(org.hibernate.query.sqm.InterpretationException.class);
     }
 

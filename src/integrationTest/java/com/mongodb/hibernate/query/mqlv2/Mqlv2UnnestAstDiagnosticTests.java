@@ -172,8 +172,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         // function for value-equality lookups, or — for predicates that need richer body
         // logic — the JOIN+DISTINCT workaround (`SELECT DISTINCT i FROM Item i JOIN LATERAL
         // unnest(i.tags) t ON 1=1 WHERE t > 5`).
-        var thrown = catchThrowable(() -> captureFromHql(
-                "select i from Item i where exists (select 1 from i.tags t where t > 5)"));
+        var thrown = catchThrowable(
+                () -> captureFromHql("select i from Item i where exists (select 1 from i.tags t where t > 5)"));
         // captureFromHql swallows the exception; we just confirm no AST made it through.
         var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
         assertThat(captured)
@@ -226,6 +226,33 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
         assertThat(captured)
                 .as("`lateral unnest` inside scalar subquery should not parse; suppressed: %s", thrown)
+                .isNull();
+    }
+
+    @Test
+    void scalarSubqueryCount_scalarArray_triggersHibernateAssertion() {
+        // ❌ Scalar arrays in Phase 4 scalar-subquery form fail the same way scalar EXISTS does:
+        // resolving the body predicate `t > 5` on a basic-array unnest alias triggers the
+        // Hibernate-internal `SqmMappingModelHelper.resolveSqmPath` AssertionError. Phase 4 is
+        // STRUCT-ARRAY ONLY for this surface. Scalar users have `array_contains` for value
+        // equality.
+        var thrown = catchThrowable(() -> captureFromHqlForTuple(
+                "select i.id, (select count(*) from i.tags t where t > 5) from Item i"));
+        var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
+        assertThat(captured)
+                .as("scalar subquery over int[] should fail in SQM resolution; suppressed: %s", thrown)
+                .isNull();
+    }
+
+    @Test
+    void inSubquery_scalarArray_triggersHibernateAssertion() {
+        // ❌ IN-subquery over scalar arrays fails the same way. Phase 4 IN-subquery surface is
+        // STRUCT-ARRAY ONLY.
+        var thrown = catchThrowable(
+                () -> captureFromHql("select i from Item i where 5 in (select t from i.tags t)"));
+        var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
+        assertThat(captured)
+                .as("IN-subquery over int[] should fail in SQM resolution; suppressed: %s", thrown)
                 .isNull();
     }
 

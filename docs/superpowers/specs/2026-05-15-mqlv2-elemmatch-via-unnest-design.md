@@ -71,7 +71,7 @@ The viable alternative is `@Embeddable @Struct(name = "…")` on the element cla
 - Aggregates over join-alias columns: `SELECT o.id, sum(a.qty) FROM O o JOIN o.array a GROUP BY o.id`.
 - `count(*)` scalar subqueries over a collection-valued path in SELECT lists: `SELECT o.id, (SELECT count(*) FROM o.array a WHERE …) FROM O o`.
 - Element values in IN/NOT-IN subqueries: `WHERE x IN (SELECT a.col FROM o.array a)`.
-- Struct-array shape for EXISTS. Both struct-array and scalar-array shapes for scalar subqueries (`(SELECT count(*) FROM o.array a …)`) and IN subqueries — those use the implicit-collection-path form too, but Phase 0 confirmed only the struct case for EXISTS. The MQLv2 emission for the supported scalar cases differs only in the inner column-reference rewrite (`$` for scalars vs. `$.<field>` for structs).
+- **Struct-array shape only** for EXISTS, scalar subqueries, and IN subqueries. Phase 0/2 diagnostics confirmed scalar arrays (`int[]`, etc.) trigger the same `SqmMappingModelHelper.resolveSqmPath` AssertionError under all three implicit-collection-path idioms because Hibernate can't resolve body predicates on a basic-array unnest alias. Scalar users have `array_contains(o.array, value)` for value equality.
 - ~~Nested EXISTS over array of docs each containing an array~~ — Phase 2 execution found this is **also blocked by a Hibernate SQM limitation**: correlating an unnest alias (a `SqmFunctionJoin`) into a deeper subquery throws `ClassCastException: SqmFunctionJoin cannot be cast to SqmSingularValuedJoin`. The MQLv2 server handles nested `any` correctly; Hibernate just can't generate the HQL that would compile to it. Documented as a negative test (`nestedExistsOverStructArray_unsupported`).
 - Correlation: inner predicates may reference outer-query columns through the existing `$__vN` `let`-binding mechanism. No new infrastructure.
 - `NOT EXISTS`, `NOT IN` — flow through existing negation handling with `(not ...)`.
@@ -82,7 +82,7 @@ The viable alternative is `@Embeddable @Struct(name = "…")` on the element cla
 - `@JdbcTypeCode(SqlTypes.JSON)` array storage. Storage uses `@Embeddable @Struct(name=…)` only.
 - `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` on the field — Phase 0 found this fails with *"No JdbcTypeConstructor registered for SqlTypes.STRUCT_ARRAY"* under MongoDialect. The struct nature must come from `@Struct` on the embeddable class, not from `@JdbcTypeCode` on the field.
 - The HQL `LATERAL unnest(…)` form inside EXISTS subqueries or scalar SELECT subqueries. Hibernate 7's HQL grammar rejects this; use the implicit collection-path form instead.
-- Scalar-array EXISTS (`WHERE EXISTS (SELECT 1 FROM o.scalarArray a …)`). Phase 0 confirmed this triggers a Hibernate-internal SQM AssertionError on `int[]`. The translator can't reach this case — Hibernate doesn't produce a usable AST. Users targeting scalar arrays use `array_contains` or Phase 3's JOIN+DISTINCT workaround.
+- **All scalar-array shapes that need a body predicate on the unnest alias** — scalar EXISTS (`WHERE EXISTS (SELECT 1 FROM o.scalarArray a WHERE a > ?)`), scalar `count(*)` subquery (`(SELECT count(*) FROM o.scalarArray a WHERE a > ?)`), and scalar IN-subquery (`WHERE x IN (SELECT a FROM o.scalarArray a)`). All three trigger Hibernate's `SqmMappingModelHelper.resolveSqmPath` AssertionError because Hibernate's SQM cannot resolve `a` when it's a basic-array unnest result. The MQLv2 server-side `scalarArray any ($ > ?)` form is correct; Hibernate just won't generate HQL that compiles to it. Users targeting scalar arrays use `array_contains` for value equality.
 - Nested EXISTS (`WHERE EXISTS (SELECT 1 FROM o.array a WHERE EXISTS (SELECT 1 FROM a.subarray b …))`). Phase 2 confirmed this also fails inside Hibernate: an unnest alias cannot be correlated into a deeper EXISTS subquery — Hibernate throws `ClassCastException: SqmFunctionJoin cannot be cast to SqmSingularValuedJoin`. The MQLv2 `any($.subarray any (...))` form is server-side-correct but HQL-unbuildable. Documented as a negative test in Phase 2.
 - Projecting join-alias fields from inside an EXISTS subquery. Throws with a message pointing to the JOIN form.
 - Non-count scalar aggregates over unnest (`(SELECT max(a.price) FROM o.array a)`). MQLv2 has no `max(pipeline)` / `sum(pipeline)` / `avg(pipeline)` / `min(pipeline)` form; only `count(pipeline)`. Throws with a documented reason; the feature lights up automatically if MQLv2 grows the missing forms upstream.
@@ -193,11 +193,11 @@ Translator additions in `Mqlv2SelectTranslator`:
 
 ### Phase 4 — Scalar subqueries and IN subqueries over arrays
 
-**HQL user surfaces:**
+**HQL user surfaces — struct arrays only:**
 - `count(*)` scalar subquery: `SELECT o.id, (SELECT count(*) FROM o.array a WHERE …) FROM O o`. Implicit collection-path form; Phase 0 confirmed the SQL AST contains a `SelectStatement` expression whose FROM root is `FunctionTableReference("unnest")`.
 - IN subquery: `WHERE x IN (SELECT a.col FROM o.array a WHERE …)`. Same shape inside an `InSubQueryPredicate`.
 
-The `LATERAL unnest` form inside scalar SELECT subqueries does **not** parse in HQL; use the implicit collection-path form throughout Phase 4.
+The `LATERAL unnest` form inside scalar SELECT subqueries does **not** parse in HQL; use the implicit collection-path form throughout Phase 4. **Scalar-array variants of both surfaces are unsupported** — Phase 2's expanded diagnostic showed scalar `(SELECT count(*) FROM o.tags a WHERE a > ?)` and `WHERE x IN (SELECT a FROM o.tags a)` both trigger the same Hibernate-internal `SqmMappingModelHelper.resolveSqmPath` AssertionError that scalar EXISTS hits. Phase 4 is struct-only by the same root cause.
 
 Translator additions in `Mqlv2SelectTranslator`:
 

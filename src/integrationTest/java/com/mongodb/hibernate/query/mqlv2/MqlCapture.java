@@ -21,12 +21,12 @@ import java.io.Serializable;
 import org.hibernate.resource.jdbc.spi.StatementInspector;
 
 /**
- * Hibernate {@link StatementInspector} that captures every rendered JDBC SQL (which for the v2
- * dialect is a JSON-encoded MQLv2 command) into a thread-local. Used by integration tests that
- * need to assert on the emitted pipeline text in addition to the executed result rows.
+ * Hibernate {@link StatementInspector} that captures every rendered JDBC SQL (which for the v2 dialect is a
+ * JSON-encoded MQLv2 command) into a thread-local. Used by integration tests that need to assert on the emitted
+ * pipeline text in addition to the executed result rows.
  *
- * <p>Wired via {@code @Setting(name = STATEMENT_INSPECTOR, value =
- * "com.mongodb.hibernate.query.mqlv2.MqlCapture")} on the test class's {@code @ServiceRegistry}.
+ * <p>Wired via {@code @Setting(name = STATEMENT_INSPECTOR, value = "com.mongodb.hibernate.query.mqlv2.MqlCapture")} on
+ * the test class's {@code @ServiceRegistry}.
  */
 public final class MqlCapture implements StatementInspector, Serializable {
     @Serial

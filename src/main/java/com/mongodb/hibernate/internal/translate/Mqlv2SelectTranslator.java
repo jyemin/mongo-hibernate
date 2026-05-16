@@ -83,11 +83,11 @@ import org.hibernate.sql.ast.tree.expression.TrimSpecification;
 import org.hibernate.sql.ast.tree.expression.UnaryOperation;
 import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.from.FunctionTableReference;
-import org.hibernate.sql.ast.tree.from.TableReference;
 import org.hibernate.sql.ast.tree.from.NamedTableReference;
 import org.hibernate.sql.ast.tree.from.QueryPartTableReference;
 import org.hibernate.sql.ast.tree.from.TableGroup;
 import org.hibernate.sql.ast.tree.from.TableGroupJoin;
+import org.hibernate.sql.ast.tree.from.TableReference;
 import org.hibernate.sql.ast.tree.from.TableReferenceJoin;
 import org.hibernate.sql.ast.tree.from.ValuesTableReference;
 import org.hibernate.sql.ast.tree.insert.InsertSelectStatement;
@@ -467,22 +467,25 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         var where = innerSpec.getWhereClauseRestrictions();
         if (where != null && !where.isEmpty()) {
             innerSb.append(" | match ");
-            appendPredicateTextWithResolver(innerSb, where, outerCorrelatedResolver(outerQualifiers, correlatedBindings));
+            appendPredicateTextWithResolver(
+                    innerSb, where, outerCorrelatedResolver(outerQualifiers, correlatedBindings));
         }
         return innerSb.toString();
     }
 
-    /** Decides how a {@link ColumnReference} encountered inside a predicate/expression walker is rendered.
-     *  Implementations: outer-correlated (used by existing EXISTS/IN/ANY/ALL paths) and inside-any (used by Phase 2). */
+    /**
+     * Decides how a {@link ColumnReference} encountered inside a predicate/expression walker is rendered.
+     * Implementations: outer-correlated (used by existing EXISTS/IN/ANY/ALL paths) and inside-any (used by Phase 2).
+     */
     @FunctionalInterface
     private interface ColumnReferenceResolver {
         void render(StringBuilder sb, ColumnReference cr);
     }
 
     /**
-     * Returns a {@link ColumnReferenceResolver} that implements the existing outer-correlated logic:
-     * references to outer-query aliases are bound to {@code $__vN} variables; all others have their
-     * qualifier stripped (inner subquery alias is just a Hibernate internal alias).
+     * Returns a {@link ColumnReferenceResolver} that implements the existing outer-correlated logic: references to
+     * outer-query aliases are bound to {@code $__vN} variables; all others have their qualifier stripped (inner
+     * subquery alias is just a Hibernate internal alias).
      */
     private ColumnReferenceResolver outerCorrelatedResolver(
             Set<String> outerQualifiers, Map<String, String> correlatedBindings) {
@@ -503,18 +506,17 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
     /**
      * Builds a resolver for column references encountered inside an {@code any} body. Rule:
+     *
      * <ul>
-     *   <li>Qualifier matches an unnest alias on the stack → {@code $.<column>}
-     *       (resolved against the current element of the array).
+     *   <li>Qualifier matches an unnest alias on the stack → {@code $.<column>} (resolved against the current element
+     *       of the array).
      *   <li>Qualifier matches an outer-query alias → {@code $__vN} via the outer-correlated path.
      *   <li>Qualifier is null → {@code $.<column>} (treat as current element).
      *   <li>Otherwise → {@code FeatureNotSupportedException}.
      * </ul>
      */
     private ColumnReferenceResolver insideAnyResolver(
-            List<String> unnestAliasStack,
-            Set<String> outerQualifiers,
-            Map<String, String> correlatedBindings) {
+            List<String> unnestAliasStack, Set<String> outerQualifiers, Map<String, String> correlatedBindings) {
         var outerResolver = outerCorrelatedResolver(outerQualifiers, correlatedBindings);
         return (sb, cr) -> {
             var qualifier = cr.getQualifier();
@@ -533,9 +535,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     private void appendPredicateTextWithResolver(
-            StringBuilder sb,
-            Predicate predicate,
-            ColumnReferenceResolver resolver) {
+            StringBuilder sb, Predicate predicate, ColumnReferenceResolver resolver) {
         if (predicate instanceof ComparisonPredicate cp) {
             sb.append("(");
             appendExprTextWithResolver(sb, cp.getLeftHandExpression(), resolver);
@@ -592,10 +592,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         }
     }
 
-    private void appendExprTextWithResolver(
-            StringBuilder sb,
-            Expression expression,
-            ColumnReferenceResolver resolver) {
+    private void appendExprTextWithResolver(StringBuilder sb, Expression expression, ColumnReferenceResolver resolver) {
         if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
             appendExprTextWithResolver(sb, bvpi.getColumnReference(), resolver);
         } else if (expression instanceof ColumnReference cr) {
@@ -965,10 +962,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Translates {@code exists (select 1 from o.array a where <body>)} into MQLv2
-     * {@code (<arrayPath> any (<body-rewritten>))}, with outer-correlated references captured
-     * into a {@code let} wrapper around the {@code any} expression. Negation wraps the whole
-     * thing in {@code (not …)}.
+     * Translates {@code exists (select 1 from o.array a where <body>)} into MQLv2 {@code (<arrayPath> any
+     * (<body-rewritten>))}, with outer-correlated references captured into a {@code let} wrapper around the {@code any}
+     * expression. Negation wraps the whole thing in {@code (not …)}.
      */
     private void appendUnnestExistsPredicate(StringBuilder sb, ExistsPredicate ep) {
         var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
@@ -1309,8 +1305,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     // ---- Phase 2/3/4 unnest helpers ----
 
     /**
-     * @return true iff the table reference is a {@link FunctionTableReference} whose function
-     *     descriptor identifies as "unnest".
+     * @return true iff the table reference is a {@link FunctionTableReference} whose function descriptor identifies as
+     *     "unnest".
      */
     private static boolean isUnnestFunctionTable(TableReference ref) {
         return ref instanceof FunctionTableReference ftr
@@ -1318,29 +1314,26 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Returns the single argument expression to {@code unnest(<arg>)}. Throws {@link
-     * FeatureNotSupportedException} if the argument is not a simple {@link ColumnReference} or
-     * {@link BasicValuedPathInterpretation} (which would mean the user passed a literal array, a
-     * function call, or some other non-path expression).
+     * Returns the single argument expression to {@code unnest(<arg>)}. Throws {@link FeatureNotSupportedException} if
+     * the argument is not a simple {@link ColumnReference} or {@link BasicValuedPathInterpretation} (which would mean
+     * the user passed a literal array, a function call, or some other non-path expression).
      */
     private static Expression extractUnnestArrayPath(FunctionTableReference ftr) {
         var args = ftr.getFunctionExpression().getArguments();
         if (args.size() != 1) {
-            throw new FeatureNotSupportedException(
-                    "unnest() requires exactly one argument; got " + args.size());
+            throw new FeatureNotSupportedException("unnest() requires exactly one argument; got " + args.size());
         }
         var arg = args.get(0);
         if (arg instanceof ColumnReference || arg instanceof BasicValuedPathInterpretation<?>) {
             return (Expression) arg;
         }
-        throw new FeatureNotSupportedException(
-                "unnest() argument must be a path expression on an outer entity; got: "
-                        + arg.getClass().getSimpleName());
+        throw new FeatureNotSupportedException("unnest() argument must be a path expression on an outer entity; got: "
+                + arg.getClass().getSimpleName());
     }
 
     /**
-     * Returns the identification variable that aliases the rows of the unnest output (the "a" in
-     * {@code FROM o.array a}).
+     * Returns the identification variable that aliases the rows of the unnest output (the "a" in {@code FROM o.array
+     * a}).
      */
     private static String extractUnnestAlias(TableGroup group) {
         return ((FunctionTableReference) group.getPrimaryTableReference()).getIdentificationVariable();
