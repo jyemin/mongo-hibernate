@@ -46,7 +46,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
  * Diagnostic-only test that locks in the load-bearing AST-shape assumption Phases 2-4 of the elemMatch design depend
- * on: HQL {@code join lateral unnest(o.array) a on 1=1} produces a {@link FunctionTableReference} whose function
+ * on: HQL {@code join lateral unnest(o.array) a} produces a {@link FunctionTableReference} whose function
  * descriptor identifies as {@code "unnest"}.
  *
  * <p>Prerequisites the upgrade put in place:
@@ -108,7 +108,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
 
     @Test
     void scalarArrayJoinDesugarsToUnnestFunctionTableReference() {
-        var captured = captureFromHql("select i from Item i join lateral unnest(i.tags) t on 1=1");
+        // Structural JOIN parses for scalar arrays as long as the body never references `t`.
+        var captured = captureFromHql("select i from Item i join lateral unnest(i.tags) t");
         assertOuterUnnestJoin(captured);
     }
 
@@ -117,12 +118,12 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         // ❌ Even the explicit `LATERAL unnest` scalar JOIN form fails when the body references
         // the alias — `where t > 5` on a basic-array unnest alias triggers the same Hibernate
         // SqmMappingModelHelper.resolveSqmPath AssertionError that scalar EXISTS / Phase 4 hit.
-        // The earlier test (scalarArrayJoinDesugarsToUnnestFunctionTableReference) only passed
-        // because it used `on 1=1` with NO body predicate. Lesson: scalar arrays support the
-        // structural JOIN form but no useful filtering or projection on the alias. Phase 3's
-        // scalar story is therefore limited to value-equality via `array_contains`.
-        var thrown = catchThrowable(() ->
-                captureFromHql("select i from Item i join lateral unnest(i.tags) t on 1=1 where t > 5"));
+        // The structural JOIN (no body predicate on the alias) parses; the moment Hibernate
+        // has to resolve `t`, it gives up. Scalar JOIN is therefore limited to cardinality
+        // multiplication with no useful filtering; for predicate use, `array_contains` is the
+        // only supported scalar-array elemMatch-like mechanism.
+        var thrown = catchThrowable(
+                () -> captureFromHql("select i from Item i join lateral unnest(i.tags) t where t > 5"));
         var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
         assertThat(captured)
                 .as("scalar JOIN body predicate should fail in SQM resolution; suppressed: %s", thrown)
@@ -131,27 +132,27 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
 
     @Test
     void structArrayJoinDesugarsToUnnestFunctionTableReference() {
-        var captured = captureFromHql("select i from Item i join lateral unnest(i.structTags) t on 1=1");
+        var captured = captureFromHql("select i from Item i join lateral unnest(i.structTags) t");
         assertOuterUnnestJoin(captured);
     }
 
     @Test
     void structArrayJoinWithSimplePredicateProducesUnnest() {
         var captured =
-                captureFromHql("select i from Item i join lateral unnest(i.structTags) t on 1=1 where t.name = 'x'");
+                captureFromHql("select i from Item i join lateral unnest(i.structTags) t where t.name = 'x'");
         assertOuterUnnestJoin(captured);
     }
 
     @Test
     void structArrayJoinWithMultiPredicateProducesUnnest() {
         var captured = captureFromHql(
-                "select i from Item i join lateral unnest(i.structTags) t on 1=1 where t.name = 'x' and t.weight > 5");
+                "select i from Item i join lateral unnest(i.structTags) t where t.name = 'x' and t.weight > 5");
         assertOuterUnnestJoin(captured);
     }
 
     @Test
     void structArrayJoinProjectsAliasFields() {
-        var captured = captureFromHqlForTuple("select t.name from Item i join lateral unnest(i.structTags) t on 1=1");
+        var captured = captureFromHqlForTuple("select t.name from Item i join lateral unnest(i.structTags) t");
         assertOuterUnnestJoin(captured);
     }
 
