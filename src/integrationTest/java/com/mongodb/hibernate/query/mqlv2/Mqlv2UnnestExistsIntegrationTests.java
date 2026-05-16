@@ -89,6 +89,48 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 3);
     }
 
+    @Test
+    void existsOverStructArray_andConjunctionInBody() {
+        var hql = "from Order o where exists ("
+                + "select 1 from o.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)";
+        var results = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, Order.class).getResultList());
+
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (lineItems any (($.sku == \"WIDGET-1\") and ($.qty > 0)))"
+                        + " | format {_id: _id, lineItems: lineItems}");
+        // Order 1 has WIDGET-1 with qty=5 (matches); order 3 has WIDGET-1 with qty=0 (doesn't).
+        assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1);
+    }
+
+    @Test
+    void existsOverStructArray_orDisjunctionInBody() {
+        var hql = "from Order o where exists ("
+                + "select 1 from o.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)";
+        var results = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, Order.class).getResultList());
+
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (lineItems any (($.sku == \"WIDGET-1\") or ($.qty > 5)))"
+                        + " | format {_id: _id, lineItems: lineItems}");
+        // Order 1 matches (WIDGET-1), order 2 matches (qty=10), order 3 matches (WIDGET-1).
+        assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 2, 3);
+    }
+
+    @Test
+    void existsOverStructArray_notInsideBody() {
+        var hql = "from Order o where exists ("
+                + "select 1 from o.lineItems li where not (li.sku = 'WIDGET-1'))";
+        var results = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, Order.class).getResultList());
+
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (lineItems any (not ($.sku == \"WIDGET-1\")))"
+                        + " | format {_id: _id, lineItems: lineItems}");
+        // Order 1 has WIDGET-2 (matches NOT WIDGET-1), order 2 has GADGET-1 (matches), order 3 has only WIDGET-1 (doesn't match).
+        assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 2);
+    }
+
     // ---- Test entity / embeddable ----
 
     @Entity(name = "Order")
