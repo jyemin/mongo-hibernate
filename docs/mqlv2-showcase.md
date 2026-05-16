@@ -542,7 +542,7 @@ MQLv2: from $orders
 ### EXISTS
 
 ```
-HQL:   from Customer c where exists (select 1 from Order o where o.customerId = c.id)
+HQL:   from Customer c where exists (from Order o where o.customerId = c.id)
 
 MQLv2: from $customers
        | match (count(let $__v0 = _id in (from $orders | match (customerId == $__v0))) > 0)
@@ -554,7 +554,7 @@ MQLv2: from $customers
 ### NOT EXISTS
 
 ```
-HQL:   from Customer c where not exists (select 1 from Order o where o.customerId = c.id)
+HQL:   from Customer c where not exists (from Order o where o.customerId = c.id)
 
 MQLv2: from $customers
        | match (count(let $__v0 = _id in (from $orders | match (customerId == $__v0))) == 0)
@@ -719,7 +719,7 @@ class LineItem {
 ### EXISTS — single predicate
 
 ```
-HQL:   from Cart c where exists (select 1 from c.lineItems li where li.sku = 'WIDGET-1')
+HQL:   from Cart c where exists (from c.lineItems li where li.sku = 'WIDGET-1')
 
 MQLv2: from $carts
        | match (lineItems any ($.sku == "WIDGET-1"))
@@ -735,7 +735,7 @@ predicate element-by-element server-side.
 
 ```
 HQL:   from Cart c where exists (
-           select 1 from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)
+           from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)
 
 MQLv2: from $carts
        | match (lineItems any (($.sku == "WIDGET-1") and ($.qty > 0)))
@@ -748,7 +748,7 @@ MQLv2: from $carts
 
 ```
 HQL:   from Cart c where exists (
-           select 1 from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)
+           from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)
 
 MQLv2: from $carts
        | match (lineItems any (($.sku == "WIDGET-1") or ($.qty > 5)))
@@ -761,7 +761,7 @@ MQLv2: from $carts
 
 ```
 HQL:   from Cart c where exists (
-           select 1 from c.lineItems li where not (li.sku = 'WIDGET-1'))
+           from c.lineItems li where not (li.sku = 'WIDGET-1'))
 
 MQLv2: from $carts
        | match (lineItems any (not ($.sku == "WIDGET-1")))
@@ -773,7 +773,7 @@ MQLv2: from $carts
 ### NOT EXISTS
 
 ```
-HQL:   from Cart c where not exists (select 1 from c.lineItems li where li.sku = 'WIDGET-1')
+HQL:   from Cart c where not exists (from c.lineItems li where li.sku = 'WIDGET-1')
 
 MQLv2: from $carts
        | match (not (lineItems any ($.sku == "WIDGET-1")))
@@ -785,7 +785,7 @@ MQLv2: from $carts
 ### EXISTS — correlated outer reference
 
 ```
-HQL:   from Cart c where exists (select 1 from c.lineItems li where li.qty > c.minQty)
+HQL:   from Cart c where exists (from c.lineItems li where li.qty > c.minQty)
 
 MQLv2: from $carts
        | match let $__v0 = minQty in (lineItems any ($.qty > $__v0))

@@ -313,7 +313,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             // EXISTS
             check(
                     soft,
-                    "from Customer c where exists (select 1 from Order o where o.customerId = c.id)",
+                    "from Customer c where exists (from Order o where o.customerId = c.id)",
                     "from $customers"
                             + " | match (count(let $__v0 = _id in (from $orders | match (customerId == $__v0))) > 0)"
                             + " | " + fmtC);
@@ -321,7 +321,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             // NOT EXISTS
             check(
                     soft,
-                    "from Customer c where not exists (select 1 from Order o where o.customerId = c.id)",
+                    "from Customer c where not exists (from Order o where o.customerId = c.id)",
                     "from $customers"
                             + " | match (count(let $__v0 = _id in (from $orders | match (customerId == $__v0))) == 0)"
                             + " | " + fmtC);
@@ -403,39 +403,39 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             // EXISTS — single predicate
             check(
                     soft,
-                    "from Cart c where exists (select 1 from c.lineItems li where li.sku = 'WIDGET-1')",
+                    "from Cart c where exists (from c.lineItems li where li.sku = 'WIDGET-1')",
                     "from $carts | match (lineItems any ($.sku == \"WIDGET-1\")) | " + fmtCart);
 
             // EXISTS — AND conjunction in body
             check(
                     soft,
                     "from Cart c where exists ("
-                            + "select 1 from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)",
+                            + "from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)",
                     "from $carts | match (lineItems any (($.sku == \"WIDGET-1\") and ($.qty > 0))) | " + fmtCart);
 
             // EXISTS — OR disjunction in body
             check(
                     soft,
                     "from Cart c where exists ("
-                            + "select 1 from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)",
+                            + "from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)",
                     "from $carts | match (lineItems any (($.sku == \"WIDGET-1\") or ($.qty > 5))) | " + fmtCart);
 
             // EXISTS — NOT in body
             check(
                     soft,
-                    "from Cart c where exists (" + "select 1 from c.lineItems li where not (li.sku = 'WIDGET-1'))",
+                    "from Cart c where exists (" + "from c.lineItems li where not (li.sku = 'WIDGET-1'))",
                     "from $carts | match (lineItems any (not ($.sku == \"WIDGET-1\"))) | " + fmtCart);
 
             // NOT EXISTS
             check(
                     soft,
-                    "from Cart c where not exists (select 1 from c.lineItems li where li.sku = 'WIDGET-1')",
+                    "from Cart c where not exists (from c.lineItems li where li.sku = 'WIDGET-1')",
                     "from $carts | match (not (lineItems any ($.sku == \"WIDGET-1\"))) | " + fmtCart);
 
             // EXISTS — correlated outer reference
             check(
                     soft,
-                    "from Cart c where exists (select 1 from c.lineItems li where li.qty > c.minQty)",
+                    "from Cart c where exists (from c.lineItems li where li.qty > c.minQty)",
                     "from $carts | match let $__v0 = minQty in (lineItems any ($.qty > $__v0)) | " + fmtCart);
 
             // JOIN — single predicate (row-multiplying; re-wraps matched element)
