@@ -151,7 +151,7 @@ class ElemMatchIntegrationTests extends AbstractQueryIntegrationTests {
     }
 
     @Test
-    void existsAndOuterComparison_compose() {
+    void existsAndOuterComparisonCompose() {
         assertSelectionQuery(
                 "from ElemMatchCart c where exists (from c.lineItems li where li.sku = 'WIDGET-1') and c.id > 1 order by c.id",
                 ElemMatchCart.class,
