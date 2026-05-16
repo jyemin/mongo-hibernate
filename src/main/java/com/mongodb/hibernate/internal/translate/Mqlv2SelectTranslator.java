@@ -1185,6 +1185,115 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         }
     }
 
+    /**
+     * Translates {@code (SELECT count(*) FROM o.array a [WHERE <body>])} (when the inner FROM root is an unnest
+     * function table) into MQLv2 {@code count((from <arrayPath> | match (<body>)))}, using the subpipeline-expression
+     * form. Outer-correlated body references flow through the existing {@code $__vN} let-binding machinery.
+     *
+     * <p>Only {@code count()} is supported. Other aggregates ({@code max}, {@code sum}, etc.) have no pipeline-argument
+     * form in MQLv2 and throw {@link FeatureNotSupportedException}.
+     */
+    private void appendUnnestScalarSubquery(StringBuilder sb, SelectStatement ss) {
+        var innerSpec = ss.getQueryPart().getFirstQuerySpec();
+        var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+        var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
+
+        var selections = innerSpec.getSelectClause().getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
+        if (selections.size() != 1) {
+            throw new FeatureNotSupportedException("Scalar subquery over unnest() must project exactly one column");
+        }
+        var selExpr = selections.get(0).getExpression();
+        if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression<?> fn)
+                || !"count".equals(fn.getFunctionName())) {
+            throw new FeatureNotSupportedException(
+                    "Scalar subquery over unnest() must use count(); other aggregates have no "
+                            + "pipeline-argument form in MQLv2 yet");
+        }
+
+        var arrayPath = extractUnnestArrayPath(ftr);
+        var unnestAlias = extractUnnestAlias(innerRoot);
+
+        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+        var outerQualifiers = collectOuterQualifiers(outerSpec);
+        var correlatedBindings = new LinkedHashMap<String, String>();
+
+        var arrayPathSb = new StringBuilder();
+        appendExprText(arrayPathSb, arrayPath);
+
+        var innerPipelineSb = new StringBuilder("from ").append(arrayPathSb);
+        var where = innerSpec.getWhereClauseRestrictions();
+        if (where != null && !where.isEmpty()) {
+            var bodySb = new StringBuilder();
+            appendPredicateTextWithResolver(
+                    bodySb, where, insideAnyResolver(List.of(unnestAlias), outerQualifiers, correlatedBindings));
+            innerPipelineSb.append(" | match ").append(bodySb);
+        }
+
+        var subpipelineExpr = "(" + innerPipelineSb + ")";
+        var countExpr = "count(" + subpipelineExpr + ")";
+        sb.append(wrapWithLet(countExpr, correlatedBindings));
+    }
+
+    /**
+     * Translates {@code x [NOT] IN (SELECT a.col FROM o.array a [WHERE <body>])} (when the inner FROM root is an unnest
+     * function table) into MQLv2 {@code count(let $__v0 = x in ((from <arrayPath> | match ($.col == $__v0[ and
+     * <body>])))) [> 0 | == 0]}.
+     */
+    private void appendUnnestInSubQueryPredicate(StringBuilder sb, InSubQueryPredicate isp) {
+        var innerSpec = isp.getSubQuery().getQueryPart().getFirstQuerySpec();
+        var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+        var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
+
+        var selections = innerSpec.getSelectClause().getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
+        if (selections.size() != 1) {
+            throw new FeatureNotSupportedException("IN-subquery over unnest() must project exactly one column");
+        }
+        var projectedColName = simpleColumnName(selections.get(0).getExpression());
+
+        var arrayPath = extractUnnestArrayPath(ftr);
+        var unnestAlias = extractUnnestAlias(innerRoot);
+
+        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+        var outerQualifiers = collectOuterQualifiers(outerSpec);
+        var correlatedBindings = new LinkedHashMap<String, String>();
+
+        var testVarName = "$__v" + correlatedVarCounter++;
+
+        var arrayPathSb = new StringBuilder();
+        appendExprText(arrayPathSb, arrayPath);
+
+        // Build the match body: ($.<col> == $__vN [and <extra body>])
+        var matchBody = new StringBuilder("($.")
+                .append(projectedColName)
+                .append(" == ")
+                .append(testVarName)
+                .append(")");
+        var where = innerSpec.getWhereClauseRestrictions();
+        if (where != null && !where.isEmpty()) {
+            var extraBody = new StringBuilder();
+            appendPredicateTextWithResolver(
+                    extraBody, where, insideAnyResolver(List.of(unnestAlias), outerQualifiers, correlatedBindings));
+            matchBody = new StringBuilder("(")
+                    .append(matchBody)
+                    .append(" and ")
+                    .append(extraBody)
+                    .append(")");
+        }
+
+        // Subpipeline expression: (from <arrayPath> | match <matchBody>)
+        var innerPipeline = "(from " + arrayPathSb + " | match " + matchBody + ")";
+
+        var headSb = new StringBuilder();
+        appendExprText(headSb, isp.getTestExpression());
+        var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
+        var countCmp = isp.isNegated() ? " == 0)" : " > 0)";
+        sb.append("(count(").append(letExpr).append(")").append(countCmp);
+    }
+
     private void appendPredicateText(StringBuilder sb, Predicate predicate) {
         if (predicate instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr) {
             appendAnyAllPredicate(sb, cp, anyExpr.getSubquery(), false);
@@ -1243,32 +1352,38 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             sb.append(")");
         } else if (predicate instanceof InSubQueryPredicate isp) {
             var innerSpec = isp.getSubQuery().getQueryPart().getFirstQuerySpec();
-            var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
-                    .filter(s -> !s.isVirtual())
-                    .findFirst()
-                    .orElseThrow(() -> new FeatureNotSupportedException("IN subquery must project at least one column"))
-                    .getExpression();
-            var projectedColName = simpleColumnName(projectedExpr);
-
-            var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-            var outerQualifiers = collectOuterQualifiers(outerSpec);
-            var correlatedBindings = new LinkedHashMap<String, String>();
-
-            // Bind the test expression as the first $__vN variable
-            var testVarName = "$__v" + correlatedVarCounter++;
-
-            var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
-            // Add match stage: projected column == test variable
-            innerPipeline = innerPipeline + " | match (" + projectedColName + " == " + testVarName + ")";
-
-            var headSb = new StringBuilder();
-            appendExprText(headSb, isp.getTestExpression());
-            var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
-            var countExpr = "count(" + letExpr + ")";
-            if (isp.isNegated()) {
-                sb.append("(").append(countExpr).append(" == 0)");
+            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+            if (isUnnestFunctionTable(innerRoot.getPrimaryTableReference())) {
+                appendUnnestInSubQueryPredicate(sb, isp);
             } else {
-                sb.append("(").append(countExpr).append(" > 0)");
+                var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
+                        .filter(s -> !s.isVirtual())
+                        .findFirst()
+                        .orElseThrow(
+                                () -> new FeatureNotSupportedException("IN subquery must project at least one column"))
+                        .getExpression();
+                var projectedColName = simpleColumnName(projectedExpr);
+
+                var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+                var outerQualifiers = collectOuterQualifiers(outerSpec);
+                var correlatedBindings = new LinkedHashMap<String, String>();
+
+                // Bind the test expression as the first $__vN variable
+                var testVarName = "$__v" + correlatedVarCounter++;
+
+                var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
+                // Add match stage: projected column == test variable
+                innerPipeline = innerPipeline + " | match (" + projectedColName + " == " + testVarName + ")";
+
+                var headSb = new StringBuilder();
+                appendExprText(headSb, isp.getTestExpression());
+                var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
+                var countExpr = "count(" + letExpr + ")";
+                if (isp.isNegated()) {
+                    sb.append("(").append(countExpr).append(" == 0)");
+                } else {
+                    sb.append("(").append(countExpr).append(" > 0)");
+                }
             }
         } else if (predicate instanceof ExistsPredicate ep) {
             var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
@@ -1347,26 +1462,31 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             }
         } else if (expression instanceof SelectStatement ss) {
             var innerSpec = ss.getQueryPart().getFirstQuerySpec();
-            var selections = innerSpec.getSelectClause().getSqlSelections().stream()
-                    .filter(s -> !s.isVirtual())
-                    .toList();
-            if (selections.size() != 1) {
-                throw new FeatureNotSupportedException("Scalar subquery in SELECT must project exactly one column");
+            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+            if (isUnnestFunctionTable(innerRoot.getPrimaryTableReference())) {
+                appendUnnestScalarSubquery(sb, ss);
+            } else {
+                var selections = innerSpec.getSelectClause().getSqlSelections().stream()
+                        .filter(s -> !s.isVirtual())
+                        .toList();
+                if (selections.size() != 1) {
+                    throw new FeatureNotSupportedException("Scalar subquery in SELECT must project exactly one column");
+                }
+                var selExpr = selections.get(0).getExpression();
+                // Only count() is supported: MQLv2 count(pipeline) returns the pipeline cardinality.
+                // Other aggregates (sum, avg, min, max) have no equivalent pipeline-argument form in MQLv2.
+                if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression<?> fn)
+                        || !"count".equals(fn.getFunctionName())) {
+                    throw new FeatureNotSupportedException(
+                            "Scalar subquery in SELECT must use count(); other aggregates are not supported");
+                }
+                var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+                var outerQualifiers = collectOuterQualifiers(outerSpec);
+                var correlatedBindings = new LinkedHashMap<String, String>();
+                var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
+                var wrapped = wrapWithLet(innerPipeline, correlatedBindings);
+                sb.append("count(").append(wrapped).append(")");
             }
-            var selExpr = selections.get(0).getExpression();
-            // Only count() is supported: MQLv2 count(pipeline) returns the pipeline cardinality.
-            // Other aggregates (sum, avg, min, max) have no equivalent pipeline-argument form in MQLv2.
-            if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression<?> fn)
-                    || !"count".equals(fn.getFunctionName())) {
-                throw new FeatureNotSupportedException(
-                        "Scalar subquery in SELECT must use count(); other aggregates are not supported");
-            }
-            var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-            var outerQualifiers = collectOuterQualifiers(outerSpec);
-            var correlatedBindings = new LinkedHashMap<String, String>();
-            var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
-            var wrapped = wrapWithLet(innerPipeline, correlatedBindings);
-            sb.append("count(").append(wrapped).append(")");
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported expression: " + expression.getClass().getSimpleName());
