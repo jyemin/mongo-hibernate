@@ -1236,64 +1236,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         sb.append(wrapWithLet(countExpr, correlatedBindings));
     }
 
-    /**
-     * Translates {@code x [NOT] IN (SELECT a.col FROM o.array a [WHERE <body>])} (when the inner FROM root is an unnest
-     * function table) into MQLv2 {@code count(let $__v0 = x in ((from <arrayPath> | match ($.col == $__v0[ and
-     * <body>])))) [> 0 | == 0]}.
-     */
-    private void appendUnnestInSubQueryPredicate(StringBuilder sb, InSubQueryPredicate isp) {
-        var innerSpec = isp.getSubQuery().getQueryPart().getFirstQuerySpec();
-        var innerRoot = innerSpec.getFromClause().getRoots().get(0);
-        var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
-
-        var selections = innerSpec.getSelectClause().getSqlSelections().stream()
-                .filter(s -> !s.isVirtual())
-                .toList();
-        if (selections.size() != 1) {
-            throw new FeatureNotSupportedException("IN-subquery over unnest() must project exactly one column");
-        }
-        var projectedColName = simpleColumnName(selections.get(0).getExpression());
-
-        var arrayPath = extractUnnestArrayPath(ftr);
-        var unnestAlias = extractUnnestAlias(innerRoot);
-
-        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-        var outerQualifiers = collectOuterQualifiers(outerSpec);
-        var correlatedBindings = new LinkedHashMap<String, String>();
-
-        var testVarName = "$__v" + correlatedVarCounter++;
-
-        var arrayPathSb = new StringBuilder();
-        appendExprText(arrayPathSb, arrayPath);
-
-        // Build the match body: ($.<col> == $__vN [and <extra body>])
-        var matchBody = new StringBuilder("($.")
-                .append(projectedColName)
-                .append(" == ")
-                .append(testVarName)
-                .append(")");
-        var where = innerSpec.getWhereClauseRestrictions();
-        if (where != null && !where.isEmpty()) {
-            var extraBody = new StringBuilder();
-            appendPredicateTextWithResolver(
-                    extraBody, where, insideAnyResolver(List.of(unnestAlias), outerQualifiers, correlatedBindings));
-            matchBody = new StringBuilder("(")
-                    .append(matchBody)
-                    .append(" and ")
-                    .append(extraBody)
-                    .append(")");
-        }
-
-        // Subpipeline expression: (from <arrayPath> | match <matchBody>)
-        var innerPipeline = "(from " + arrayPathSb + " | match " + matchBody + ")";
-
-        var headSb = new StringBuilder();
-        appendExprText(headSb, isp.getTestExpression());
-        var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
-        var countCmp = isp.isNegated() ? " == 0)" : " > 0)";
-        sb.append("(count(").append(letExpr).append(")").append(countCmp);
-    }
-
     private void appendPredicateText(StringBuilder sb, Predicate predicate) {
         if (predicate instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr) {
             appendAnyAllPredicate(sb, cp, anyExpr.getSubquery(), false);
@@ -1351,39 +1293,38 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             }
             sb.append(")");
         } else if (predicate instanceof InSubQueryPredicate isp) {
+            // Note: IN-subquery over an unnest function table is Hibernate-SQM-blocked
+            // (resolveSqmPath AssertionError on the unnest FunctionJoin path during type
+            // inference in visitInSubQueryPredicate). The AST never reaches us, so no
+            // dispatch hook is needed here. See Mqlv2UnnestSubqueryIntegrationTests for the
+            // negative tests that lock the contract.
             var innerSpec = isp.getSubQuery().getQueryPart().getFirstQuerySpec();
-            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
-            if (isUnnestFunctionTable(innerRoot.getPrimaryTableReference())) {
-                appendUnnestInSubQueryPredicate(sb, isp);
+            var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
+                    .filter(s -> !s.isVirtual())
+                    .findFirst()
+                    .orElseThrow(() -> new FeatureNotSupportedException("IN subquery must project at least one column"))
+                    .getExpression();
+            var projectedColName = simpleColumnName(projectedExpr);
+
+            var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+            var outerQualifiers = collectOuterQualifiers(outerSpec);
+            var correlatedBindings = new LinkedHashMap<String, String>();
+
+            // Bind the test expression as the first $__vN variable
+            var testVarName = "$__v" + correlatedVarCounter++;
+
+            var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
+            // Add match stage: projected column == test variable
+            innerPipeline = innerPipeline + " | match (" + projectedColName + " == " + testVarName + ")";
+
+            var headSb = new StringBuilder();
+            appendExprText(headSb, isp.getTestExpression());
+            var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
+            var countExpr = "count(" + letExpr + ")";
+            if (isp.isNegated()) {
+                sb.append("(").append(countExpr).append(" == 0)");
             } else {
-                var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
-                        .filter(s -> !s.isVirtual())
-                        .findFirst()
-                        .orElseThrow(
-                                () -> new FeatureNotSupportedException("IN subquery must project at least one column"))
-                        .getExpression();
-                var projectedColName = simpleColumnName(projectedExpr);
-
-                var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-                var outerQualifiers = collectOuterQualifiers(outerSpec);
-                var correlatedBindings = new LinkedHashMap<String, String>();
-
-                // Bind the test expression as the first $__vN variable
-                var testVarName = "$__v" + correlatedVarCounter++;
-
-                var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
-                // Add match stage: projected column == test variable
-                innerPipeline = innerPipeline + " | match (" + projectedColName + " == " + testVarName + ")";
-
-                var headSb = new StringBuilder();
-                appendExprText(headSb, isp.getTestExpression());
-                var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
-                var countExpr = "count(" + letExpr + ")";
-                if (isp.isNegated()) {
-                    sb.append("(").append(countExpr).append(" == 0)");
-                } else {
-                    sb.append("(").append(countExpr).append(" > 0)");
-                }
+                sb.append("(").append(countExpr).append(" > 0)");
             }
         } else if (predicate instanceof ExistsPredicate ep) {
             var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();

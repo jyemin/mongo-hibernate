@@ -15,7 +15,7 @@ The user-facing HQL surface contains **no `unnest` keyword**:
 | EXISTS over array (canonical `$elemMatch`) | `WHERE EXISTS (SELECT 1 FROM o.array a WHERE …)` | `array any (<rewritten body>)` |
 | JOIN form, row-multiplying (struct arrays only) | `FROM O o JOIN o.array a WHERE …` | `\| unwind array \| match (…)` |
 | Scalar `count(*)` subquery over array | `(SELECT count(*) FROM o.array a WHERE …)` | `count((from array \| match (…)))` |
-| Element values in IN subquery | `WHERE x IN (SELECT a.col FROM o.array a)` | embedded `count(let … in ((from array \| match …))) > 0` |
+| ~~Element values in IN subquery~~ — Phase 4 execution found this is Hibernate-SQM-blocked (`resolveSqmPath` AssertionError during type inference, even for struct arrays). Documented as a negative test. | | |
 
 **How this works under the hood.** Hibernate 7 introduced `UnnestFunction` as a set-returning function descriptor. When the dialect registers `unnest()` (which `MongoDialect` now does — see Phase 0), Hibernate's SQM resolver desugars collection-valued path references like `o.array a` into a `FunctionTableReference("unnest", o.array)` in the SQL AST. The translator pattern-matches that node and emits MQLv2 `any(...)` (for EXISTS / scalar subquery / IN subquery) or `| unwind` (for outer-FROM joins). The `unnest` keyword is an internal AST detail, never something users type.
 
@@ -69,7 +69,6 @@ The viable alternative is `@Embeddable @Struct(name = "…")` on the element cla
 - Projection of join-alias columns: `SELECT o.id, a.sku FROM O o JOIN o.array a`.
 - Aggregates over join-alias columns: `SELECT o.id, sum(a.qty) FROM O o JOIN o.array a GROUP BY o.id`.
 - `count(*)` scalar subqueries over a collection-valued path in SELECT lists: `SELECT o.id, (SELECT count(*) FROM o.array a WHERE …) FROM O o`.
-- Element values in IN/NOT-IN subqueries: `WHERE x IN (SELECT a.col FROM o.array a)`.
 - **Struct-array shape only** for EXISTS, scalar subqueries, and IN subqueries. Phase 0/2 diagnostics confirmed scalar arrays (`int[]`, etc.) trigger the same `SqmMappingModelHelper.resolveSqmPath` AssertionError under all three implicit-collection-path idioms because Hibernate can't resolve body predicates on a basic-array unnest alias. Scalar users have `array_contains(o.array, value)` for value equality.
 - ~~Nested EXISTS over array of docs each containing an array~~ — Phase 2 execution found this is **also blocked by a Hibernate SQM limitation**: correlating an unnest alias (a `SqmFunctionJoin`) into a deeper subquery throws `ClassCastException: SqmFunctionJoin cannot be cast to SqmSingularValuedJoin`. The MQLv2 server handles nested `any` correctly; Hibernate just can't generate the HQL that would compile to it. Documented as a negative test (`nestedExistsOverStructArray_unsupported`).
 - Correlation: inner predicates may reference outer-query columns through the existing `$__vN` `let`-binding mechanism. No new infrastructure.
@@ -89,6 +88,7 @@ The viable alternative is `@Embeddable @Struct(name = "…")` on the element cla
 
   All trigger Hibernate's `SqmMappingModelHelper.resolveSqmPath` AssertionError because Hibernate's SQM cannot resolve `a` when it's a basic-array unnest result. The MQLv2 server-side `scalarArray any ($ > ?)` form is correct; Hibernate just won't generate HQL that compiles to it. Users targeting scalar arrays use `array_contains(o.array, value)` for value equality.
 - Nested EXISTS (`WHERE EXISTS (SELECT 1 FROM o.array a WHERE EXISTS (SELECT 1 FROM a.subarray b …))`). Phase 2 confirmed this also fails inside Hibernate: an unnest alias cannot be correlated into a deeper EXISTS subquery — Hibernate throws `ClassCastException: SqmFunctionJoin cannot be cast to SqmSingularValuedJoin`. The MQLv2 `any($.subarray any (...))` form is server-side-correct but HQL-unbuildable. Documented as a negative test in Phase 2.
+- IN-subqueries over arrays (`WHERE x IN (SELECT a.col FROM o.array a)`, `NOT IN`). Phase 4 confirmed this fails at Hibernate's SQM type-inference step (`visitInSubQueryPredicate` → `SqmMappingModelHelper.resolveSqmPath` AssertionError on a path through the unnest `FunctionJoin`). The translator helper was implemented and reverted as dead code; the AST never arrives. Documented as negative tests in Phase 4.
 - Projecting join-alias fields from inside an EXISTS subquery. Throws with a message pointing to the JOIN form.
 - Non-count scalar aggregates over unnest (`(SELECT max(a.price) FROM o.array a)`). MQLv2 has no `max(pipeline)` / `sum(pipeline)` / `avg(pipeline)` / `min(pipeline)` form; only `count(pipeline)`. Throws with a documented reason; the feature lights up automatically if MQLv2 grows the missing forms upstream.
 - HQL `index()` over arrays. Orthogonal to elemMatch; defer.
@@ -213,7 +213,7 @@ Translator additions in `Mqlv2SelectTranslator`:
 
 - The existing scalar-subquery handler in `appendExprText` (Mqlv2SelectTranslator.java:1034) currently restricts to `count()` over a regular `from $collection` subquery. Extend it: if the inner subquery's FROM is an unnest function table, emit `count((from <arrayPath> | match (<rewritten-body>)))` — a **subpipeline expression** wrapped in parens, since MQLv2's `|` stage operator only applies inside a pipeline, not to a sequence-valued expression directly. Reuses `appendPredicateTextInsideAny` for the body. For non-count scalar aggregates over unnest, throw with a clear documented-reason message.
 
-- The existing `InSubQueryPredicate` handler (Mqlv2SelectTranslator.java:937) similarly extends: if the subquery's FROM is an unnest function table, the projected column is rewritten as `$.<col>` and the inner sequence-expression becomes `(from <arrayPath> | match (...))`. The outer test value flows through the existing `$__vN` head-binding machinery.
+- ~~The existing `InSubQueryPredicate` handler also extends similarly.~~ — Phase 4 execution found `IN (SELECT a.col FROM o.array a)` is **Hibernate-SQM-blocked even for struct arrays**: Hibernate's `BaseSqmToSqlAstConverter.visitInSubQueryPredicate` performs type inference on the subquery's projected expression by calling `SqmMappingModelHelper.resolveSqmPath`, which throws `AssertionError` on a path resolved through an unnest `FunctionJoin`. The AST never reaches the translator. Documented as `inSubquery_overStructArray_hibernateBlocked` and `notInSubquery_overStructArray_hibernateBlocked` in `Mqlv2UnnestSubqueryIntegrationTests`. The MQLv2 server-side `count(let … in ((from array | match …))) > 0` form works; Hibernate just can't generate HQL that compiles to it.
 
 ### Phase 5 — Showcase and README polish
 
@@ -340,19 +340,17 @@ from $orders | format {_id: _id, big: count((from lineItems | match ($.qty > 5))
 
 For non-count scalar aggregates over unnest, throw with: *"Scalar subquery over unnest() must use count(); other aggregates have no pipeline-argument form in MQLv2 yet"*.
 
-### Phase 4 — Element values in IN-subqueries
+### Phase 4 — Element values in IN-subqueries (Hibernate-blocked)
 
-Input HQL:
+`WHERE x IN (SELECT a.col FROM o.array a)` was originally in scope. Phase 4 execution found this is blocked at Hibernate's SQM-to-SQL-AST stage: `BaseSqmToSqlAstConverter.visitInSubQueryPredicate` infers the type from the subquery's projected expression by calling `SqmMappingModelHelper.resolveSqmPath`, which throws `AssertionError` for paths through an unnest `FunctionJoin`. This fires before the translator is invoked.
+
+Locked as negative tests:
 ```hql
-from Order o where 'WIDGET-1' in (select li.sku from o.lineItems li)
+from Order o where 'WIDGET-1' in (select a.sku from o.lineItems a)   -- throws AssertionError
+from Order o where 5 not in (select a.qty from o.lineItems a)        -- throws AssertionError
 ```
 
-The `InSubQueryPredicate` handler is extended: if the subquery's FROM is an unnest function table, the projected column is rewritten as `$.<col>` and the inner sequence-expression becomes `(from <arrayPath> | match (...))` (subpipeline expression — see Phase 4 scalar-subquery section above for why parens). The outer test value flows through the existing `$__vN` head-binding machinery.
-
-Emission:
-```
-from $orders | match (count(let $__v0 = "WIDGET-1" in ((from lineItems | match ($.sku == $__v0)))) > 0)
-```
+The MQLv2 server-side form `count(let $__v0 = "WIDGET-1" in ((from lineItems | match ($.sku == $__v0)))) > 0` was verified executable via mongosh, but Hibernate refuses to generate the HQL that would compile to it. Same class of limitation as nested EXISTS and scalar EXISTS — all rooted in `SqmMappingModelHelper.resolveSqmPath`'s inability to resolve paths through a `FunctionJoin`/`SqmFunctionJoin` node.
 
 ## Error handling
 
