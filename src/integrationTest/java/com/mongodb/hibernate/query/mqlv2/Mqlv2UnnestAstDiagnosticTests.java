@@ -113,6 +113,23 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
     }
 
     @Test
+    void scalarArrayJoinLateralUnnestForm_withBodyPredicate_triggersHibernateAssertion() {
+        // ❌ Even the explicit `LATERAL unnest` scalar JOIN form fails when the body references
+        // the alias — `where t > 5` on a basic-array unnest alias triggers the same Hibernate
+        // SqmMappingModelHelper.resolveSqmPath AssertionError that scalar EXISTS / Phase 4 hit.
+        // The earlier test (scalarArrayJoinDesugarsToUnnestFunctionTableReference) only passed
+        // because it used `on 1=1` with NO body predicate. Lesson: scalar arrays support the
+        // structural JOIN form but no useful filtering or projection on the alias. Phase 3's
+        // scalar story is therefore limited to value-equality via `array_contains`.
+        var thrown = catchThrowable(() ->
+                captureFromHql("select i from Item i join lateral unnest(i.tags) t on 1=1 where t > 5"));
+        var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
+        assertThat(captured)
+                .as("scalar JOIN body predicate should fail in SQM resolution; suppressed: %s", thrown)
+                .isNull();
+    }
+
+    @Test
     void structArrayJoinDesugarsToUnnestFunctionTableReference() {
         var captured = captureFromHql("select i from Item i join lateral unnest(i.structTags) t on 1=1");
         assertOuterUnnestJoin(captured);
