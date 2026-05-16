@@ -992,9 +992,7 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     @Override
     public void visitExistsPredicate(ExistsPredicate existsPredicate) {
         var shape = recognizeExistsOverUnnest(existsPredicate);
-        if (shape == null
-                || shape.body() == null
-                || referencesOutsideAlias(shape.body(), shape.innerAlias())) {
+        if (shape == null || shape.body() == null || !isBodySafeForElemMatch(shape.body(), shape.innerAlias())) {
             throw new FeatureNotSupportedException();
         }
         var bodyFilter = acceptAndYield(shape.body(), FILTER);
@@ -1222,60 +1220,55 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     private record ExistsOverUnnestShape(String arrayFieldName, String innerAlias, @Nullable Predicate body) {}
 
     /**
-     * Returns true if {@code predicate} contains any {@link ColumnReference} whose qualifier is not {@code innerAlias}.
-     * Used to reject correlated bodies inside an {@code $elemMatch} since v1's {@link #visitColumnReference} is
-     * qualifier-blind and would otherwise emit an unqualified field path that incorrectly resolves against the array
-     * element.
+     * Returns {@code true} if {@code predicate} is safe to use as an {@code $elemMatch} body — i.e., every
+     * {@link ColumnReference} inside it has the qualifier {@code innerAlias}, and every predicate type encountered
+     * is one we know how to walk. Fail-closed on unrecognized predicate types so a future translator extension can't
+     * silently produce wrong queries: v1's {@link #visitColumnReference} is qualifier-blind and would otherwise emit
+     * an unqualified field path that incorrectly resolves against the array element.
      */
-    private static boolean referencesOutsideAlias(Predicate predicate, String innerAlias) {
-        var found = new boolean[] {false};
-        walkColumnReferences(predicate, columnRef -> {
-            var qualifier = columnRef.getQualifier();
-            if (qualifier != null && !qualifier.equals(innerAlias)) {
-                found[0] = true;
-            }
-        });
-        return found[0];
-    }
-
-    /**
-     * Walks {@code predicate} and invokes {@code consumer} for every {@link ColumnReference} encountered. Recurses into
-     * the predicate subtypes Hibernate's SQL AST actually produces.
-     */
-    private static void walkColumnReferences(
-            @Nullable Predicate predicate, java.util.function.Consumer<ColumnReference> consumer) {
+    private static boolean isBodySafeForElemMatch(@Nullable Predicate predicate, String innerAlias) {
         if (predicate == null) {
-            return;
+            return true;
         }
         if (predicate instanceof ComparisonPredicate cp) {
-            walkExpressionColumnReferences(cp.getLeftHandExpression(), consumer);
-            walkExpressionColumnReferences(cp.getRightHandExpression(), consumer);
-        } else if (predicate instanceof Junction j) {
-            for (var p : j.getPredicates()) {
-                walkColumnReferences(p, consumer);
-            }
-        } else if (predicate instanceof NegatedPredicate np) {
-            walkColumnReferences(np.getPredicate(), consumer);
-        } else if (predicate instanceof GroupedPredicate gp) {
-            walkColumnReferences(gp.getSubPredicate(), consumer);
-        } else if (predicate instanceof BooleanExpressionPredicate bep) {
-            walkExpressionColumnReferences(bep.getExpression(), consumer);
-        } else if (predicate instanceof NullnessPredicate nullp) {
-            walkExpressionColumnReferences(nullp.getExpression(), consumer);
+            return isExpressionSafeForElemMatch(cp.getLeftHandExpression(), innerAlias)
+                    && isExpressionSafeForElemMatch(cp.getRightHandExpression(), innerAlias);
         }
-        // Other predicate types are not currently produced for $elemMatch bodies; if encountered they will fail
-        // downstream with FeatureNotSupportedException — leave them unhandled here.
+        if (predicate instanceof Junction j) {
+            for (var p : j.getPredicates()) {
+                if (!isBodySafeForElemMatch(p, innerAlias)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (predicate instanceof NegatedPredicate np) {
+            return isBodySafeForElemMatch(np.getPredicate(), innerAlias);
+        }
+        if (predicate instanceof GroupedPredicate gp) {
+            return isBodySafeForElemMatch(gp.getSubPredicate(), innerAlias);
+        }
+        if (predicate instanceof BooleanExpressionPredicate bep) {
+            return isExpressionSafeForElemMatch(bep.getExpression(), innerAlias);
+        }
+        // Unrecognized predicate type -> fail-closed.
+        return false;
     }
 
-    private static void walkExpressionColumnReferences(
-            Expression expression, java.util.function.Consumer<ColumnReference> consumer) {
-        if (expression instanceof ColumnReference cr) {
-            consumer.accept(cr);
-        } else if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
-            consumer.accept(bvpi.getColumnReference());
+    private static boolean isExpressionSafeForElemMatch(Expression expression, String innerAlias) {
+        if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
+            expression = bvpi.getColumnReference();
         } else if (expression instanceof SqlSelectionExpression sse) {
-            walkExpressionColumnReferences(sse.getSelection().getExpression(), consumer);
+            return isExpressionSafeForElemMatch(sse.getSelection().getExpression(), innerAlias);
         }
+        if (expression instanceof ColumnReference cr) {
+            var qualifier = cr.getQualifier();
+            return qualifier == null || qualifier.equals(innerAlias);
+        }
+        // Non-column-reference expression (literals, parameters, etc.) — safe.
+        // If a wrapper expression type ever exists that contains a ColumnReference, this returns true incorrectly.
+        // Add explicit handling here when such a case is identified.
+        return true;
     }
 
     private static void checkFromClauseSupportability(FromClause fromClause) {
