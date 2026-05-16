@@ -74,6 +74,7 @@ import com.mongodb.hibernate.internal.translate.mongoast.command.aggregate.AstSo
 import com.mongodb.hibernate.internal.translate.mongoast.command.aggregate.AstStage;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstComparisonFilterOperation;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstComparisonFilterOperator;
+import com.mongodb.hibernate.internal.translate.mongoast.filter.AstElemMatchFilterOperation;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstEmptyFilter;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstFieldOperationFilter;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstFilter;
@@ -990,7 +991,19 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
 
     @Override
     public void visitExistsPredicate(ExistsPredicate existsPredicate) {
-        throw new FeatureNotSupportedException();
+        var shape = recognizeExistsOverUnnest(existsPredicate);
+        if (shape == null
+                || shape.body() == null
+                || referencesOutsideAlias(shape.body(), shape.innerAlias())) {
+            throw new FeatureNotSupportedException();
+        }
+        var bodyFilter = acceptAndYield(shape.body(), FILTER);
+        AstFilter filter = new AstFieldOperationFilter(
+                shape.arrayFieldName(), new AstElemMatchFilterOperation(bodyFilter));
+        if (existsPredicate.isNegated()) {
+            filter = new AstLogicalFilter(NOR, List.of(filter));
+        }
+        astVisitorValueHolder.yield(FILTER, filter);
     }
 
     @Override
@@ -1157,6 +1170,111 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
         }
         if (mutationStatement instanceof AbstractUpdateOrDeleteStatement updateOrDeleteStatement) {
             checkFromClauseSupportability(updateOrDeleteStatement.getFromClause());
+        }
+    }
+
+    /**
+     * @return the detected shape if {@code existsPredicate}'s subquery matches the
+     *     {@code from <outerAlias>.<arrayField> li where <body>} pattern, otherwise {@code null}.
+     */
+    private static @Nullable ExistsOverUnnestShape recognizeExistsOverUnnest(ExistsPredicate existsPredicate) {
+        var select = existsPredicate.getExpression();
+        if (select == null) {
+            return null;
+        }
+        if (!(select.getQueryPart() instanceof QuerySpec qs)) {
+            return null;
+        }
+        if (qs.getFromClause().getRoots().size() != 1
+                || (qs.getGroupByClauseExpressions() != null
+                        && !qs.getGroupByClauseExpressions().isEmpty())
+                || (qs.getSortSpecifications() != null
+                        && !qs.getSortSpecifications().isEmpty())
+                || qs.getOffsetClauseExpression() != null
+                || qs.getFetchClauseExpression() != null) {
+            return null;
+        }
+        var root = qs.getFromClause().getRoots().get(0);
+        if (!root.getTableGroupJoins().isEmpty() || !root.getNestedTableGroupJoins().isEmpty()) {
+            return null;
+        }
+        if (!(root.getPrimaryTableReference() instanceof FunctionTableReference ftr)
+                || !"unnest".equals(ftr.getFunctionExpression().getFunctionName())) {
+            return null;
+        }
+        var args = ftr.getFunctionExpression().getArguments();
+        if (args.size() != 1) {
+            return null;
+        }
+        var arg = args.get(0);
+        String arrayFieldName;
+        if (arg instanceof ColumnReference colRef) {
+            arrayFieldName = colRef.getColumnExpression();
+        } else if (arg instanceof BasicValuedPathInterpretation<?> bvpi) {
+            arrayFieldName = bvpi.getColumnReference().getColumnExpression();
+        } else {
+            return null;
+        }
+        return new ExistsOverUnnestShape(
+                arrayFieldName, ftr.getIdentificationVariable(), qs.getWhereClauseRestrictions());
+    }
+
+    private record ExistsOverUnnestShape(String arrayFieldName, String innerAlias, @Nullable Predicate body) {}
+
+    /**
+     * Returns true if {@code predicate} contains any {@link ColumnReference} whose qualifier is not {@code innerAlias}.
+     * Used to reject correlated bodies inside an {@code $elemMatch} since v1's {@link #visitColumnReference} is
+     * qualifier-blind and would otherwise emit an unqualified field path that incorrectly resolves against the array
+     * element.
+     */
+    private static boolean referencesOutsideAlias(Predicate predicate, String innerAlias) {
+        var found = new boolean[] {false};
+        walkColumnReferences(predicate, columnRef -> {
+            var qualifier = columnRef.getQualifier();
+            if (qualifier != null && !qualifier.equals(innerAlias)) {
+                found[0] = true;
+            }
+        });
+        return found[0];
+    }
+
+    /**
+     * Walks {@code predicate} and invokes {@code consumer} for every {@link ColumnReference} encountered. Recurses into
+     * the predicate subtypes Hibernate's SQL AST actually produces.
+     */
+    private static void walkColumnReferences(
+            @Nullable Predicate predicate, java.util.function.Consumer<ColumnReference> consumer) {
+        if (predicate == null) {
+            return;
+        }
+        if (predicate instanceof ComparisonPredicate cp) {
+            walkExpressionColumnReferences(cp.getLeftHandExpression(), consumer);
+            walkExpressionColumnReferences(cp.getRightHandExpression(), consumer);
+        } else if (predicate instanceof Junction j) {
+            for (var p : j.getPredicates()) {
+                walkColumnReferences(p, consumer);
+            }
+        } else if (predicate instanceof NegatedPredicate np) {
+            walkColumnReferences(np.getPredicate(), consumer);
+        } else if (predicate instanceof GroupedPredicate gp) {
+            walkColumnReferences(gp.getSubPredicate(), consumer);
+        } else if (predicate instanceof BooleanExpressionPredicate bep) {
+            walkExpressionColumnReferences(bep.getExpression(), consumer);
+        } else if (predicate instanceof NullnessPredicate nullp) {
+            walkExpressionColumnReferences(nullp.getExpression(), consumer);
+        }
+        // Other predicate types are not currently produced for $elemMatch bodies; if encountered they will fail
+        // downstream with FeatureNotSupportedException — leave them unhandled here.
+    }
+
+    private static void walkExpressionColumnReferences(
+            Expression expression, java.util.function.Consumer<ColumnReference> consumer) {
+        if (expression instanceof ColumnReference cr) {
+            consumer.accept(cr);
+        } else if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
+            consumer.accept(bvpi.getColumnReference());
+        } else if (expression instanceof SqlSelectionExpression sse) {
+            walkExpressionColumnReferences(sse.getSelection().getExpression(), consumer);
         }
     }
 
