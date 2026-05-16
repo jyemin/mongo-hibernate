@@ -19,7 +19,9 @@ Note the IN-subquery case affects **struct arrays too**, not just scalar — eve
 
 ## Minimal reproducer
 
-Single Java file plus a one-line build dependency on `hibernate-core:7.3.4.Final` and an H2 driver.
+A runnable JUnit reproducer exists at [`hibernate7-unnest-bug-reproducers`](https://github.com/jyemin/hibernate7-unnest-bug-reproducers) — test class `SqmResolveFunctionJoinPathTest`, four `@Test` methods (one per affected HQL form). The repo uses H2 + Hibernate 7.3.4.Final + JUnit 5; no MongoDB. Run `gradle test`; all four tests pass, which means the bug still fires.
+
+Reproducer source (also embedded inline below for convenience):
 
 ```java
 import org.hibernate.cfg.Configuration;

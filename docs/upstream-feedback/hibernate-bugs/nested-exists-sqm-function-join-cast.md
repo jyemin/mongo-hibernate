@@ -25,6 +25,10 @@ from O o where exists (
 
 ## Minimal reproducer
 
+A runnable JUnit reproducer exists at [`hibernate7-unnest-bug-reproducers`](https://github.com/jyemin/hibernate7-unnest-bug-reproducers) — test class `NestedExistsSqmFunctionJoinCastTest`. Uses `PostgreSQLDialect` (H2 doesn't support `@Struct`) with `hibernate.boot.allow_jdbc_metadata_access=false` and a stub `ConnectionProvider`, so no live PostgreSQL server is needed — the bug fires at SQM-to-SQL conversion, before any SQL execution.
+
+Reproducer source (also embedded inline below for convenience):
+
 ```java
 import org.hibernate.cfg.Configuration;
 import jakarta.persistence.*;
