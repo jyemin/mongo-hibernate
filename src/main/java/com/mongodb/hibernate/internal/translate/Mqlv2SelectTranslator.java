@@ -592,53 +592,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         }
     }
 
-    /**
-     * Variant of {@link #appendPredicateTextWithResolver} that additionally handles
-     * {@link ExistsPredicate} nodes whose inner FROM root is an unnest. Used when an inner
-     * {@code any} body itself contains a nested EXISTS-over-unnest (i.e., nested {@code any}).
-     *
-     * <p>The {@code unnestAliasStack}, {@code outerQualifiers}, and {@code correlatedBindings}
-     * are carried so that the nested unnest helper can extend the alias stack and share the same
-     * correlated-binding map as the parent.
-     */
-    /**
-     * Context-aware variant of {@link #appendPredicateTextWithResolver(StringBuilder, Predicate, ColumnReferenceResolver)}
-     * that additionally handles {@link ExistsPredicate} nodes whose inner FROM root is an unnest.
-     * Used when an inner {@code any} body itself contains a nested EXISTS-over-unnest (i.e., nested
-     * {@code any}).
-     *
-     * <p>The {@code unnestAliasStack}, {@code outerQualifiers}, and {@code correlatedBindings}
-     * are carried so that the nested unnest helper can extend the alias stack and share the same
-     * correlated-binding map as the parent.
-     */
-    private void appendPredicateTextWithResolver(
-            StringBuilder sb,
-            Predicate predicate,
-            List<String> unnestAliasStack,
-            Set<String> outerQualifiers,
-            Map<String, String> correlatedBindings) {
-        if (predicate instanceof ExistsPredicate ep) {
-            var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
-            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
-            if (isUnnestFunctionTable(innerRoot.getPrimaryTableReference())) {
-                // Nested unnest EXISTS: emit nested any() inline (no let wrapping here —
-                // let wrapping is done by the outermost appendUnnestExistsPredicate call).
-                var anyExpr = buildUnnestAnyExpr(ep, unnestAliasStack, outerQualifiers, correlatedBindings);
-                if (ep.isNegated()) {
-                    sb.append("(not (").append(anyExpr).append("))");
-                } else {
-                    sb.append("(").append(anyExpr).append(")");
-                }
-            } else {
-                throw new FeatureNotSupportedException(
-                        "Non-unnest EXISTS inside an any() body is not supported");
-            }
-        } else {
-            appendPredicateTextWithResolver(
-                    sb, predicate, insideAnyResolver(unnestAliasStack, outerQualifiers, correlatedBindings));
-        }
-    }
-
     private void appendExprTextWithResolver(
             StringBuilder sb,
             Expression expression,
@@ -1012,80 +965,39 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Translates {@code exists (select 1 from <outerArrayPath> alias where <body>)} into
-     * MQLv2 {@code (<arrayPath> any (<body-rewritten>))}, with outer-correlated references
-     * captured into a {@code let} wrapper around the {@code any} expression. Negation wraps
-     * the whole thing in {@code (not …)}.
-     *
-     * <p>This top-level overload is called from {@link #appendPredicateText} for a first-level
-     * unnest EXISTS. It initialises the alias stack from the outer query and creates fresh
-     * correlated bindings.
+     * Translates {@code exists (select 1 from o.array a where <body>)} into MQLv2
+     * {@code (<arrayPath> any (<body-rewritten>))}, with outer-correlated references captured
+     * into a {@code let} wrapper around the {@code any} expression. Negation wraps the whole
+     * thing in {@code (not …)}.
      */
     private void appendUnnestExistsPredicate(StringBuilder sb, ExistsPredicate ep) {
-        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-        var outerQualifiers = collectOuterQualifiers(outerSpec);
-        var correlatedBindings = new LinkedHashMap<String, String>();
-        var anyExpr = buildUnnestAnyExpr(ep, List.of(), outerQualifiers, correlatedBindings);
-        // wrapWithLet wraps the any expression in parens (or a let clause), giving us
-        // "(arrayPath any body)" when correlatedBindings is empty, or
-        // "let $__vN = field in (arrayPath any body)" when there are correlated refs.
-        var wrapped = wrapWithLet(anyExpr, correlatedBindings);
-        if (ep.isNegated()) {
-            sb.append("(not ").append(wrapped).append(")");
-        } else {
-            sb.append(wrapped);
-        }
-    }
-
-    /**
-     * Builds the raw {@code <arrayPath> any <body>} string for an unnest EXISTS predicate.
-     * Called from {@link #appendUnnestExistsPredicate(StringBuilder, ExistsPredicate)} at the
-     * top level, and from the context-aware predicate walker for nested EXISTS.
-     *
-     * @param ep             the EXISTS predicate to translate
-     * @param parentAliasStack aliases from enclosing {@code any} scopes; extended here with the
-     *                         current unnest alias before walking the body predicates
-     * @param outerQualifiers  qualifiers of the outermost {@code FROM} root (used for correlated-
-     *                         variable binding)
-     * @param correlatedBindings mutable map accumulating {@code $__vN} bindings; shared across
-     *                           nesting levels so variable names stay unique
-     * @return the raw (unwrapped) {@code <arrayPath> any <body>} text
-     */
-    private String buildUnnestAnyExpr(
-            ExistsPredicate ep,
-            List<String> parentAliasStack,
-            Set<String> outerQualifiers,
-            Map<String, String> correlatedBindings) {
         var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
         var innerRoot = innerSpec.getFromClause().getRoots().get(0);
         var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
         var arrayPath = extractUnnestArrayPath(ftr);
         var unnestAlias = extractUnnestAlias(innerRoot);
 
-        // Extend the alias stack for the body predicates.
-        var bodyAliasStack = new ArrayList<String>(parentAliasStack);
-        bodyAliasStack.add(unnestAlias);
+        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+        var outerQualifiers = collectOuterQualifiers(outerSpec);
+        var correlatedBindings = new LinkedHashMap<String, String>();
 
-        // Render the array path: if we are inside an outer any() body the array path expression
-        // (e.g., "taxes" on a line-item element) must be rendered as "$.taxes" via the parent
-        // resolver. At the top level (parentAliasStack empty) we use the standard path.
         var arrayPathSb = new StringBuilder();
-        if (parentAliasStack.isEmpty()) {
-            appendExprText(arrayPathSb, arrayPath);
-        } else {
-            appendExprTextWithResolver(
-                    arrayPathSb, arrayPath, insideAnyResolver(parentAliasStack, outerQualifiers, correlatedBindings));
-        }
+        appendExprText(arrayPathSb, arrayPath);
 
         var bodySb = new StringBuilder();
         appendPredicateTextWithResolver(
                 bodySb,
                 innerSpec.getWhereClauseRestrictions(),
-                bodyAliasStack,
-                outerQualifiers,
-                correlatedBindings);
+                insideAnyResolver(List.of(unnestAlias), outerQualifiers, correlatedBindings));
 
-        return arrayPathSb + " any " + bodySb;
+        // wrapWithLet adds the outer parens (or a `let … in (...)` wrapper) around the
+        // any expression. Negation wraps the whole thing in `(not …)`.
+        var wrapped = wrapWithLet(arrayPathSb + " any " + bodySb, correlatedBindings);
+        if (ep.isNegated()) {
+            sb.append("(not ").append(wrapped).append(")");
+        } else {
+            sb.append(wrapped);
+        }
     }
 
     private void appendPredicateText(StringBuilder sb, Predicate predicate) {
