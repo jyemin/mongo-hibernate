@@ -100,6 +100,200 @@ class ElemMatchIntegrationTests extends AbstractQueryIntegrationTests {
     }
 
     @Test
+    void existsAndBody() {
+        assertSelectionQuery(
+                "from ElemMatchCart c where exists (from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0) order by c.id",
+                ElemMatchCart.class,
+                """
+                {
+                  "aggregate": "elemmatch_carts",
+                  "pipeline": [
+                    {
+                      "$match": {
+                        "lineItems": {
+                          "$elemMatch": {
+                            "$and": [
+                              {
+                                "sku": {
+                                  "$eq": "WIDGET-1"
+                                }
+                              },
+                              {
+                                "qty": {
+                                  "$gt": {"$numberInt": "0"}
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "$sort": {
+                        "_id": 1
+                      }
+                    },
+                    {
+                      "$project": {
+                        "_id": true,
+                        "lineItems": true,
+                        "minQty": true
+                      }
+                    }
+                  ]
+                }""",
+                resultList -> {
+                    var ids = new ArrayList<Integer>();
+                    resultList.forEach(c -> ids.add(c.id));
+                    assertThat(ids).containsExactly(1);
+                },
+                Set.of("elemmatch_carts"));
+    }
+
+    @Test
+    void existsOrBody() {
+        assertSelectionQuery(
+                "from ElemMatchCart c where exists (from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5) order by c.id",
+                ElemMatchCart.class,
+                """
+                {
+                  "aggregate": "elemmatch_carts",
+                  "pipeline": [
+                    {
+                      "$match": {
+                        "lineItems": {
+                          "$elemMatch": {
+                            "$or": [
+                              {
+                                "sku": {
+                                  "$eq": "WIDGET-1"
+                                }
+                              },
+                              {
+                                "qty": {
+                                  "$gt": {"$numberInt": "5"}
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "$sort": {
+                        "_id": 1
+                      }
+                    },
+                    {
+                      "$project": {
+                        "_id": true,
+                        "lineItems": true,
+                        "minQty": true
+                      }
+                    }
+                  ]
+                }""",
+                resultList -> {
+                    var ids = new ArrayList<Integer>();
+                    resultList.forEach(c -> ids.add(c.id));
+                    assertThat(ids).containsExactly(1, 2);
+                },
+                Set.of("elemmatch_carts"));
+    }
+
+    @Test
+    void existsNotBody() {
+        assertSelectionQuery(
+                "from ElemMatchCart c where exists (from c.lineItems li where not (li.sku = 'WIDGET-1')) order by c.id",
+                ElemMatchCart.class,
+                """
+                {
+                  "aggregate": "elemmatch_carts",
+                  "pipeline": [
+                    {
+                      "$match": {
+                        "lineItems": {
+                          "$elemMatch": {
+                            "$nor": [
+                              {
+                                "sku": {
+                                  "$eq": "WIDGET-1"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "$sort": {
+                        "_id": 1
+                      }
+                    },
+                    {
+                      "$project": {
+                        "_id": true,
+                        "lineItems": true,
+                        "minQty": true
+                      }
+                    }
+                  ]
+                }""",
+                resultList -> {
+                    var ids = new ArrayList<Integer>();
+                    resultList.forEach(c -> ids.add(c.id));
+                    assertThat(ids).containsExactly(1, 2, 3);
+                },
+                Set.of("elemmatch_carts"));
+    }
+
+    @Test
+    void notExistsBody() {
+        assertSelectionQuery(
+                "from ElemMatchCart c where not exists (from c.lineItems li where li.sku = 'WIDGET-1') order by c.id",
+                ElemMatchCart.class,
+                """
+                {
+                  "aggregate": "elemmatch_carts",
+                  "pipeline": [
+                    {
+                      "$match": {
+                        "$nor": [
+                          {
+                            "lineItems": {
+                              "$elemMatch": {
+                                "sku": {
+                                  "$eq": "WIDGET-1"
+                                }
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "$sort": {
+                        "_id": 1
+                      }
+                    },
+                    {
+                      "$project": {
+                        "_id": true,
+                        "lineItems": true,
+                        "minQty": true
+                      }
+                    }
+                  ]
+                }""",
+                resultList -> {
+                    var ids = new ArrayList<Integer>();
+                    resultList.forEach(c -> ids.add(c.id));
+                    assertThat(ids).containsExactly(3);
+                },
+                Set.of("elemmatch_carts"));
+    }
+
+    @Test
     void existsCorrelatedBodyThrowsFeatureNotSupported() {
         getSessionFactoryScope().inTransaction(session -> assertThatThrownBy(() -> session.createSelectionQuery(
                                 "from ElemMatchCart c where exists (from c.lineItems li where li.qty > c.minQty)",
