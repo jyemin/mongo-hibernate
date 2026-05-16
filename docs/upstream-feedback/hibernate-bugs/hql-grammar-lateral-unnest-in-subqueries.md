@@ -84,7 +84,7 @@ The grammar at position 1:43 expects an alias or junction after `unnest`, not a 
 
 ## Notes
 
-- Workaround for the EXISTS case: use the implicit collection-path form `from i.tags t` instead of `from lateral unnest(i.tags) t`. The implicit form parses fine and produces an equivalent SQL AST. However, the implicit form has its own limitations (see `sqm-function-join-not-first-class.md`).
+- Workaround for the EXISTS case: use the implicit collection-path form `from i.tags t` instead of `from lateral unnest(i.tags) t`. The implicit form parses fine and produces an equivalent SQL AST. However, the implicit form has its own limitations (see `basic-array-body-predicate-fails.md` and `nested-unnest-correlation-blocked.md`).
 - No workaround for the scalar SELECT subquery case using `LATERAL unnest` — must also use the implicit collection-path form.
 - If the restriction is intentional (e.g., to avoid ambiguity with some other grammar rule), the error message could be more helpful: pointing users toward the implicit collection-path form.
 - Fix: extend the HQL grammar's subquery-FROM-clause rule to accept `lateral` function-table-references, matching the rule used in the outer FROM clause.
