@@ -61,6 +61,36 @@ Use ["Extension for Hibernate ORM" at jira.mongodb.org](https://jira.mongodb.org
 
 Use ["Drivers & Frameworks"/"Frameworks (e.g. Django, Hibernate, EFCore)" at feedback.mongodb.com](https://feedback.mongodb.com/?category=7548141831345841376).
 
+## EXISTS over embedded arrays (`$elemMatch`)
+
+The MQLv1 translator supports HQL of the form
+`from <Entity> e where exists (from e.<collectionPath> x where <body>)`,
+emitting a `$match` stage that uses MongoDB's [`$elemMatch`](https://www.mongodb.com/docs/manual/reference/operator/query/elemMatch/)
+to evaluate the body element-by-element against the embedded array. The body may combine predicates
+with `AND`, `OR`, `NOT`, or be a single predicate. The outer form supports both `EXISTS` and `NOT EXISTS`.
+
+For example:
+
+```hql
+from Cart c where exists (from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)
+```
+
+emits the `$match` stage:
+
+```json
+{ "$match": { "lineItems": { "$elemMatch": { "$and": [ { "sku": { "$eq": "WIDGET-1" } }, { "qty": { "$gt": { "$numberInt": "0" } } } ] } } } }
+```
+
+Not yet supported in MQLv1:
+
+- Correlated body references to outer fields (e.g., `where li.qty > c.minQty`).
+- The JOIN form (`from Cart c join c.lineItems li where ...`) — it multiplies rows and does not map to `$elemMatch`.
+- IN-subquery form (`where 'WIDGET-1' in (select li.sku from c.lineItems li)`).
+- Nested EXISTS / array-in-array.
+- Scalar `count` subqueries over the embedded array.
+
+If you need any of the above, the [MQLv2 backend](#mqlv2-backend-skunkworks) provides broader coverage.
+
 ## MQLv2 Backend (Skunkworks)
 
 A new query backend — `Mqlv2SelectTranslator` — translates HQL SELECT queries directly into
