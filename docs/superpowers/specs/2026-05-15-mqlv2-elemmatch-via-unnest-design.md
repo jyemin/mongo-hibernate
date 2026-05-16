@@ -191,7 +191,7 @@ The translator does not need to distinguish the two HQL forms — both land at t
 
 Translator additions in `Mqlv2SelectTranslator`:
 
-- A new branch in `appendJoins` (Mqlv2SelectTranslator.java:336): for each `TableGroupJoin`, check `isUnnestFunctionTable(joinedGroup.getPrimaryTableReference())`. If true, emit `| unwind <arrayPath>` instead of `| join <alias>=$<collection>`. Don't recurse into the joined group's own joins — unwound elements don't carry further joins in this design.
+- A new branch in `appendJoins` (Mqlv2SelectTranslator.java:336): for each `TableGroupJoin`, check `isUnnestFunctionTable(joinedGroup.getPrimaryTableReference())`. If true, dispatch to `appendUnwindJoin`, which emits the **complex unwind form** `| unwind $__elem = <arrayPath> in {<parent columns>, <arrayPath>: $__elem}` — enumerating every parent column referenced anywhere in the query (via `collectParentColumnNames`) so they survive the unwind stage. (The simple `| unwind <arrayPath>` form would discard the parent document.) The `| format` stage downstream wraps the unwound array field as a singleton array (`<arrayPath>: [<arrayPath>]`) so Hibernate's `getArray()` on a STRUCT_ARRAY-typed field still finds an array on hydration.
 
 - A translator-scoped map `unnestAliasToFieldPath` populated as unnest joins are recognized. Used by `appendExprText` for column-reference resolution.
 
@@ -199,7 +199,7 @@ Translator additions in `Mqlv2SelectTranslator`:
 
 - `appendAggFieldRef` (Mqlv2SelectTranslator.java:768) gets the same rule for aggregates over unnest-alias columns.
 
-- **`hasJoins` state for unnest joins.** The existing translator sets `hasJoins=true` whenever a `TableGroupJoin` is present, which causes column references to be emitted with their qualifier prefix (e.g., `o.id`). An unnest join is conceptually a document transformation, not a separate-table join, so it does not need outer aliasing in MQLv2 — `from $orders | unwind lineItems` keeps outer columns unqualified. Phase 3 introduces a finer-grained signal that distinguishes "entity joins are present" (which require aliasing) from "only unnest joins are present" (which do not). Mixed cases — an entity join *and* an unnest join in the same query — fall back to the aliased form `from o=$orders | unwind o.lineItems | …`, so both regular outer joins and unnest-joins can coexist.
+- **`hasJoins` state for unnest joins.** The existing translator sets `hasJoins=true` whenever a `TableGroupJoin` is present, which causes column references to be emitted with their qualifier prefix (e.g., `o.id`). An unnest join is conceptually a document transformation, not a separate-table join, so it does not need outer aliasing in MQLv2 — the unwind body rebuilds the document with the parent columns at the top level, and downstream stages reference them unqualified. Phase 3 introduces a finer-grained signal that distinguishes "entity joins are present" (which require aliasing) from "only unnest joins are present" (which do not). Mixed cases — an entity join *and* an unnest join in the same query — are out of scope; if encountered, the existing qualifier-prefix path applies.
 
 ### Phase 4 — Scalar subqueries and IN subqueries over arrays
 
@@ -303,17 +303,25 @@ SQL AST after Hibernate 7 desugaring:
 Translator flow:
 
 1. `appendJoins` sees a `TableGroupJoin` with `isUnnestFunctionTable(joinedGroup.getPrimaryTableReference())` → true.
-2. Resolve the unnest's array path against the parent → `lineItems`. Emit `| unwind lineItems`. Skip the `| join` branch.
-3. Register `unnestAliasToFieldPath["li"] = "lineItems"`.
+2. Resolve the unnest's array path against the parent → `lineItems`. Register `unnestAliasToFieldPath["li"] = "lineItems"`.
+3. Emit a **complex unwind stage** that binds each element to `$__elem` and rebuilds the document so the parent fields stay visible: `| unwind $__elem = lineItems in {_id: _id, …other parent columns…, lineItems: $__elem}`. Skip the `| join` branch.
 4. `appendExprText` uses the new rule: `ColumnReference` qualifier `li` → emit `lineItems.<column>`. Applies to WHERE, SELECT, GROUP BY, ORDER BY.
 5. Pipeline emission proceeds through the existing match / group / sort / format codepaths.
+6. The `format` stage re-wraps the unwound `lineItems` field as a singleton array (`lineItems: [lineItems]`) so Hibernate's `getArray()` call during entity hydration finds an array of struct, not a single struct.
 
 Emission:
 ```
-from $orders | unwind lineItems | match (lineItems.qty > $p0) | format {_f0: id, _f1: lineItems.sku}
+from $orders
+  | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem}
+  | match (lineItems.qty > $p0)
+  | format {_id: _id, lineItems: [lineItems]}
 ```
 
 Cardinality is preserved by `| unwind`: one Order with three matching line items produces three result rows.
+
+**Why the complex `unwind $__elem = … in {…}` form instead of the simple `| unwind lineItems`:** MQLv2's simple unwind replaces the entire row document with each array element, losing all parent fields (including `_id`). Hibernate needs the parent's columns to remain visible after the unwind so it can hydrate the parent entity and resolve subsequent `o.id` references. The complex form binds the element to a variable and lets the body define the post-unwind shape; we enumerate every parent column that's referenced anywhere in the query (SELECT / WHERE / GROUP BY / ORDER BY / HAVING) plus the array field itself (mapped to the bound variable). Helper `collectParentColumnNames` scans the query AST to determine which parent columns to enumerate.
+
+**Why the format-stage `[lineItems]` re-wrap:** After unwinding, the row's `lineItems` slot holds a single struct (the current element), but Hibernate's result-set hydration calls `getArray()` on an `@JdbcTypeCode(STRUCT_ARRAY)`-typed field. Wrapping the unwound value as a singleton array makes the result shape match what Hibernate expects. Each result row contains one Order with a one-element `lineItems` array holding the matching line item.
 
 ### Phase 4 — `count(*)` scalar subquery over array
 
@@ -396,7 +404,7 @@ Tests are parameterized or duplicated across the two shapes for the core support
 
 **Phase 2 coverage:** single-condition body, multi-condition (AND/OR/NOT inside `any`), correlated and uncorrelated forms, NOT EXISTS, combined with non-unnest WHERE predicates, nested EXISTS (array-of-docs-with-array-of-docs — struct only), parameter-binding variants. The core EXISTS form is tested in both struct and scalar variants.
 
-**Phase 3 coverage:** predicates over join-alias, projection of join-alias columns, aggregates over join-alias columns, GROUP BY combinations — each tested in both struct and scalar variants. One explicit cardinality test — seed one Order with three matching elements, assert exactly three rows; covered once per shape since the unwind path differs trivially.
+**Phase 3 coverage:** struct arrays only — predicate over join-alias, projection of join-alias columns, aggregates over join-alias columns with GROUP BY, plus one cardinality test (one Order with two matching elements → two rows). One negative test documents that scalar JOIN with a body predicate or projection is unbuildable in HQL (Hibernate SQM AssertionError, locked in the diagnostic and re-tested here for users searching the feature surface).
 
 **Phase 4 coverage:** `count(*)` of unnest in scalar SELECT subqueries — both shapes; element values in IN/NOT-IN subqueries — both shapes (scalar element in scalar IN-subquery; struct field projected as scalar in IN-subquery); documented-throw tests for non-count scalar aggregates and projection inside EXISTS — once per shape where the error path is distinct.
 
