@@ -131,6 +131,19 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 2);
     }
 
+    @Test
+    void notExistsOverStructArray() {
+        var hql = "from Order o where not exists (select 1 from o.lineItems li where li.sku = 'WIDGET-1')";
+        var results = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, Order.class).getResultList());
+
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (not (lineItems any ($.sku == \"WIDGET-1\")))"
+                        + " | format {_id: _id, lineItems: lineItems}");
+        // Only order 2 lacks WIDGET-1.
+        assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(2);
+    }
+
     // ---- Test entity / embeddable ----
 
     @Entity(name = "Order")
