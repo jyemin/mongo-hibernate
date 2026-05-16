@@ -113,6 +113,16 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
         assertThat(byId).containsEntry(1, 6L).containsEntry(2, 10L).containsEntry(3, 0L);
     }
 
+    @Test
+    void joinOverStructArray_cardinalityIsRowMultiplying() {
+        // Order 1 has TWO line items; the JOIN should produce TWO rows (NOT deduplicated).
+        var hql = "select o.id, a.sku from Order o join o.lineItems a where o.id = 1";
+        var results = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, Object[].class).getResultList());
+        assertThat(results).hasSize(2);
+        assertThat(results).extracting(r -> r[1]).containsExactlyInAnyOrder("WIDGET-1", "WIDGET-2");
+    }
+
     // ---- Test entity / embeddable ----
 
     @Entity(name = "Order")
