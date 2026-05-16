@@ -2,7 +2,6 @@
 
 **Affected version(s):** Hibernate ORM 7.3.4.Final (likely earlier 7.x too)
 **Severity / type:** Bug
-**Discovered by:** MongoDB Hibernate extension `mqlv2` branch, Phase 0-4 elemMatch design execution (mongo-hibernate repo, May 2026)
 
 ## Summary
 
@@ -19,7 +18,7 @@ Note the IN-subquery case affects **struct arrays too**, not just scalar — eve
 
 ## Minimal reproducer
 
-A runnable JUnit reproducer exists at [`hibernate7-unnest-bug-reproducers`](https://github.com/jyemin/hibernate7-unnest-bug-reproducers) — test class `SqmResolveFunctionJoinPathTest`, four `@Test` methods (one per affected HQL form). The repo uses H2 + Hibernate 7.3.4.Final + JUnit 5; no MongoDB. Run `gradle test`; all four tests pass, which means the bug still fires.
+A runnable JUnit reproducer exists at [`hibernate7-unnest-bug-reproducers`](https://github.com/jyemin/hibernate7-unnest-bug-reproducers) — test class `SqmResolveFunctionJoinPathTest`, four `@Test` methods (one per affected HQL form). The repo uses H2 + Hibernate 7.3.4.Final + JUnit 5. Run `gradle test`; all four tests pass, which means the bug still fires.
 
 Reproducer source (also embedded inline below for convenience):
 
@@ -66,7 +65,7 @@ Hibernate should resolve the SQM path through the function-join alias and produc
 
 ## Actual behavior
 
-Stack trace (from MongoDB extension reproduction, but the failure is in Hibernate code only):
+Stack trace:
 
 ```
 java.lang.AssertionError
@@ -86,7 +85,7 @@ java.lang.AssertionError
 
 ## Notes
 
-- The MQLv2 server-side evaluation of the equivalent pipeline (`from $items | unwind $__elem = tags in {id: id, tags: $__elem} | match (tags > 5)`) executes correctly. The issue is purely on the HQL/SQM side; the SQL produced for a dialect that supports `unnest` would also be valid.
+- The issue is purely on the HQL/SQM side. The SQL that *would* be produced for a dialect that supports `unnest` is itself valid SQL:1999.
 - For struct arrays in `EXISTS` and `JOIN` body predicates (e.g., `where exists (select 1 from o.lineItems a where a.sku = ?)`), Hibernate does NOT hit this AssertionError — those paths resolve correctly. The difference is the basic-array case has no `MappingModelExpressible` representation for the unnest result's single anonymous column.
 - The presumed fix: extend `SqmMappingModelHelper.resolveSqmPath` (line 217 area) to handle `SqmFunctionJoin` / function-table paths, returning the basic-element mapping for the unnest result.
 - Related but distinct: `ClassCastException: SqmFunctionJoin cannot be cast to SqmSingularValuedJoin` (separate bug report, `nested-exists-sqm-function-join-cast.md`).

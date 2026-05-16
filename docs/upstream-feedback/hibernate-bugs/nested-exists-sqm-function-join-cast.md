@@ -2,7 +2,6 @@
 
 **Affected version(s):** Hibernate ORM 7.3.4.Final (likely earlier 7.x too)
 **Severity / type:** Bug
-**Discovered by:** MongoDB Hibernate extension `mqlv2` branch, Phase 2 elemMatch design execution (mongo-hibernate repo, May 2026)
 
 ## Summary
 
@@ -90,6 +89,6 @@ SELECT * FROM "Order" o WHERE EXISTS (
 
 ## Notes
 
-- The MQLv2 server-side evaluation of the equivalent pipeline (nested `any`: `from $orders | match (lineItems any ($.taxes any ($.code == "VAT")))`) executes correctly. The issue is purely on the HQL/SQM side.
+- The issue is purely on the HQL/SQM side; the SQL that *would* be produced (nested EXISTS with two correlated `LATERAL unnest` joins) is valid SQL:1999.
 - Likely related to `SqmMappingModelHelper.resolveSqmPath` cannot resolve paths through a `FunctionJoin` (separate bug report, `sqm-resolve-function-join-path.md`), but the symptom is different — that one throws `AssertionError` from path resolution, this one throws `ClassCastException` from correlation resolution. Both block `SqmFunctionJoin` from being a first-class citizen.
 - Fix: in the code that performs the cast, add a `SqmFunctionJoin` branch that handles correlation through a function-join alias.

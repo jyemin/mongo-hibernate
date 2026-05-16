@@ -21,7 +21,7 @@ Both forms are legitimate SQL:1999 syntax — `LATERAL` is permitted in any `<ta
 
 ## Minimal reproducer
 
-A runnable JUnit reproducer exists at [`hibernate7-unnest-bug-reproducers`](https://github.com/jyemin/hibernate7-unnest-bug-reproducers) — test class `HqlGrammarLateralUnnestInSubqueriesTest`, three `@Test` methods covering both blocked subquery forms plus the unblocked outer-FROM form for contrast. Uses H2 + Hibernate 7.3.4.Final + JUnit 5; no MongoDB.
+A runnable JUnit reproducer exists at [`hibernate7-unnest-bug-reproducers`](https://github.com/jyemin/hibernate7-unnest-bug-reproducers) — test class `HqlGrammarLateralUnnestInSubqueriesTest`, three `@Test` methods covering both blocked subquery forms plus the unblocked outer-FROM form for contrast. Uses H2 + Hibernate 7.3.4.Final + JUnit 5.
 
 Reproducer source (also embedded inline below for convenience):
 
