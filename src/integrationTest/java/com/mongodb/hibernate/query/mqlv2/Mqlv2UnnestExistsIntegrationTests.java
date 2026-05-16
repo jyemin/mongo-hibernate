@@ -69,11 +69,21 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
             session.persist(new Order(
                     1,
                     3,
-                    new LineItem[] {new LineItem("WIDGET-1", 5), new LineItem("WIDGET-2", 1)},
+                    new LineItem[] {
+                        new LineItem("WIDGET-1", 5, new Tax[] {new Tax("VAT", 0.10), new Tax("LOCAL", 0.05)}),
+                        new LineItem("WIDGET-2", 1, new Tax[] {new Tax("VAT", 0.10)})
+                    },
                     new int[] {10, 20, 30}));
-            session.persist(
-                    new Order(2, 5, new LineItem[] {new LineItem("GADGET-1", 10)}, new int[] {1, 2, 3}));
-            session.persist(new Order(3, 1, new LineItem[] {new LineItem("WIDGET-1", 0)}, new int[] {}));
+            session.persist(new Order(
+                    2,
+                    5,
+                    new LineItem[] {new LineItem("GADGET-1", 10, new Tax[] {new Tax("VAT", 0.10)})},
+                    new int[] {1, 2, 3}));
+            session.persist(new Order(
+                    3,
+                    1,
+                    new LineItem[] {new LineItem("WIDGET-1", 0, new Tax[] {new Tax("ZERO", 0)})},
+                    new int[] {}));
         });
         MqlCapture.LAST.remove();
     }
@@ -177,6 +187,22 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
                 .isInstanceOf(AssertionError.class);
     }
 
+    @Test
+    void nestedExistsOverStructArray_unsupported() {
+        // Hibernate 7.3.4's SQM cannot correlate an SqmFunctionJoin alias (e.g., "li" from
+        // "o.lineItems li") into a nested subquery's FROM clause. The inner "select 1 from
+        // li.taxes t" causes SqmSubQuery.correlate to throw ClassCastException because
+        // SqmFunctionJoin is not an SqmSingularValuedJoin. This is a Hibernate SQM limitation,
+        // not a translator limitation — no MQLv2 is ever emitted. This test locks the contract:
+        // nested EXISTS over a nested struct array fails at HQL semantic analysis.
+        var hql = "from Order o where exists ("
+                + "  select 1 from o.lineItems li where exists ("
+                + "    select 1 from li.taxes t where t.code = 'ZERO'))";
+        assertThatThrownBy(() -> sessionFactoryScope.inSession(
+                        session -> session.createSelectionQuery(hql, Order.class).getResultList()))
+                .isInstanceOf(org.hibernate.query.sqm.InterpretationException.class);
+    }
+
     // ---- Test entity / embeddable ----
 
     @Entity(name = "Order")
@@ -206,24 +232,52 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
     static class LineItem {
         String sku;
         int qty;
+        Tax[] taxes;
 
         LineItem() {}
 
-        LineItem(String sku, int qty) {
+        LineItem(String sku, int qty, Tax[] taxes) {
             this.sku = sku;
             this.qty = qty;
+            this.taxes = taxes;
         }
 
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
             if (!(o instanceof LineItem li)) return false;
-            return qty == li.qty && Objects.equals(sku, li.sku);
+            return qty == li.qty && Objects.equals(sku, li.sku) && java.util.Arrays.equals(taxes, li.taxes);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(sku, qty);
+            return Objects.hash(sku, qty, java.util.Arrays.hashCode(taxes));
+        }
+    }
+
+    @Embeddable
+    @Struct(name = "Tax")
+    static class Tax {
+        String code;
+        double rate;
+
+        Tax() {}
+
+        Tax(String code, double rate) {
+            this.code = code;
+            this.rate = rate;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Tax t)) return false;
+            return Double.compare(t.rate, rate) == 0 && Objects.equals(code, t.code);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(code, rate);
         }
     }
 }
