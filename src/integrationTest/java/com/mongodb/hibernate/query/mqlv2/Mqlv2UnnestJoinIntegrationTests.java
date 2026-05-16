@@ -64,9 +64,12 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
     void seed() {
         sessionFactoryScope.inTransaction(session -> {
             session.createMutationQuery("delete from Order").executeUpdate();
-            session.persist(new Order(1, new LineItem[] {new LineItem("WIDGET-1", 5), new LineItem("WIDGET-2", 1)}));
-            session.persist(new Order(2, new LineItem[] {new LineItem("GADGET-1", 10)}));
-            session.persist(new Order(3, new LineItem[] {new LineItem("WIDGET-1", 0)}));
+            session.persist(new Order(
+                    1,
+                    new LineItem[] {new LineItem("WIDGET-1", 5), new LineItem("WIDGET-2", 1)},
+                    new int[] {10, 20, 30}));
+            session.persist(new Order(2, new LineItem[] {new LineItem("GADGET-1", 10)}, new int[] {1, 2, 3}));
+            session.persist(new Order(3, new LineItem[] {new LineItem("WIDGET-1", 0)}, new int[] {}));
         });
         MqlCapture.LAST.remove();
     }
@@ -78,8 +81,10 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem}"
-                        + " | match (lineItems.sku == \"WIDGET-1\") | format {_id: _id, lineItems: [lineItems]}");
+                .isEqualTo(
+                        "from $orders | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem, scores: scores}"
+                                + " | match (lineItems.sku == \"WIDGET-1\")"
+                                + " | format {_id: _id, lineItems: [lineItems], scores: scores}");
         // Order 1 has WIDGET-1 (one match) → 1 row; order 3 has WIDGET-1 (one match) → 1 row; order 2 → 0 rows.
         // Row-multiplying JOIN: two rows total (NOT deduplicated like EXISTS).
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 3);
@@ -123,6 +128,16 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
         assertThat(results).extracting(r -> r[1]).containsExactlyInAnyOrder("WIDGET-1", "WIDGET-2");
     }
 
+    @Test
+    void joinOverScalarArray_withBodyPredicate_unsupported() {
+        // Scalar JOIN with a body predicate (s > 5) fails at HQL semantic-analysis time.
+        // Hibernate throws AssertionError when it cannot resolve the scalar path for the join alias.
+        var hql = "select o from Order o join o.scores s where s > 5";
+        assertThatThrownBy(() -> sessionFactoryScope.inSession(
+                        session -> session.createSelectionQuery(hql, Order.class).getResultList()))
+                .isInstanceOf(AssertionError.class);
+    }
+
     // ---- Test entity / embeddable ----
 
     @Entity(name = "Order")
@@ -133,11 +148,14 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
 
         LineItem[] lineItems;
 
+        int[] scores;
+
         Order() {}
 
-        Order(int id, LineItem[] lineItems) {
+        Order(int id, LineItem[] lineItems, int[] scores) {
             this.id = id;
             this.lineItems = lineItems;
+            this.scores = scores;
         }
     }
 
