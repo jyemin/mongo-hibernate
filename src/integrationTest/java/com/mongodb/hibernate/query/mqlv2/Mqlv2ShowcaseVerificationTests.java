@@ -21,14 +21,11 @@ import static org.hibernate.cfg.JdbcSettings.STATEMENT_INSPECTOR;
 
 import com.mongodb.hibernate.junit.MongoExtension;
 import jakarta.persistence.Query;
-import java.io.Serial;
-import java.io.Serializable;
 import java.time.Instant;
 import java.util.List;
 import java.util.function.Consumer;
 import org.assertj.core.api.SoftAssertions;
 import org.bson.BsonDocument;
-import org.hibernate.resource.jdbc.spi.StatementInspector;
 import org.hibernate.testing.orm.junit.DomainModel;
 import org.hibernate.testing.orm.junit.ServiceRegistry;
 import org.hibernate.testing.orm.junit.ServiceRegistryScope;
@@ -50,9 +47,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @ServiceRegistry(
         settings = {
             @Setting(name = DIALECT, value = "com.mongodb.hibernate.query.mqlv2.TestMqlv2Dialect"),
-            @Setting(
-                    name = STATEMENT_INSPECTOR,
-                    value = "com.mongodb.hibernate.query.mqlv2.Mqlv2ShowcaseVerificationTests$MqlCapture")
+            @Setting(name = STATEMENT_INSPECTOR, value = "com.mongodb.hibernate.query.mqlv2.MqlCapture")
         })
 @ExtendWith(MongoExtension.class)
 class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, ServiceRegistryScopeAware {
@@ -66,20 +61,6 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
 
     @Override
     public void injectServiceRegistryScope(ServiceRegistryScope scope) {}
-
-    /** Captures the MQLv2 JSON blob from each query before it reaches the driver. */
-    public static final class MqlCapture implements StatementInspector, Serializable {
-        @Serial
-        private static final long serialVersionUID = 1L;
-
-        static final ThreadLocal<String> LAST = new ThreadLocal<>();
-
-        @Override
-        public String inspect(String sql) {
-            LAST.set(sql);
-            return sql;
-        }
-    }
 
     private static final List<Mqlv2SelectIntegrationTests.Customer> CUSTOMERS = List.of(
             new Mqlv2SelectIntegrationTests.Customer(1, "Alice", 30, true),

@@ -68,7 +68,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
             @Setting(name = DIALECT, value = "com.mongodb.hibernate.query.mqlv2.TestMqlv2Dialect"),
             @Setting(
                     name = "hibernate.session_factory.statement_inspector",
-                    value = "com.mongodb.hibernate.query.mqlv2.Mqlv2ShowcaseVerificationTests$MqlCapture")
+                    value = "com.mongodb.hibernate.query.mqlv2.MqlCapture")
         })
 @ExtendWith(MongoExtension.class)
 @Disabled
@@ -256,7 +256,7 @@ class Mqlv2JoinDemoTests implements SessionFactoryScopeAware, ServiceRegistrySco
                 session -> session.createQuery(hql, Customer.class).getResultList());
         double elapsed = (System.nanoTime() - t0) / 1e9;
 
-        var captured = Mqlv2ShowcaseVerificationTests.MqlCapture.LAST.get();
+        var captured = MqlCapture.LAST.get();
         var mqlv2 = captured != null
                 ? BsonDocument.parse(captured).getString("mqlv2").getValue()
                 : "(not captured)";
