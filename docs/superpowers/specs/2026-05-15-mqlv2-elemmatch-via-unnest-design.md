@@ -14,8 +14,8 @@ The user-facing HQL surface contains **no `unnest` keyword**:
 |---|---|---|
 | EXISTS over array (canonical `$elemMatch`) | `WHERE EXISTS (SELECT 1 FROM o.array a WHERE …)` | `array any (<rewritten body>)` |
 | JOIN form, row-multiplying (struct arrays only) | `FROM O o JOIN o.array a WHERE …` | `\| unwind array \| match (…)` |
-| Scalar `count(*)` subquery over array | `(SELECT count(*) FROM o.array a WHERE …)` | `count(array \| match (…))` |
-| Element values in IN subquery | `WHERE x IN (SELECT a.col FROM o.array a)` | embedded `count(let … in (array \| match …)) > 0` |
+| Scalar `count(*)` subquery over array | `(SELECT count(*) FROM o.array a WHERE …)` | `count((from array \| match (…)))` |
+| Element values in IN subquery | `WHERE x IN (SELECT a.col FROM o.array a)` | embedded `count(let … in ((from array \| match …))) > 0` |
 
 **How this works under the hood.** Hibernate 7 introduced `UnnestFunction` as a set-returning function descriptor. When the dialect registers `unnest()` (which `MongoDialect` now does — see Phase 0), Hibernate's SQM resolver desugars collection-valued path references like `o.array a` into a `FunctionTableReference("unnest", o.array)` in the SQL AST. The translator pattern-matches that node and emits MQLv2 `any(...)` (for EXISTS / scalar subquery / IN subquery) or `| unwind` (for outer-FROM joins). The `unnest` keyword is an internal AST detail, never something users type.
 
@@ -191,7 +191,7 @@ The translator does not need to distinguish the two HQL forms — both land at t
 
 Translator additions in `Mqlv2SelectTranslator`:
 
-- A new branch in `appendJoins` (Mqlv2SelectTranslator.java:336): for each `TableGroupJoin`, check `isUnnestFunctionTable(joinedGroup.getPrimaryTableReference())`. If true, dispatch to `appendUnwindJoin`, which emits the **complex unwind form** `| unwind $__elem = <arrayPath> in {<parent columns>, <arrayPath>: $__elem}` — enumerating every parent column referenced anywhere in the query (via `collectParentColumnNames`) so they survive the unwind stage. (The simple `| unwind <arrayPath>` form would discard the parent document.) The `| format` stage downstream wraps the unwound array field as a singleton array (`<arrayPath>: [<arrayPath>]`) so Hibernate's `getArray()` on a STRUCT_ARRAY-typed field still finds an array on hydration.
+- A new branch in `appendJoins` (Mqlv2SelectTranslator.java:336): for each `TableGroupJoin`, check `isUnnestFunctionTable(joinedGroup.getPrimaryTableReference())`. If true, dispatch to `appendUnwindJoin`, which emits the **complex unwind form** `| unwind $__elem = <arrayPath> in {<parent columns>, <arrayPath>: $__elem}` — enumerating every parent column referenced anywhere in the query (via `collectParentColumnNames`) so they survive the unwind stage. (The simple `| unwind <arrayPath>` form would discard the parent document.) The `| format` stage downstream wraps the unwound array field as a singleton array (`<arrayPath>: [<arrayPath>]`) so Hibernate's `getArray()` call on the entity's array-typed field still finds an array on hydration.
 
 - A translator-scoped map `unnestAliasToFieldPath` populated as unnest joins are recognized. Used by `appendExprText` for column-reference resolution.
 
@@ -211,9 +211,9 @@ The `LATERAL unnest` form inside scalar SELECT subqueries does **not** parse in 
 
 Translator additions in `Mqlv2SelectTranslator`:
 
-- The existing scalar-subquery handler in `appendExprText` (Mqlv2SelectTranslator.java:1034) currently restricts to `count()` over a regular `from $collection` subquery. Extend it: if the inner subquery's FROM is an unnest function table, emit `count(<arrayPath> | match (<rewritten-body>))`, reusing `appendPredicateTextInsideAny`. For non-count scalar aggregates over unnest, throw with a clear documented-reason message.
+- The existing scalar-subquery handler in `appendExprText` (Mqlv2SelectTranslator.java:1034) currently restricts to `count()` over a regular `from $collection` subquery. Extend it: if the inner subquery's FROM is an unnest function table, emit `count((from <arrayPath> | match (<rewritten-body>)))` — a **subpipeline expression** wrapped in parens, since MQLv2's `|` stage operator only applies inside a pipeline, not to a sequence-valued expression directly. Reuses `appendPredicateTextInsideAny` for the body. For non-count scalar aggregates over unnest, throw with a clear documented-reason message.
 
-- The existing `InSubQueryPredicate` handler (Mqlv2SelectTranslator.java:937) similarly extends: if the subquery's FROM is an unnest function table, the projected column is rewritten as `$.<col>` and the inner pipeline becomes `<arrayPath> | match (...)`. The outer test value flows through the existing `$__vN` head-binding machinery.
+- The existing `InSubQueryPredicate` handler (Mqlv2SelectTranslator.java:937) similarly extends: if the subquery's FROM is an unnest function table, the projected column is rewritten as `$.<col>` and the inner sequence-expression becomes `(from <arrayPath> | match (...))`. The outer test value flows through the existing `$__vN` head-binding machinery.
 
 ### Phase 5 — Showcase and README polish
 
@@ -321,7 +321,7 @@ Cardinality is preserved by `| unwind`: one Order with three matching line items
 
 **Why the complex `unwind $__elem = … in {…}` form instead of the simple `| unwind lineItems`:** MQLv2's simple unwind replaces the entire row document with each array element, losing all parent fields (including `_id`). Hibernate needs the parent's columns to remain visible after the unwind so it can hydrate the parent entity and resolve subsequent `o.id` references. The complex form binds the element to a variable and lets the body define the post-unwind shape; we enumerate every parent column that's referenced anywhere in the query (SELECT / WHERE / GROUP BY / ORDER BY / HAVING) plus the array field itself (mapped to the bound variable). Helper `collectParentColumnNames` scans the query AST to determine which parent columns to enumerate.
 
-**Why the format-stage `[lineItems]` re-wrap:** After unwinding, the row's `lineItems` slot holds a single struct (the current element), but Hibernate's result-set hydration calls `getArray()` on an `@JdbcTypeCode(STRUCT_ARRAY)`-typed field. Wrapping the unwound value as a singleton array makes the result shape match what Hibernate expects. Each result row contains one Order with a one-element `lineItems` array holding the matching line item.
+**Why the format-stage `[lineItems]` re-wrap:** After unwinding, the row's `lineItems` slot holds a single struct (the current element). But the entity declares `LineItem[] lineItems` and Hibernate's result-set hydration calls `getArray()` for that field — it expects an array of struct, not a single struct. Wrapping the unwound value as a singleton array makes the result shape match. Each result row contains one Order with a one-element `lineItems` array holding the matching line item.
 
 ### Phase 4 — `count(*)` scalar subquery over array
 
@@ -331,11 +331,11 @@ select o.id, (select count(*) from o.lineItems li where li.qty > 5) as big
 from Order o
 ```
 
-The scalar-subquery codepath in `appendExprText` (Mqlv2SelectTranslator.java:1034) is extended: when the inner subquery's FROM root is an unnest function table, emit `count(<arrayPath> | match (<rewritten-body>))`. Body translation reuses `appendPredicateTextInsideAny`.
+The scalar-subquery codepath in `appendExprText` (Mqlv2SelectTranslator.java:1034) is extended: when the inner subquery's FROM root is an unnest function table, emit `count((from <arrayPath> | match (<rewritten-body>)))`. The inner `(from <arrayPath> | match (...))` is a **subpipeline expression**: parens wrap a pipeline so it can be used as a sequence-valued expression that `count(...)` consumes. (MQLv2's `|` is a stage operator that only works inside a pipeline; you can't apply `match` to a sequence-valued expression directly.) Body translation reuses `appendPredicateTextInsideAny`.
 
 Emission:
 ```
-from $orders | format {_f0: id, _f1: count(lineItems | match ($.qty > 5))}
+from $orders | format {_id: _id, big: count((from lineItems | match ($.qty > 5)))}
 ```
 
 For non-count scalar aggregates over unnest, throw with: *"Scalar subquery over unnest() must use count(); other aggregates have no pipeline-argument form in MQLv2 yet"*.
@@ -347,11 +347,11 @@ Input HQL:
 from Order o where 'WIDGET-1' in (select li.sku from o.lineItems li)
 ```
 
-The `InSubQueryPredicate` handler is extended: if the subquery's FROM is an unnest function table, the projected column is rewritten as `$.<col>` and the inner pipeline becomes `<arrayPath> | match (...)`. The outer test value flows through the existing `$__vN` head-binding machinery.
+The `InSubQueryPredicate` handler is extended: if the subquery's FROM is an unnest function table, the projected column is rewritten as `$.<col>` and the inner sequence-expression becomes `(from <arrayPath> | match (...))` (subpipeline expression — see Phase 4 scalar-subquery section above for why parens). The outer test value flows through the existing `$__vN` head-binding machinery.
 
 Emission:
 ```
-from $orders | match (count(let $__v0 = "WIDGET-1" in (lineItems | match ($.sku == $__v0))) > 0)
+from $orders | match (count(let $__v0 = "WIDGET-1" in ((from lineItems | match ($.sku == $__v0)))) > 0)
 ```
 
 ## Error handling
