@@ -1265,9 +1265,15 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
             var qualifier = cr.getQualifier();
             return qualifier == null || qualifier.equals(innerAlias);
         }
-        // Non-column-reference expression (literals, parameters, etc.) — safe.
-        // If a wrapper expression type ever exists that contains a ColumnReference, this returns true incorrectly.
-        // Add explicit handling here when such a case is identified.
+        // TODO: fail-open hazard. Anything that isn't a ColumnReference is currently treated as safe —
+        // correct for literals and parameters, but WRONG for any expression that *contains* a
+        // ColumnReference (e.g., BinaryArithmeticExpression, function-call args, CASE expressions).
+        // An HQL body like `where li.qty + c.minQty > 5` would slip past this check and emit a
+        // $elemMatch body that silently references the outer field. Latent today because v1's visitor
+        // throws FeatureNotSupportedException on those expression types before we get here — but the
+        // first time someone extends visitor coverage to one of them, this will produce wrong queries.
+        // Fix: recursively walk the Expression with an SqlAstWalker looking for ColumnReference nodes,
+        // mirroring the discipline of isBodySafeForElemMatch above.
         return true;
     }
 
