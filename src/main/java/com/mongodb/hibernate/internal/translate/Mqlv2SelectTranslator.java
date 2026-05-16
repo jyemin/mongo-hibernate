@@ -143,6 +143,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
     private @org.jspecify.annotations.Nullable LimitJdbcParameter limitJdbcParameter = null;
     private boolean hasJoins = false;
+    /** Maps join-alias → array field path for unnest joins (struct arrays). Populated by appendJoins
+     *  when emitting {@code | unwind <arrayPath>}; consulted by appendExprText / appendAggFieldRef so that
+     *  column references qualified by the unnest alias resolve to {@code <arrayPath>.<column>}. */
+    private final Map<String, String> unnestAliasToFieldPath = new LinkedHashMap<>();
     // Maps aggregate signature (e.g. "sum:total") → _aggN name; populated during GROUP BY translation
     private final Map<String, String> aggSignatureToName = new LinkedHashMap<>();
     // Intentionally global (not reset per subquery branch): $__vN names only need to be unique across
@@ -256,13 +260,17 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private SpecTranslation translateQuerySpecToMqlv2(QuerySpec querySpec) {
         var savedHasJoins = this.hasJoins;
         var savedAggMap = new LinkedHashMap<>(this.aggSignatureToName);
+        var savedUnnestMap = new LinkedHashMap<>(this.unnestAliasToFieldPath);
         this.aggSignatureToName.clear();
+        this.unnestAliasToFieldPath.clear();
         try {
             return buildQuerySpecTranslation(querySpec, null);
         } finally {
             this.hasJoins = savedHasJoins;
             this.aggSignatureToName.clear();
             this.aggSignatureToName.putAll(savedAggMap);
+            this.unnestAliasToFieldPath.clear();
+            this.unnestAliasToFieldPath.putAll(savedUnnestMap);
         }
     }
 
@@ -274,9 +282,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private SpecTranslation buildQuerySpecTranslation(QuerySpec querySpec, @Nullable QueryOptions queryOptions) {
         var sb = new StringBuilder();
         var root = querySpec.getFromClause().getRoots().get(0);
-        this.hasJoins = !root.getTableGroupJoins().isEmpty();
+        // Only count non-unnest joins: unnest joins translate to | unwind and don't introduce
+        // a new MQLv2 alias, so they must not trigger the qualifier-prefix path in appendExprText.
+        this.hasJoins = root.getTableGroupJoins().stream()
+                .anyMatch(tgj -> !isUnnestFunctionTable(tgj.getJoinedGroup().getPrimaryTableReference()));
         appendFrom(sb, root);
-        appendJoins(sb, root);
+        appendJoins(sb, root, querySpec);
         appendMatch(sb, querySpec);
         List<@Nullable String> aggNames = null;
         if (!querySpec.getGroupByClauseExpressions().isEmpty()) {
@@ -366,10 +377,17 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         }
     }
 
-    private void appendJoins(StringBuilder sb, TableGroup root) {
+    private void appendJoins(StringBuilder sb, TableGroup root, QuerySpec querySpec) {
         for (var tgj : root.getTableGroupJoins()) {
             var joinedGroup = tgj.getJoinedGroup();
-            var joinNtr = (NamedTableReference) joinedGroup.getPrimaryTableReference();
+            var primaryRef = joinedGroup.getPrimaryTableReference();
+            if (isUnnestFunctionTable(primaryRef)) {
+                var rootAlias = ((NamedTableReference) root.getPrimaryTableReference())
+                        .getIdentificationVariable();
+                appendUnwindJoin(sb, tgj, (FunctionTableReference) primaryRef, querySpec, rootAlias);
+                continue;
+            }
+            var joinNtr = (NamedTableReference) primaryRef;
             var joinCollName = joinNtr.getTableExpression();
             var joinAlias = joinNtr.getIdentificationVariable();
             var joinType = tgj.getJoinType();
@@ -388,8 +406,155 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 sb.append(" ");
                 appendPredicateText(sb, joinPredicate);
             }
-            appendJoins(sb, joinedGroup);
+            appendJoins(sb, joinedGroup, querySpec);
         }
+    }
+
+    /**
+     * Translates a plural-attribute join ({@code FROM O o JOIN o.array a}) into a MQLv2 complex
+     * unwind stage that preserves the parent document:
+     * <pre>{@code | unwind $__elem = arrayField in {col1: col1, ..., arrayField: $__elem}}</pre>
+     *
+     * <p>The body object enumerates all parent-entity columns referenced anywhere in the QuerySpec
+     * (SELECT, WHERE, ORDER BY, GROUP BY, HAVING), preserving them across the unwind stage. The
+     * array field itself is mapped to {@code $__elem} (the current element variable), so subsequent
+     * pipeline stages can reference it as {@code arrayField.subField}.
+     *
+     * <p>Records the alias→field-path mapping so column references qualified by the unnest alias
+     * ({@code a.sku}) resolve to {@code <arrayPath>.<column>} ({@code lineItems.sku}) in subsequent
+     * WHERE / SELECT / GROUP BY / ORDER BY emission.
+     */
+    private void appendUnwindJoin(
+            StringBuilder sb,
+            TableGroupJoin tgj,
+            FunctionTableReference ftr,
+            QuerySpec querySpec,
+            @Nullable String rootAlias) {
+        var arrayPath = extractUnnestArrayPath(ftr);
+        var alias = extractUnnestAlias(tgj.getJoinedGroup());
+        // Render the array field name directly (without qualifier prefix) regardless of hasJoins,
+        // because unwind targets the field on the current (outer) document, not a named alias.
+        var arrayFieldPath = columnExpressionOf(arrayPath);
+        var internalVar = "$__elem";
+
+        // Collect all parent-entity column names referenced anywhere in the QuerySpec.
+        // These must be enumerated in the unwind body to be preserved across the stage.
+        var parentCols = new LinkedHashSet<String>();
+        collectParentColumnNames(querySpec, rootAlias, parentCols);
+
+        // Emit: | unwind $__elem = arrayField in {col1: col1, ..., arrayField: $__elem}
+        // The array field is mapped to the element variable (a single struct document), allowing
+        // subsequent | match (arrayField.subField == ...) stages to work. The | format stage
+        // will then re-wrap it in an array so Hibernate's getArray() call succeeds.
+        sb.append(" | unwind ").append(internalVar)
+                .append(" = ").append(arrayFieldPath)
+                .append(" in {");
+        var first = true;
+        for (var col : parentCols) {
+            if (!first) sb.append(", ");
+            first = false;
+            if (col.equals(arrayFieldPath)) {
+                sb.append(col).append(": ").append(internalVar);
+            } else {
+                sb.append(col).append(": ").append(col);
+            }
+        }
+        sb.append("}");
+
+        unnestAliasToFieldPath.put(alias, arrayFieldPath);
+    }
+
+    /**
+     * Collects all parent-entity column names referenced in the given {@code QuerySpec}. A column is
+     * considered "parent" if its qualifier matches {@code rootAlias} (or is null/empty). This drives
+     * the body object inside the complex unwind stage so that parent fields are preserved.
+     *
+     * <p>Scans SELECT, WHERE, ORDER BY, GROUP BY, and HAVING clauses.
+     */
+    private static void collectParentColumnNames(
+            QuerySpec querySpec, @Nullable String rootAlias, Set<String> result) {
+        // SELECT
+        for (var sel : querySpec.getSelectClause().getSqlSelections()) {
+            collectParentColsFromExpr(sel.getExpression(), rootAlias, result);
+        }
+        // WHERE
+        var where = querySpec.getWhereClauseRestrictions();
+        if (where != null && !where.isEmpty()) {
+            collectParentColsFromPredicate(where, rootAlias, result);
+        }
+        // ORDER BY
+        var sortSpecs = querySpec.getSortSpecifications();
+        if (sortSpecs != null) {
+            for (var sort : sortSpecs) {
+                collectParentColsFromExpr(sort.getSortExpression(), rootAlias, result);
+            }
+        }
+        // GROUP BY
+        for (var expr : querySpec.getGroupByClauseExpressions()) {
+            collectParentColsFromExpr(expr, rootAlias, result);
+        }
+        // HAVING
+        var having = querySpec.getHavingClauseRestrictions();
+        if (having != null && !having.isEmpty()) {
+            collectParentColsFromPredicate(having, rootAlias, result);
+        }
+    }
+
+    private static void collectParentColsFromPredicate(Predicate predicate, @Nullable String rootAlias, Set<String> result) {
+        if (predicate instanceof ComparisonPredicate cp) {
+            collectParentColsFromExpr(cp.getLeftHandExpression(), rootAlias, result);
+            collectParentColsFromExpr(cp.getRightHandExpression(), rootAlias, result);
+        } else if (predicate instanceof Junction junction) {
+            for (var p : junction.getPredicates()) collectParentColsFromPredicate(p, rootAlias, result);
+        } else if (predicate instanceof GroupedPredicate gp) {
+            collectParentColsFromPredicate(gp.getSubPredicate(), rootAlias, result);
+        } else if (predicate instanceof NegatedPredicate np) {
+            collectParentColsFromPredicate(np.getPredicate(), rootAlias, result);
+        } else if (predicate instanceof NullnessPredicate np) {
+            collectParentColsFromExpr(np.getExpression(), rootAlias, result);
+        } else if (predicate instanceof BooleanExpressionPredicate bp) {
+            collectParentColsFromExpr(bp.getExpression(), rootAlias, result);
+        } else if (predicate instanceof InListPredicate ilp) {
+            collectParentColsFromExpr(ilp.getTestExpression(), rootAlias, result);
+            for (var e : ilp.getListExpressions()) collectParentColsFromExpr(e, rootAlias, result);
+        }
+        // Other predicate types (EXISTS, IN subquery, etc.) are not walked — their subqueries
+        // are separate query scopes and don't need to contribute columns to the unwind body.
+    }
+
+    private static void collectParentColsFromExpr(Expression expr, @Nullable String rootAlias, Set<String> result) {
+        if (expr instanceof ColumnReference cr) {
+            var q = cr.getQualifier();
+            if (q == null || q.isEmpty() || q.equals(rootAlias)) {
+                result.add(cr.getColumnExpression());
+            }
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            collectParentColsFromExpr(bvpi.getColumnReference(), rootAlias, result);
+        } else if (expr instanceof BinaryArithmeticExpression bae) {
+            collectParentColsFromExpr(bae.getLeftHandOperand(), rootAlias, result);
+            collectParentColsFromExpr(bae.getRightHandOperand(), rootAlias, result);
+        } else if (expr instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
+            for (var arg : fn.getArguments()) {
+                if (arg instanceof Expression e) collectParentColsFromExpr(e, rootAlias, result);
+            }
+        } else if (expr instanceof SqmParameterInterpretation spi) {
+            collectParentColsFromExpr(spi.getResolvedExpression(), rootAlias, result);
+        }
+        // Literals, parameters, subqueries — no column references to collect.
+    }
+
+    /**
+     * Extracts the simple column expression from a path expression. Used to render unwind targets
+     * without qualifier prefix.
+     */
+    private static String columnExpressionOf(Expression expr) {
+        if (expr instanceof ColumnReference cr) {
+            return cr.getColumnExpression();
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            return bvpi.getColumnReference().getColumnExpression();
+        }
+        throw new FeatureNotSupportedException(
+                "Expected simple column reference for unwind path; got: " + expr.getClass().getSimpleName());
     }
 
     private void appendMatch(StringBuilder sb, QuerySpec querySpec) {
@@ -856,8 +1021,13 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             throw new FeatureNotSupportedException("Expected column reference in aggregate; got: "
                     + expr.getClass().getSimpleName());
         }
-        if (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty()) {
-            sb.append(cr.getQualifier()).append("->").append(cr.getColumnExpression());
+        var qualifier = cr.getQualifier();
+        if (qualifier != null && unnestAliasToFieldPath.containsKey(qualifier)) {
+            sb.append(unnestAliasToFieldPath.get(qualifier))
+                    .append("->")
+                    .append(cr.getColumnExpression());
+        } else if (hasJoins && qualifier != null && !qualifier.isEmpty()) {
+            sb.append(qualifier).append("->").append(cr.getColumnExpression());
         } else {
             sb.append(cr.getColumnExpression());
         }
@@ -883,6 +1053,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         var selections = selectClause.getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
                 .toList();
+        // Collect the set of array field paths from unnest joins. These columns require re-wrapping
+        // in a single-element array in the format stage so Hibernate's getArray() call succeeds.
+        // (The | unwind body maps the array field to the element document for match purposes;
+        // the format stage then wraps it back so the result set delivers an ARRAY.)
+        var unnestArrayFields = new LinkedHashSet<>(unnestAliasToFieldPath.values());
+
         for (var i = 0; i < selections.size(); i++) {
             var selExpr = selections.get(i).getExpression();
             var aggName = aggNames != null ? aggNames.get(i) : null;
@@ -896,10 +1072,18 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 key = cr.getColumnExpression();
                 // After a group stage, the key field is named by simpleColumnName (= key),
                 // so reference it directly rather than via the pre-group qualified path.
-                valueText = aggNames != null ? key : appendExprTextToString(selExpr);
+                var rawValue = aggNames != null ? key : appendExprTextToString(selExpr);
+                // Re-wrap unnest array fields: the unwind body emits the element as a struct;
+                // the format stage must wrap it in [rawValue] so getArray() sees an ARRAY.
+                valueText = (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key))
+                        ? "[" + rawValue + "]"
+                        : rawValue;
             } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
                 key = bvpi.getColumnReference().getColumnExpression();
-                valueText = aggNames != null ? key : appendExprTextToString(selExpr);
+                var rawValue = aggNames != null ? key : appendExprTextToString(selExpr);
+                valueText = (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key))
+                        ? "[" + rawValue + "]"
+                        : rawValue;
             } else {
                 key = "_f" + syntheticIdx++;
                 valueText = appendExprTextToString(selExpr);
@@ -1111,8 +1295,13 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
             appendExprText(sb, bvpi.getColumnReference());
         } else if (expression instanceof ColumnReference cr) {
-            if (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty()) {
-                sb.append(cr.getQualifier()).append(".").append(cr.getColumnExpression());
+            var qualifier = cr.getQualifier();
+            if (qualifier != null && unnestAliasToFieldPath.containsKey(qualifier)) {
+                sb.append(unnestAliasToFieldPath.get(qualifier))
+                        .append(".")
+                        .append(cr.getColumnExpression());
+            } else if (hasJoins && qualifier != null && !qualifier.isEmpty()) {
+                sb.append(qualifier).append(".").append(cr.getColumnExpression());
             } else {
                 sb.append(cr.getColumnExpression());
             }
@@ -1296,7 +1485,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     private static void collectAffectedTableNamesRecursive(TableGroup group, Set<String> names) {
-        names.add(((NamedTableReference) group.getPrimaryTableReference()).getTableExpression());
+        var primaryRef = group.getPrimaryTableReference();
+        if (primaryRef instanceof NamedTableReference ntr) {
+            names.add(ntr.getTableExpression());
+        }
+        // FunctionTableReference (unnest join) has no collection name to add.
         for (var tgj : group.getTableGroupJoins()) {
             collectAffectedTableNamesRecursive(tgj.getJoinedGroup(), names);
         }
