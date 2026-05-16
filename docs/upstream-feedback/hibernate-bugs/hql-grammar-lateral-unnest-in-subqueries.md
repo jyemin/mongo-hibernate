@@ -2,7 +2,6 @@
 
 **Affected version(s):** Hibernate ORM 7.3.4.Final
 **Severity / type:** Enhancement (or possibly bug — depending on whether the restriction is intentional)
-**Discovered by:** MongoDB Hibernate extension `mqlv2` branch, Phase 0 elemMatch design execution (mongo-hibernate repo, May 2026)
 
 ## Summary
 
@@ -42,10 +41,22 @@ public class LateralUnnestSubqueryGrammarBug {
                 .addAnnotatedClass(Item.class)
                 .buildSessionFactory();
         try (var s = sf.openSession()) {
-            // EXISTS subquery with LATERAL unnest — fails to parse:
+            // Form 1 — EXISTS subquery with LATERAL unnest. Fails with SyntaxException
+            // at the `(` after `unnest`:
             s.createSelectionQuery(
                     "from Item i where exists ("
                             + "  select 1 from lateral unnest(i.tags) t where t > 5)",
+                    Item.class).getResultList();
+
+            // Form 2 — scalar SELECT subquery with LATERAL unnest. Same SyntaxException:
+            s.createSelectionQuery(
+                    "select i.id, (select count(*) from lateral unnest(i.tags) t where t > 5)"
+                            + "  from Item i",
+                    Object[].class).getResultList();
+
+            // For comparison, this form (LATERAL unnest in OUTER FROM) parses fine:
+            s.createSelectionQuery(
+                    "from Item i join lateral unnest(i.tags) t",
                     Item.class).getResultList();
         }
     }
