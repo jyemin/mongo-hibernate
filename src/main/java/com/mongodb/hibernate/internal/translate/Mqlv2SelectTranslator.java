@@ -467,80 +467,26 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         var where = innerSpec.getWhereClauseRestrictions();
         if (where != null && !where.isEmpty()) {
             innerSb.append(" | match ");
-            appendPredicateTextCorrelated(innerSb, where, outerQualifiers, correlatedBindings);
+            appendPredicateTextWithResolver(innerSb, where, outerCorrelatedResolver(outerQualifiers, correlatedBindings));
         }
         return innerSb.toString();
     }
 
-    private void appendPredicateTextCorrelated(
-            StringBuilder sb,
-            Predicate predicate,
-            Set<String> outerQualifiers,
-            Map<String, String> correlatedBindings) {
-        if (predicate instanceof ComparisonPredicate cp) {
-            sb.append("(");
-            appendExprTextCorrelated(sb, cp.getLeftHandExpression(), outerQualifiers, correlatedBindings);
-            sb.append(" ").append(comparisonOpSurface(cp.getOperator())).append(" ");
-            appendExprTextCorrelated(sb, cp.getRightHandExpression(), outerQualifiers, correlatedBindings);
-            sb.append(")");
-        } else if (predicate instanceof Junction junction) {
-            var preds = junction.getPredicates();
-            var op = junction.getNature() == Junction.Nature.CONJUNCTION ? "and" : "or";
-            sb.append("(");
-            for (var i = 0; i < preds.size(); i++) {
-                if (i > 0) sb.append(" ").append(op).append(" ");
-                appendPredicateTextCorrelated(sb, preds.get(i), outerQualifiers, correlatedBindings);
-            }
-            sb.append(")");
-        } else if (predicate instanceof NegatedPredicate np) {
-            sb.append("(not ");
-            appendPredicateTextCorrelated(sb, np.getPredicate(), outerQualifiers, correlatedBindings);
-            sb.append(")");
-        } else if (predicate instanceof NullnessPredicate np) {
-            if (np.isNegated()) {
-                sb.append("(not isNullish(");
-                appendExprTextCorrelated(sb, np.getExpression(), outerQualifiers, correlatedBindings);
-                sb.append("))");
-            } else {
-                sb.append("isNullish(");
-                appendExprTextCorrelated(sb, np.getExpression(), outerQualifiers, correlatedBindings);
-                sb.append(")");
-            }
-        } else if (predicate instanceof BooleanExpressionPredicate bp) {
-            sb.append("(");
-            appendExprTextCorrelated(sb, bp.getExpression(), outerQualifiers, correlatedBindings);
-            sb.append(bp.isNegated() ? " == false)" : " == true)");
-        } else if (predicate instanceof GroupedPredicate gp) {
-            appendPredicateTextCorrelated(sb, gp.getSubPredicate(), outerQualifiers, correlatedBindings);
-        } else if (predicate instanceof InListPredicate ilp) {
-            var exprs = ilp.getListExpressions();
-            var negated = ilp.isNegated();
-            var op = negated ? " != " : " == ";
-            var logic = negated ? " and " : " or ";
-            sb.append("(");
-            for (var i = 0; i < exprs.size(); i++) {
-                if (i > 0) sb.append(logic);
-                sb.append("(");
-                appendExprTextCorrelated(sb, ilp.getTestExpression(), outerQualifiers, correlatedBindings);
-                sb.append(op);
-                appendExprTextCorrelated(sb, exprs.get(i), outerQualifiers, correlatedBindings);
-                sb.append(")");
-            }
-            sb.append(")");
-        } else {
-            throw new FeatureNotSupportedException(
-                    "Unsupported predicate in subquery: " + predicate.getClass().getSimpleName());
-        }
+    /** Decides how a {@link ColumnReference} encountered inside a predicate/expression walker is rendered.
+     *  Implementations: outer-correlated (used by existing EXISTS/IN/ANY/ALL paths) and inside-any (used by Phase 2). */
+    @FunctionalInterface
+    private interface ColumnReferenceResolver {
+        void render(StringBuilder sb, ColumnReference cr);
     }
 
-    private void appendExprTextCorrelated(
-            StringBuilder sb,
-            Expression expression,
-            Set<String> outerQualifiers,
-            Map<String, String> correlatedBindings) {
-        if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
-            appendExprTextCorrelated(sb, bvpi.getColumnReference(), outerQualifiers, correlatedBindings);
-        } else if (expression instanceof ColumnReference cr) {
+    /**
+     * Returns a {@link ColumnReferenceResolver} that implements the existing outer-correlated logic:
+     * references to outer-query aliases are bound to {@code $__vN} variables; all others have their
+     * qualifier stripped (inner subquery alias is just a Hibernate internal alias).
+     */
+    private ColumnReferenceResolver outerCorrelatedResolver(
+            Set<String> outerQualifiers, Map<String, String> correlatedBindings) {
+        return (sb, cr) -> {
             var qualifier = cr.getQualifier();
             if (qualifier != null && outerQualifiers.contains(qualifier)) {
                 // Correlated outer reference: bind to a $__vN variable
@@ -552,6 +498,108 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 // so the qualifier is just Hibernate's internal alias — strip it.
                 sb.append(cr.getColumnExpression());
             }
+        };
+    }
+
+    /**
+     * Builds a resolver for column references encountered inside an {@code any} body. Rule:
+     * <ul>
+     *   <li>Qualifier matches an unnest alias on the stack → {@code $.<column>}
+     *       (resolved against the current element of the array).
+     *   <li>Qualifier matches an outer-query alias → {@code $__vN} via the outer-correlated path.
+     *   <li>Qualifier is null → {@code $.<column>} (treat as current element).
+     *   <li>Otherwise → {@code FeatureNotSupportedException}.
+     * </ul>
+     */
+    private ColumnReferenceResolver insideAnyResolver(
+            List<String> unnestAliasStack,
+            Set<String> outerQualifiers,
+            Map<String, String> correlatedBindings) {
+        var outerResolver = outerCorrelatedResolver(outerQualifiers, correlatedBindings);
+        return (sb, cr) -> {
+            var qualifier = cr.getQualifier();
+            if (qualifier != null && unnestAliasStack.contains(qualifier)) {
+                sb.append("$.").append(cr.getColumnExpression());
+            } else if (qualifier != null && outerQualifiers.contains(qualifier)) {
+                outerResolver.render(sb, cr);
+            } else if (qualifier == null) {
+                // Unqualified ref inside any body — treat as the current element.
+                sb.append("$.").append(cr.getColumnExpression());
+            } else {
+                throw new FeatureNotSupportedException(
+                        "Reference to alias '" + qualifier + "' inside unnest body is not in scope");
+            }
+        };
+    }
+
+    private void appendPredicateTextWithResolver(
+            StringBuilder sb,
+            Predicate predicate,
+            ColumnReferenceResolver resolver) {
+        if (predicate instanceof ComparisonPredicate cp) {
+            sb.append("(");
+            appendExprTextWithResolver(sb, cp.getLeftHandExpression(), resolver);
+            sb.append(" ").append(comparisonOpSurface(cp.getOperator())).append(" ");
+            appendExprTextWithResolver(sb, cp.getRightHandExpression(), resolver);
+            sb.append(")");
+        } else if (predicate instanceof Junction junction) {
+            var preds = junction.getPredicates();
+            var op = junction.getNature() == Junction.Nature.CONJUNCTION ? "and" : "or";
+            sb.append("(");
+            for (var i = 0; i < preds.size(); i++) {
+                if (i > 0) sb.append(" ").append(op).append(" ");
+                appendPredicateTextWithResolver(sb, preds.get(i), resolver);
+            }
+            sb.append(")");
+        } else if (predicate instanceof NegatedPredicate np) {
+            sb.append("(not ");
+            appendPredicateTextWithResolver(sb, np.getPredicate(), resolver);
+            sb.append(")");
+        } else if (predicate instanceof NullnessPredicate np) {
+            if (np.isNegated()) {
+                sb.append("(not isNullish(");
+                appendExprTextWithResolver(sb, np.getExpression(), resolver);
+                sb.append("))");
+            } else {
+                sb.append("isNullish(");
+                appendExprTextWithResolver(sb, np.getExpression(), resolver);
+                sb.append(")");
+            }
+        } else if (predicate instanceof BooleanExpressionPredicate bp) {
+            sb.append("(");
+            appendExprTextWithResolver(sb, bp.getExpression(), resolver);
+            sb.append(bp.isNegated() ? " == false)" : " == true)");
+        } else if (predicate instanceof GroupedPredicate gp) {
+            appendPredicateTextWithResolver(sb, gp.getSubPredicate(), resolver);
+        } else if (predicate instanceof InListPredicate ilp) {
+            var exprs = ilp.getListExpressions();
+            var negated = ilp.isNegated();
+            var op = negated ? " != " : " == ";
+            var logic = negated ? " and " : " or ";
+            sb.append("(");
+            for (var i = 0; i < exprs.size(); i++) {
+                if (i > 0) sb.append(logic);
+                sb.append("(");
+                appendExprTextWithResolver(sb, ilp.getTestExpression(), resolver);
+                sb.append(op);
+                appendExprTextWithResolver(sb, exprs.get(i), resolver);
+                sb.append(")");
+            }
+            sb.append(")");
+        } else {
+            throw new FeatureNotSupportedException(
+                    "Unsupported predicate in subquery: " + predicate.getClass().getSimpleName());
+        }
+    }
+
+    private void appendExprTextWithResolver(
+            StringBuilder sb,
+            Expression expression,
+            ColumnReferenceResolver resolver) {
+        if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
+            appendExprTextWithResolver(sb, bvpi.getColumnReference(), resolver);
+        } else if (expression instanceof ColumnReference cr) {
+            resolver.render(sb, cr);
         } else {
             // Non-correlated: delegate to the standard path
             appendExprText(sb, expression);
@@ -916,6 +964,43 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         sb.append("(count(").append(letExpr).append(")").append(countCmp);
     }
 
+    /**
+     * Translates {@code exists (select 1 from <outerArrayPath> alias where <body>)} into
+     * MQLv2 {@code (<arrayPath> any (<body-rewritten>))}, with outer-correlated references
+     * captured into a {@code let} wrapper around the {@code any} expression. Negation wraps
+     * the whole thing in {@code (not …)}.
+     */
+    private void appendUnnestExistsPredicate(StringBuilder sb, ExistsPredicate ep) {
+        var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
+        var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+        var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
+        var arrayPath = extractUnnestArrayPath(ftr);
+        var unnestAlias = extractUnnestAlias(innerRoot);
+
+        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+        var outerQualifiers = collectOuterQualifiers(outerSpec);
+        var correlatedBindings = new LinkedHashMap<String, String>();
+
+        var arrayPathSb = new StringBuilder();
+        appendExprText(arrayPathSb, arrayPath);
+
+        var bodySb = new StringBuilder();
+        appendPredicateTextWithResolver(
+                bodySb,
+                innerSpec.getWhereClauseRestrictions(),
+                insideAnyResolver(List.of(unnestAlias), outerQualifiers, correlatedBindings));
+
+        // wrapWithLet wraps the inner expression in parens (or a let binding), giving us
+        // "(arrayPath any body)" when correlatedBindings is empty, or
+        // "let $__vN = field in (arrayPath any body)" when there are correlated refs.
+        var wrapped = wrapWithLet(arrayPathSb + " any " + bodySb, correlatedBindings);
+        if (ep.isNegated()) {
+            sb.append("(not ").append(wrapped).append(")");
+        } else {
+            sb.append(wrapped);
+        }
+    }
+
     private void appendPredicateText(StringBuilder sb, Predicate predicate) {
         if (predicate instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr) {
             appendAnyAllPredicate(sb, cp, anyExpr.getSubquery(), false);
@@ -1003,13 +1088,18 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             }
         } else if (predicate instanceof ExistsPredicate ep) {
             var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
-            var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-            var outerQualifiers = collectOuterQualifiers(outerSpec);
-            var correlatedBindings = new LinkedHashMap<String, String>();
-            var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
-            var wrapped = wrapWithLet(innerPipeline, correlatedBindings);
-            var countOp = ep.isNegated() ? " == 0)" : " > 0)";
-            sb.append("(count(").append(wrapped).append(")").append(countOp);
+            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+            if (isUnnestFunctionTable(innerRoot.getPrimaryTableReference())) {
+                appendUnnestExistsPredicate(sb, ep);
+            } else {
+                var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
+                var outerQualifiers = collectOuterQualifiers(outerSpec);
+                var correlatedBindings = new LinkedHashMap<String, String>();
+                var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
+                var wrapped = wrapWithLet(innerPipeline, correlatedBindings);
+                var countOp = ep.isNegated() ? " == 0)" : " > 0)";
+                sb.append("(count(").append(wrapped).append(")").append(countOp);
+            }
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported predicate: " + predicate.getClass().getSimpleName());
@@ -1223,7 +1313,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * @return true iff the table reference is a {@link FunctionTableReference} whose function
      *     descriptor identifies as "unnest".
      */
-    @SuppressWarnings("UnusedMethod")
     private static boolean isUnnestFunctionTable(TableReference ref) {
         return ref instanceof FunctionTableReference ftr
                 && "unnest".equals(ftr.getFunctionExpression().getFunctionName());
@@ -1235,7 +1324,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * {@link BasicValuedPathInterpretation} (which would mean the user passed a literal array, a
      * function call, or some other non-path expression).
      */
-    @SuppressWarnings("UnusedMethod")
     private static Expression extractUnnestArrayPath(FunctionTableReference ftr) {
         var args = ftr.getFunctionExpression().getArguments();
         if (args.size() != 1) {
@@ -1255,7 +1343,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * Returns the identification variable that aliases the rows of the unnest output (the "a" in
      * {@code FROM o.array a}).
      */
-    @SuppressWarnings("UnusedMethod")
     private static String extractUnnestAlias(TableGroup group) {
         return ((FunctionTableReference) group.getPrimaryTableReference()).getIdentificationVariable();
     }
