@@ -65,9 +65,10 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
     void seed() {
         sessionFactoryScope.inTransaction(session -> {
             session.createMutationQuery("delete from Order").executeUpdate();
-            session.persist(new Order(1, new LineItem[] {new LineItem("WIDGET-1", 5), new LineItem("WIDGET-2", 1)}));
-            session.persist(new Order(2, new LineItem[] {new LineItem("GADGET-1", 10)}));
-            session.persist(new Order(3, new LineItem[] {new LineItem("WIDGET-1", 0)}));
+            session.persist(
+                    new Order(1, 3, new LineItem[] {new LineItem("WIDGET-1", 5), new LineItem("WIDGET-2", 1)}));
+            session.persist(new Order(2, 5, new LineItem[] {new LineItem("GADGET-1", 10)}));
+            session.persist(new Order(3, 1, new LineItem[] {new LineItem("WIDGET-1", 0)}));
         });
         MqlCapture.LAST.remove();
     }
@@ -83,7 +84,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
         assertThat(captured).isNotNull();
         assertThat(BsonDocument.parse(captured).getString("mqlv2").getValue())
                 .isEqualTo("from $orders | match (lineItems any ($.sku == \"WIDGET-1\"))"
-                        + " | format {_id: _id, lineItems: lineItems}");
+                        + " | format {_id: _id, lineItems: lineItems, minQty: minQty}");
 
         // Execution assertion: orders 1 and 3 contain a WIDGET-1 line item; order 2 does not.
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 3);
@@ -98,7 +99,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
                 .isEqualTo("from $orders | match (lineItems any (($.sku == \"WIDGET-1\") and ($.qty > 0)))"
-                        + " | format {_id: _id, lineItems: lineItems}");
+                        + " | format {_id: _id, lineItems: lineItems, minQty: minQty}");
         // Order 1 has WIDGET-1 with qty=5 (matches); order 3 has WIDGET-1 with qty=0 (doesn't).
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1);
     }
@@ -112,7 +113,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
                 .isEqualTo("from $orders | match (lineItems any (($.sku == \"WIDGET-1\") or ($.qty > 5)))"
-                        + " | format {_id: _id, lineItems: lineItems}");
+                        + " | format {_id: _id, lineItems: lineItems, minQty: minQty}");
         // Order 1 matches (WIDGET-1), order 2 matches (qty=10), order 3 matches (WIDGET-1).
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 2, 3);
     }
@@ -126,8 +127,9 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
                 .isEqualTo("from $orders | match (lineItems any (not ($.sku == \"WIDGET-1\")))"
-                        + " | format {_id: _id, lineItems: lineItems}");
-        // Order 1 has WIDGET-2 (matches NOT WIDGET-1), order 2 has GADGET-1 (matches), order 3 has only WIDGET-1 (doesn't match).
+                        + " | format {_id: _id, lineItems: lineItems, minQty: minQty}");
+        // Order 1 has WIDGET-2 (matches NOT WIDGET-1), order 2 has GADGET-1 (matches), order 3 has only WIDGET-1
+        // (doesn't match).
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 2);
     }
 
@@ -139,9 +141,23 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
                 .isEqualTo("from $orders | match (not (lineItems any ($.sku == \"WIDGET-1\")))"
-                        + " | format {_id: _id, lineItems: lineItems}");
+                        + " | format {_id: _id, lineItems: lineItems, minQty: minQty}");
         // Only order 2 lacks WIDGET-1.
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(2);
+    }
+
+    @Test
+    void existsOverStructArray_correlatedOuterRef() {
+        var hql = "from Order o where exists (select 1 from o.lineItems li where li.qty > o.minQty)";
+        var results = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, Order.class).getResultList());
+
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match let $__v0 = minQty in (lineItems any ($.qty > $__v0))"
+                        + " | format {_id: _id, lineItems: lineItems, minQty: minQty}");
+        // Order 1: minQty=3, has qty=5 (matches). Order 2: minQty=5, has qty=10 (matches).
+        // Order 3: minQty=1, has qty=0 (doesn't match).
+        assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 2);
     }
 
     // ---- Test entity / embeddable ----
@@ -152,12 +168,15 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
         @Id
         int id;
 
+        int minQty;
+
         LineItem[] lineItems;
 
         Order() {}
 
-        Order(int id, LineItem[] lineItems) {
+        Order(int id, int minQty, LineItem[] lineItems) {
             this.id = id;
+            this.minQty = minQty;
             this.lineItems = lineItems;
         }
     }
