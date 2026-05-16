@@ -64,8 +64,9 @@ The work breaks into five independent phases, each landed as a separate PR. Phas
 ```
 Phase 0  Hibernate 7.x upgrade            (no new features)
    │
-   ├──> Phase 1  Storage smoke test: @JdbcTypeCode(STRUCT_ARRAY) of embeddables
-   │              round-trips to embedded BSON arrays under the v2 dialect.
+   ├──> Phase 1  v2 SELECT hydration smoke test for array fields.
+   │              Reads back struct-array and scalar-array fields via session.find()
+   │              and trivial HQL SELECTs under the v2 dialect.
    │
    ├──> Phase 2  Translator: EXISTS-over-unnest  →  any(...)
    │              The canonical $elemMatch shape. Parent cardinality preserved.
@@ -79,7 +80,7 @@ Phase 0  Hibernate 7.x upgrade            (no new features)
 
 The phasing is chosen because:
 - The Hibernate 7 upgrade has independent breaking changes that should soak in CI before any feature depends on it.
-- Phase 1 surfaces the storage-shape risk (does `STRUCT_ARRAY` of embeddables actually produce an embedded BSON array under v2?) before Phases 2-4 commit to it.
+- Phase 1 surfaces the v2 SELECT-side risk. Storage round-trip is *not* the open question — INSERT/UPDATE go through `MongoTranslatorFactory` (shared with v1) and v1 tests already cover struct-array and scalar-array storage. The open question is whether the v2 SELECT translator correctly hydrates array fields back into entity state when reading documents; `Mqlv2SelectIntegrationTests` uses no array fields, so this is currently untested under v2.
 - Phases 2-4 are largely independent: Phase 2 owns the EXISTS-over-unnest hook in `appendPredicateText`; Phase 3 owns the FROM-clause hook in `appendJoins`; Phase 4 extends the scalar-subquery and IN-subquery branches. None block one another in the codebase.
 
 ## Components
@@ -91,18 +92,22 @@ The phasing is chosen because:
 - Verify both translators (`MongoTranslator` v1, `Mqlv2SelectTranslator`) and all existing integration tests pass. CI is the gatekeeper.
 - One new diagnostic-style integration test confirming that `from O o join o.array li` desugars to a `FunctionTableReference` for `unnest` in the inspected SQL AST. This locks Phase 3's assumption before Phase 3 begins.
 
-### Phase 1 — Storage smoke test
+### Phase 1 — v2 SELECT hydration smoke test for array fields
 
-A small integration test class verifies the design's load-bearing storage assumption:
+A small integration test class verifies the design's load-bearing v2-SELECT assumption: that the v2 translator correctly hydrates array-valued fields back into entity state when reading documents.
 
-- Entity: `Order` with `@Id int id`, `String customerId`, `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY) LineItem[] lineItems`.
+**Background — what's already proven and what isn't.** Storage (INSERT/UPDATE) for both struct-array and scalar-array fields is handled by `MongoTranslatorFactory`, which the v2 factory delegates to (`Mqlv2TranslatorFactory.buildMutationTranslator(...)`). v1 integration tests already cover round-trip of both shapes — `ArrayAndCollectionIntegrationTests` for scalar arrays and `StructAggregateEmbeddable[]` for struct arrays. The v2 SELECT translator, however, is independent of v1 and is currently exercised only by `Mqlv2SelectIntegrationTests`, which uses no array fields at all. Phase 1 closes that gap.
+
+- Entity: `Order` with `@Id int id`, plus both shapes on equal footing:
+  - `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY) LineItem[] lineItems` — struct array.
+  - `int[] scores` and `Collection<String> tags` — scalar array and scalar collection.
 - Embeddable: `LineItem(String sku, int qty, double price)`.
-- Tests: insert + find-by-id round-trip; whole-array update; empty array; null array. Persisted BSON shape inspected directly to confirm `lineItems: [{sku, qty, price}, ...]`.
-- Dialect under test: the v2 dialect (`TestMqlv2Dialect`). The v1 dialect is not exercised by this phase; whether it round-trips embeddable struct arrays today is out of scope.
+- Tests: `session.find(Order.class, id)`, trivial HQL `from Order o where o.id = :id`, and `from Order o` (full scan). Verify the returned entity's array fields contain the expected values, in the right order, with null/empty cases included.
+- Dialect under test: the v2 dialect (`TestMqlv2Dialect`).
 
-If `STRUCT_ARRAY` of embeddables does not produce an embedded array under v2, Phase 1 expands to investigate and fix — the elemMatch design cannot proceed without this guarantee.
+If v2 SELECT does not hydrate array fields correctly, Phase 1 expands to investigate and fix — the elemMatch design cannot proceed without this guarantee, because every test in Phases 2-4 asserts on the returned entity state.
 
-Comprehensive embeddable-array storage coverage across all BSON-mappable field types is explicitly out of scope and tracked separately.
+Comprehensive embeddable-array coverage across all BSON-mappable field types remains out of scope and tracked separately.
 
 ### Phase 2 — EXISTS-over-unnest → `any(...)`
 
@@ -288,10 +293,10 @@ All unsupported cases throw `FeatureNotSupportedException` with a specific, debu
 - All existing tests pass on 7.x. No new feature tests.
 - One diagnostic test confirming that `from O o join o.array li` desugars to a `FunctionTableReference` named `unnest` in the inspected SQL AST. This locks Phase 3's design assumption before Phase 3 begins.
 
-### Phase 1 — Storage smoke
+### Phase 1 — v2 SELECT hydration smoke
 
-- One new test class. ~5-8 test methods covering insert/find/update/empty/null for `STRUCT_ARRAY` of an embeddable, with direct BSON-shape inspection to confirm the embedded-array layout.
-- Dialect under test: v2 only.
+- One new test class. ~5-8 test methods covering `session.find()` and trivial HQL SELECTs against an entity with both a struct-array field (`@JdbcTypeCode(SqlTypes.STRUCT_ARRAY) LineItem[]`) and a scalar-array field (`int[]` / `Collection<String>`). Verify hydrated entity state matches seeded values, including null and empty cases.
+- Dialect under test: v2 only. Storage (INSERT/UPDATE) is exercised incidentally to seed the test data but is not the assertion target — v1 tests already cover storage round-trip for both shapes.
 
 ### Phases 2-4 — Translator feature work
 
@@ -331,7 +336,7 @@ Tests are parameterized or duplicated across the two shapes for the core support
 ## Risks
 
 - **Hibernate 7 upgrade scope.** The user has flagged that 7.x has breaking changes the project has not yet absorbed. Phase 0 is the discovery phase for the full extent. If the upgrade reveals incompatibilities that can't be resolved cleanly, the entire design is blocked.
-- **`STRUCT_ARRAY` of embeddables under v2.** The design's load-bearing storage assumption is that this maps to an embedded BSON array. If it doesn't, Phase 1 must fix it before Phases 2-4 can proceed. Currently unverified in v2.
+- **v2 SELECT-side hydration of array fields.** The design's load-bearing assumption is that the v2 SELECT translator correctly reads array-valued fields back into entity state. Storage (write) is shared with v1 and already proven; read-side hydration under v2 is currently unverified for any array shape and is what Phase 1 closes.
 - **AST shape variation.** Hibernate's exact SQM/SQL AST representation of `LATERAL unnest(...)` may differ subtly from the design's assumed `FunctionTableReference` shape (e.g., wrapped in a `LateralTable` or similar). Phase 0's diagnostic test catches this early.
 
 ## Future work (explicitly out of this design)
