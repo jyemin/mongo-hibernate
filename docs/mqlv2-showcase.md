@@ -679,6 +679,172 @@ MQLv2: from $customers | match (active == true) | format {_id: _id, active: acti
 
 ---
 
+## $elemMatch — querying embedded arrays
+
+MongoDB's `$elemMatch` semantics — evaluate a predicate against each element of an array and match if any element
+satisfies it — is available in HQL through collection-valued path expressions on `@Struct`-annotated embeddable arrays.
+Three HQL forms are supported:
+
+- **EXISTS subquery** — `WHERE EXISTS (SELECT 1 FROM c.lineItems li WHERE li.sku = 'WIDGET-1')` — preserves parent
+  cardinality (one result row per matching cart, regardless of how many line items match).
+- **JOIN** — `FROM Cart c JOIN c.lineItems li WHERE li.sku = 'WIDGET-1'` — multiplies rows: one result row per
+  matching line item, exactly like a relational join.
+- **Scalar `count(*)` subquery** — `SELECT c.id, (SELECT count(*) FROM c.lineItems li WHERE li.qty > 4) FROM Cart c`
+  — returns the count of matching array elements as a scalar value.
+
+Scalar arrays (e.g. `int[]`) use the existing `array_contains` function for value-equality checks;
+the `any()`/`unwind` forms below apply only to struct arrays.
+
+### Cart entity (used in examples below)
+
+```java
+@Entity(name = "Cart")
+@Table(name = "carts")
+class Cart {
+    @Id int id;
+    int minQty;
+    LineItem[] lineItems;
+}
+
+@Embeddable
+@Struct(name = "LineItem")
+class LineItem {
+    String sku;
+    int qty;
+}
+```
+
+---
+
+### EXISTS — single predicate
+
+```
+HQL:   from Cart c where exists (select 1 from c.lineItems li where li.sku = 'WIDGET-1')
+
+MQLv2: from $carts
+       | match (lineItems any ($.sku == "WIDGET-1"))
+       | format {_id: _id, lineItems: lineItems, minQty: minQty}
+```
+
+The translator rewrites the EXISTS subquery over a struct array into an MQLv2 `any()` expression, which evaluates the
+predicate element-by-element server-side.
+
+---
+
+### EXISTS — AND conjunction in body
+
+```
+HQL:   from Cart c where exists (
+           select 1 from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)
+
+MQLv2: from $carts
+       | match (lineItems any (($.sku == "WIDGET-1") and ($.qty > 0)))
+       | format {_id: _id, lineItems: lineItems, minQty: minQty}
+```
+
+---
+
+### EXISTS — OR disjunction in body
+
+```
+HQL:   from Cart c where exists (
+           select 1 from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)
+
+MQLv2: from $carts
+       | match (lineItems any (($.sku == "WIDGET-1") or ($.qty > 5)))
+       | format {_id: _id, lineItems: lineItems, minQty: minQty}
+```
+
+---
+
+### EXISTS — NOT in body
+
+```
+HQL:   from Cart c where exists (
+           select 1 from c.lineItems li where not (li.sku = 'WIDGET-1'))
+
+MQLv2: from $carts
+       | match (lineItems any (not ($.sku == "WIDGET-1")))
+       | format {_id: _id, lineItems: lineItems, minQty: minQty}
+```
+
+---
+
+### NOT EXISTS
+
+```
+HQL:   from Cart c where not exists (select 1 from c.lineItems li where li.sku = 'WIDGET-1')
+
+MQLv2: from $carts
+       | match (not (lineItems any ($.sku == "WIDGET-1")))
+       | format {_id: _id, lineItems: lineItems, minQty: minQty}
+```
+
+---
+
+### EXISTS — correlated outer reference
+
+```
+HQL:   from Cart c where exists (select 1 from c.lineItems li where li.qty > c.minQty)
+
+MQLv2: from $carts
+       | match let $__v0 = minQty in (lineItems any ($.qty > $__v0))
+       | format {_id: _id, lineItems: lineItems, minQty: minQty}
+```
+
+The outer field `c.minQty` is captured into a `let` binding (`$__v0`) so the `any()` body can reference it without
+ambiguity.
+
+---
+
+### JOIN — single predicate
+
+```
+HQL:   select c from Cart c join c.lineItems li where li.sku = 'WIDGET-1'
+
+MQLv2: from $carts
+       | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem, minQty: minQty}
+       | match (lineItems.sku == "WIDGET-1")
+       | format {_id: _id, lineItems: [lineItems], minQty: minQty}
+```
+
+The JOIN form expands the array with `unwind`, filters with `match`, then re-wraps the single matched element in
+`[lineItems]` to satisfy Hibernate's expectation of an array-typed field.
+
+---
+
+### JOIN — projecting the alias field
+
+```
+HQL:   select c.id, li.sku from Cart c join c.lineItems li where li.sku = 'WIDGET-1'
+
+MQLv2: from $carts
+       | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem}
+       | match (lineItems.sku == "WIDGET-1")
+       | format {_id: _id, sku: lineItems.sku}
+```
+
+When the SELECT projects only specific fields, the unwind stage carries only those fields forward, and the format stage
+projects them directly.
+
+---
+
+### Scalar count(*) subquery
+
+```
+HQL:   select c.id, (select count(*) from c.lineItems li where li.qty > 4) from Cart c order by c.id
+
+MQLv2: from $carts
+       | sort _id
+       | format {_id: _id, _f0: (count((from lineItems | match ($.qty > 4))))}
+```
+
+The scalar subquery over a struct array becomes a `count(pipeline)` expression in the format stage — the pipeline
+argument `(from lineItems | match ($.qty > 4))` streams the filtered array elements and `count(...)` returns
+their cardinality.
+
+---
+
 ## Known limitations (current scope)
 
 - OFFSET / skip — MQLv2 has no skip stage; throws `FeatureNotSupportedException`

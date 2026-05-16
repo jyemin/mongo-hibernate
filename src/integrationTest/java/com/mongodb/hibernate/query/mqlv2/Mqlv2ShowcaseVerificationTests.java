@@ -20,12 +20,18 @@ import static org.hibernate.cfg.AvailableSettings.DIALECT;
 import static org.hibernate.cfg.JdbcSettings.STATEMENT_INSPECTOR;
 
 import com.mongodb.hibernate.junit.MongoExtension;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
 import jakarta.persistence.Query;
+import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.Consumer;
 import org.assertj.core.api.SoftAssertions;
 import org.bson.BsonDocument;
+import org.hibernate.annotations.Struct;
 import org.hibernate.testing.orm.junit.DomainModel;
 import org.hibernate.testing.orm.junit.ServiceRegistry;
 import org.hibernate.testing.orm.junit.ServiceRegistryScope;
@@ -42,7 +48,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * Verifies that every MQLv2 pipeline shown in docs/mqlv2-showcase.md exactly matches what the translator produces. Run
  * this test when editing either the translator or the showcase doc.
  */
-@DomainModel(annotatedClasses = {Mqlv2SelectIntegrationTests.Customer.class, Mqlv2SelectIntegrationTests.Order.class})
+@DomainModel(
+        annotatedClasses = {
+            Mqlv2SelectIntegrationTests.Customer.class,
+            Mqlv2SelectIntegrationTests.Order.class,
+            Mqlv2ShowcaseVerificationTests.Cart.class
+        })
 @SessionFactory(exportSchema = false)
 @ServiceRegistry(
         settings = {
@@ -73,11 +84,17 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             new Mqlv2SelectIntegrationTests.Order(12, 2, 200.0, "shipped", Instant.parse("2023-11-20T09:15:45Z")),
             new Mqlv2SelectIntegrationTests.Order(13, 3, 50.0, "cancelled", Instant.parse("2024-01-08T18:45:00Z")));
 
+    private static final List<Cart> CARTS = List.of(
+            new Cart(1, 3, new LineItem[] {new LineItem("WIDGET-1", 5), new LineItem("WIDGET-2", 1)}),
+            new Cart(2, 5, new LineItem[] {new LineItem("GADGET-1", 10)}),
+            new Cart(3, 1, new LineItem[] {new LineItem("WIDGET-1", 0)}));
+
     @BeforeEach
     void setUp() {
         sessionFactoryScope.inTransaction(session -> {
             CUSTOMERS.forEach(session::persist);
             ORDERS.forEach(session::persist);
+            CARTS.forEach(session::persist);
         });
     }
 
@@ -379,6 +396,71 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
                     "from $customers | match (active == true) | " + fmtC
                             + " | match (count(let $__v0 = $ in (from $customers | match (age > 30) | " + fmtC
                             + " | match ($ == $__v0))) == 0)");
+
+            // $elemMatch — querying embedded arrays
+            var fmtCart = "format {_id: _id, lineItems: lineItems, minQty: minQty}";
+
+            // EXISTS — single predicate
+            check(
+                    soft,
+                    "from Cart c where exists (select 1 from c.lineItems li where li.sku = 'WIDGET-1')",
+                    "from $carts | match (lineItems any ($.sku == \"WIDGET-1\")) | " + fmtCart);
+
+            // EXISTS — AND conjunction in body
+            check(
+                    soft,
+                    "from Cart c where exists ("
+                            + "select 1 from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)",
+                    "from $carts | match (lineItems any (($.sku == \"WIDGET-1\") and ($.qty > 0))) | " + fmtCart);
+
+            // EXISTS — OR disjunction in body
+            check(
+                    soft,
+                    "from Cart c where exists ("
+                            + "select 1 from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)",
+                    "from $carts | match (lineItems any (($.sku == \"WIDGET-1\") or ($.qty > 5))) | " + fmtCart);
+
+            // EXISTS — NOT in body
+            check(
+                    soft,
+                    "from Cart c where exists (" + "select 1 from c.lineItems li where not (li.sku = 'WIDGET-1'))",
+                    "from $carts | match (lineItems any (not ($.sku == \"WIDGET-1\"))) | " + fmtCart);
+
+            // NOT EXISTS
+            check(
+                    soft,
+                    "from Cart c where not exists (select 1 from c.lineItems li where li.sku = 'WIDGET-1')",
+                    "from $carts | match (not (lineItems any ($.sku == \"WIDGET-1\"))) | " + fmtCart);
+
+            // EXISTS — correlated outer reference
+            check(
+                    soft,
+                    "from Cart c where exists (select 1 from c.lineItems li where li.qty > c.minQty)",
+                    "from $carts | match let $__v0 = minQty in (lineItems any ($.qty > $__v0)) | " + fmtCart);
+
+            // JOIN — single predicate (row-multiplying; re-wraps matched element)
+            check(
+                    soft,
+                    "select c from Cart c join c.lineItems li where li.sku = 'WIDGET-1'",
+                    "from $carts"
+                            + " | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem, minQty: minQty}"
+                            + " | match (lineItems.sku == \"WIDGET-1\")"
+                            + " | format {_id: _id, lineItems: [lineItems], minQty: minQty}");
+
+            // JOIN — projecting the alias field
+            check(
+                    soft,
+                    "select c.id, li.sku from Cart c join c.lineItems li where li.sku = 'WIDGET-1'",
+                    "from $carts"
+                            + " | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem}"
+                            + " | match (lineItems.sku == \"WIDGET-1\")"
+                            + " | format {_id: _id, sku: lineItems.sku}");
+
+            // Scalar count(*) subquery over struct array
+            check(
+                    soft,
+                    "select c.id, (select count(*) from c.lineItems li where li.qty > 4) from Cart c order by c.id",
+                    "from $carts | sort _id | format {_id: _id, _f0: (count((from lineItems | match ($.qty > 4))))}");
         });
     }
 
@@ -405,5 +487,50 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
         soft.assertThat(BsonDocument.parse(json).getString("mqlv2").getValue())
                 .as("HQL: " + hql)
                 .isEqualTo(expected);
+    }
+
+    @Entity(name = "Cart")
+    @Table(name = "carts")
+    static class Cart {
+        @Id
+        int id;
+
+        int minQty;
+
+        LineItem[] lineItems;
+
+        Cart() {}
+
+        Cart(int id, int minQty, LineItem[] lineItems) {
+            this.id = id;
+            this.minQty = minQty;
+            this.lineItems = lineItems;
+        }
+    }
+
+    @Embeddable
+    @Struct(name = "LineItem")
+    static class LineItem {
+        String sku;
+        int qty;
+
+        LineItem() {}
+
+        LineItem(String sku, int qty) {
+            this.sku = sku;
+            this.qty = qty;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof LineItem li)) return false;
+            return qty == li.qty && Objects.equals(sku, li.sku);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(sku, qty);
+        }
     }
 }
