@@ -16,31 +16,22 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast.filter;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static com.mongodb.hibernate.internal.translate.mongoast.AstNodeAssertions.assertRendering;
 
 import com.mongodb.hibernate.internal.translate.mongoast.AstLiteral;
-import org.bson.BsonDocument;
-import org.bson.BsonDocumentWriter;
 import org.bson.BsonString;
 import org.junit.jupiter.api.Test;
 
 class AstElemMatchFilterOperationTests {
 
     @Test
-    void rendersAsElemMatchWrappingBody() {
+    void testRendering() {
         AstFilter body = new AstFieldOperationFilter(
                 "sku",
                 new AstComparisonFilterOperation(AstComparisonFilterOperator.EQ, new AstLiteral(new BsonString("WIDGET"))));
-        AstElemMatchFilterOperation op = new AstElemMatchFilterOperation(body);
-
-        var doc = new BsonDocument();
-        try (var writer = new BsonDocumentWriter(doc)) {
-            writer.writeStartDocument();
-            writer.writeName("lineItems");
-            op.render(writer);
-            writer.writeEndDocument();
-        }
-
-        assertThat(doc.toJson()).isEqualTo("{\"lineItems\": {\"$elemMatch\": {\"sku\": {\"$eq\": \"WIDGET\"}}}}");
+        assertRendering(
+                """
+                {"$elemMatch": {"sku": {"$eq": "WIDGET"}}}""",
+                new AstElemMatchFilterOperation(body));
     }
 }

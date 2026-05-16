@@ -19,8 +19,7 @@ package com.mongodb.hibernate.internal.translate.mongoast.filter;
 import org.bson.BsonWriter;
 
 /**
- * Wraps a filter body inside a {@code $elemMatch} operator. Combine with an enclosing
- * {@link AstFieldOperationFilter} to produce {@code {<array>: {$elemMatch: <body>}}}.
+ * See <a href="https://www.mongodb.com/docs/manual/reference/operator/query/elemMatch/">{@code $elemMatch}</a>.
  *
  * @hidden
  */
