@@ -32,7 +32,16 @@ The viable alternative is `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` with `LATERAL u
 - Aggregates over unnest-alias columns via the join-sugar form: `SELECT o.id, sum(li.qty) FROM O o JOIN o.array li GROUP BY o.id`.
 - `count(*)` scalar subqueries over `unnest()` in SELECT lists: `SELECT o.id, (SELECT count(*) FROM LATERAL unnest(o.array) WHERE ...) FROM O o`.
 - Element values in IN/NOT-IN subqueries: `WHERE x IN (SELECT li.col FROM LATERAL unnest(o.array) li)`.
-- Both struct-array and scalar-array unnest. The scalar case (`unnest(o.intsCollection)`) uses `$` directly without a field qualifier inside the `any` body. The exact HQL surface for referencing the unnest column in the scalar case (Hibernate's default basic-array column name vs. unqualified alias references) is an investigation item resolved in Phase 2.
+- Both struct-array and scalar-array unnest, on equal footing. The scalar case (`unnest(o.intsCollection)`) uses `$` directly inside the `any` body where the struct case uses `$.<field>`. Hibernate 7 supports joining "basic plural attributes" directly as syntax sugar for `lateral unnest(...)`, so the scalar case has the same HQL surface as the struct case:
+
+  | Operation | HQL | MQLv2 |
+  | --- | --- | --- |
+  | EXISTS over unnest | `where exists (select 1 from lateral unnest(o.array) e where <pred>)` | `array any (<pred-rewritten>)` |
+  | JOIN on plural attribute | `from O o join o.array e where <pred>` | `\| unwind array \| match (<pred-rewritten>)` |
+  | Project element | `select e ...` (scalar) / `select e.field ...` (struct) | Element reachable via field path after unwind |
+  | Aggregate over elements | `sum(e)` / `sum(e.qty)` after join | `sum($->array)` / `sum($->array.qty)` after unwind |
+
+  The exact HQL surface for referencing the *scalar element value* inside the unnest body (alias-as-value `e > 5` vs. Hibernate's default basic-array column name `e.<defaultColumn> > 5`) is an investigation item resolved in Phase 2 by inspecting the SQL AST Hibernate 7 produces.
 - Nested unnest inside an EXISTS body: array-of-docs-each-containing-an-array. Translates to nested `any(...)`. The unnest-alias stack tracks the innermost element rebinding.
 - Correlation: inner predicates may reference outer-query columns through the existing `$__vN` `let`-binding mechanism. No new infrastructure.
 - `NOT EXISTS`, `NOT IN` over unnest — flow through existing negation handling with `(not ...)`.
@@ -308,7 +317,7 @@ Each test method asserts **both** the emitted MQLv2 pipeline text *and* the exec
 - **Storage shape:** `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` only. JSON storage is out of scope.
 - **Correlation mechanism:** reuse the existing `$__vN` `let`-binding infrastructure. No new mechanism.
 - **Nesting:** allow nested `unnest` inside EXISTS bodies (translates to nested `any`). Outer-FROM nesting (chained `| unwind`) is out of scope.
-- **Scalar vs. struct arrays:** both supported. The translator distinguishes by the absence vs. presence of a field qualifier on the inner column reference. The precise HQL surface for the scalar case is investigated in Phase 2.
+- **Scalar vs. struct arrays:** equal-footing support — same HQL surface (EXISTS/JOIN/projection/aggregation), same MQLv2 emissions modulo the inner column-reference rewrite (`$` for scalars, `$.field` for structs). The precise HQL form for referencing the scalar element value inside the unnest body is investigated in Phase 2.
 - **Projection scope:** Option B from brainstorming — projection works via the plural-join sugar form; EXISTS bodies remain predicate-only. Plus the translatable subset of Option C — `count(*)` scalar subqueries over unnest, element values in IN subqueries. Non-count scalar aggregates over unnest are out of scope due to upstream MQLv2 expression-repertoire limits.
 - **Hibernate 7 upgrade ownership:** part of this design as Phase 0; not deferred to a separate effort.
 - **v1 translator behavior:** unchanged. Phase 0 may touch v1 code mechanically for API compatibility; no behavior changes.
