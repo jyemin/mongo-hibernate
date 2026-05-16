@@ -48,6 +48,7 @@ import org.hibernate.cfg.AvailableSettings;
 import org.hibernate.dialect.DatabaseVersion;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.dialect.aggregate.AggregateSupport;
+import org.hibernate.dialect.function.array.UnnestFunction;
 import org.hibernate.engine.jdbc.dialect.spi.DialectResolutionInfo;
 import org.hibernate.engine.jdbc.mutation.JdbcValueBindings;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
@@ -355,6 +356,12 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
         functionRegistry.register("array_contains_nullable", new MongoArrayContainsFunction(true, typeConfiguration));
         functionRegistry.register("array_includes", new MongoArrayIncludesFunction(false, typeConfiguration));
         functionRegistry.register("array_includes_nullable", new MongoArrayIncludesFunction(true, typeConfiguration));
+        // Register Hibernate's standard `unnest` set-returning function so HQL like
+        // `from O o join lateral unnest(o.array) a on 1=1` is parseable. The v2 translator
+        // does not yet handle the resulting FunctionTableReference; Phase 3 of the elemMatch
+        // design plugs that in. Registering here lets Phase 0's diagnostic test confirm the
+        // SQL-AST shape Hibernate 7 produces.
+        functionRegistry.register("unnest", new UnnestFunction("value", "ordinality"));
     }
 
     @Override
