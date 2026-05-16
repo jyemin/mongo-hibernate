@@ -46,8 +46,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
  * Diagnostic-only test that locks in the load-bearing AST-shape assumption Phases 2-4 of the elemMatch design depend
- * on: HQL {@code join lateral unnest(o.array) a} produces a {@link FunctionTableReference} whose function
- * descriptor identifies as {@code "unnest"}.
+ * on: HQL {@code join lateral unnest(o.array) a} produces a {@link FunctionTableReference} whose function descriptor
+ * identifies as {@code "unnest"}.
  *
  * <p>Prerequisites the upgrade put in place:
  *
@@ -122,8 +122,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         // has to resolve `t`, it gives up. Scalar JOIN is therefore limited to cardinality
         // multiplication with no useful filtering; for predicate use, `array_contains` is the
         // only supported scalar-array elemMatch-like mechanism.
-        var thrown = catchThrowable(
-                () -> captureFromHql("select i from Item i join lateral unnest(i.tags) t where t > 5"));
+        var thrown =
+                catchThrowable(() -> captureFromHql("select i from Item i join lateral unnest(i.tags) t where t > 5"));
         var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
         assertThat(captured)
                 .as("scalar JOIN body predicate should fail in SQM resolution; suppressed: %s", thrown)
@@ -138,8 +138,7 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
 
     @Test
     void structArrayJoinWithSimplePredicateProducesUnnest() {
-        var captured =
-                captureFromHql("select i from Item i join lateral unnest(i.structTags) t where t.name = 'x'");
+        var captured = captureFromHql("select i from Item i join lateral unnest(i.structTags) t where t.name = 'x'");
         assertOuterUnnestJoin(captured);
     }
 
@@ -254,8 +253,8 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
         // Hibernate-internal `SqmMappingModelHelper.resolveSqmPath` AssertionError. Phase 4 is
         // STRUCT-ARRAY ONLY for this surface. Scalar users have `array_contains` for value
         // equality.
-        var thrown = catchThrowable(() -> captureFromHqlForTuple(
-                "select i.id, (select count(*) from i.tags t where t > 5) from Item i"));
+        var thrown = catchThrowable(
+                () -> captureFromHqlForTuple("select i.id, (select count(*) from i.tags t where t > 5) from Item i"));
         var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
         assertThat(captured)
                 .as("scalar subquery over int[] should fail in SQM resolution; suppressed: %s", thrown)
@@ -266,8 +265,7 @@ class Mqlv2UnnestAstDiagnosticTests implements SessionFactoryScopeAware {
     void inSubquery_scalarArray_triggersHibernateAssertion() {
         // ❌ IN-subquery over scalar arrays fails the same way. Phase 4 IN-subquery surface is
         // STRUCT-ARRAY ONLY.
-        var thrown = catchThrowable(
-                () -> captureFromHql("select i from Item i where 5 in (select t from i.tags t)"));
+        var thrown = catchThrowable(() -> captureFromHql("select i from Item i where 5 in (select t from i.tags t)"));
         var captured = CapturingMqlv2TranslatorFactory.takeLastCaptured();
         assertThat(captured)
                 .as("IN-subquery over int[] should fail in SQM resolution; suppressed: %s", thrown)

@@ -40,8 +40,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
- * Phase 3 of the elemMatch design: HQL {@code FROM O o JOIN o.array a WHERE …} translates to
- * MQLv2 {@code | unwind array | match (…)}. Row-multiplying join semantics; struct arrays only.
+ * Phase 3 of the elemMatch design: HQL {@code FROM O o JOIN o.array a WHERE …} translates to MQLv2 {@code | unwind
+ * array | match (…)}. Row-multiplying join semantics; struct arrays only.
  */
 @DomainModel(annotatedClasses = {Mqlv2UnnestJoinIntegrationTests.Order.class})
 @SessionFactory(exportSchema = false)
@@ -65,9 +65,8 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
         sessionFactoryScope.inTransaction(session -> {
             session.createMutationQuery("delete from Order").executeUpdate();
             session.persist(new Order(
-                    1,
-                    new LineItem[] {new LineItem("WIDGET-1", 5), new LineItem("WIDGET-2", 1)},
-                    new int[] {10, 20, 30}));
+                    1, new LineItem[] {new LineItem("WIDGET-1", 5), new LineItem("WIDGET-2", 1)}, new int[] {10, 20, 30
+                    }));
             session.persist(new Order(2, new LineItem[] {new LineItem("GADGET-1", 10)}, new int[] {1, 2, 3}));
             session.persist(new Order(3, new LineItem[] {new LineItem("WIDGET-1", 0)}, new int[] {}));
         });
@@ -81,10 +80,9 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo(
-                        "from $orders | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem, scores: scores}"
-                                + " | match (lineItems.sku == \"WIDGET-1\")"
-                                + " | format {_id: _id, lineItems: [lineItems], scores: scores}");
+                .isEqualTo("from $orders | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem, scores: scores}"
+                        + " | match (lineItems.sku == \"WIDGET-1\")"
+                        + " | format {_id: _id, lineItems: [lineItems], scores: scores}");
         // Order 1 has WIDGET-1 (one match) → 1 row; order 3 has WIDGET-1 (one match) → 1 row; order 2 → 0 rows.
         // Row-multiplying JOIN: two rows total (NOT deduplicated like EXISTS).
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 3);
@@ -133,8 +131,8 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
         // Scalar JOIN with a body predicate (s > 5) fails at HQL semantic-analysis time.
         // Hibernate throws AssertionError when it cannot resolve the scalar path for the join alias.
         var hql = "select o from Order o join o.scores s where s > 5";
-        assertThatThrownBy(() -> sessionFactoryScope.inSession(
-                        session -> session.createSelectionQuery(hql, Order.class).getResultList()))
+        assertThatThrownBy(() -> sessionFactoryScope.inSession(session ->
+                        session.createSelectionQuery(hql, Order.class).getResultList()))
                 .isInstanceOf(AssertionError.class);
     }
 
