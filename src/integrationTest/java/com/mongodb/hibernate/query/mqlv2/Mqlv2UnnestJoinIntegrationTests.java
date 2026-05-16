@@ -98,6 +98,21 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
         assertThat(results).extracting(r -> r[1]).containsOnly("WIDGET-1");
     }
 
+    @Test
+    void joinOverStructArray_aggregateOverAliasWithGroupBy() {
+        var hql = "select o.id, sum(a.qty) from Order o join o.lineItems a group by o.id";
+        var results = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, Object[].class).getResultList());
+
+        // Order 1: qty 5 + 1 = 6. Order 2: qty 10. Order 3: qty 0.
+        // Map result rows by id → sum for stable assertion.
+        var byId = new java.util.HashMap<Integer, Long>();
+        for (var r : results) {
+            byId.put((Integer) r[0], ((Number) r[1]).longValue());
+        }
+        assertThat(byId).containsEntry(1, 6L).containsEntry(2, 10L).containsEntry(3, 0L);
+    }
+
     // ---- Test entity / embeddable ----
 
     @Entity(name = "Order")
