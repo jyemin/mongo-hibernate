@@ -113,14 +113,19 @@ Phase 0  Hibernate 7.x upgrade            (no new features)
    ├──> Phase 3  Translator: plural-attribute-join sugar  →  | unwind
    │              Row-multiplying join semantics with projection + aggregates.
    │
-   └──> Phase 4  Translator: count-of-unnest scalar subqueries,
-                 element values in IN subqueries.
+   ├──> Phase 4  Translator: count-of-unnest scalar subqueries,
+   │              element values in IN subqueries.
+   │
+   └──> Phase 5  Documentation: add elemMatch examples to the MQLv2 showcase
+                 (docs/mqlv2-showcase.md + Mqlv2ShowcaseVerificationTests) and
+                 the project README.
 ```
 
 The phasing is chosen because:
 - The Hibernate 7 upgrade has independent breaking changes that should soak in CI before any feature depends on it.
 - Phase 1 surfaces the v2 SELECT-side risk. Storage round-trip is *not* the open question — INSERT/UPDATE go through `MongoTranslatorFactory` (shared with v1) and v1 tests already cover struct-array and scalar-array storage. The open question is whether the v2 SELECT translator correctly hydrates array fields back into entity state when reading documents; `Mqlv2SelectIntegrationTests` uses no array fields, so this is currently untested under v2.
 - Phases 2-4 are largely independent: Phase 2 owns the EXISTS-over-unnest hook in `appendPredicateText`; Phase 3 owns the FROM-clause hook in `appendJoins`; Phase 4 extends the scalar-subquery and IN-subquery branches. None block one another in the codebase.
+- Phase 5 (showcase + README polish) lands after the feature phases are complete. It's user-facing documentation; the diagnostic test class is removed at this point too since the showcase test now covers the same AST shapes via positive feature assertions.
 
 ## Components
 
@@ -209,6 +214,24 @@ Translator additions in `Mqlv2SelectTranslator`:
 - The existing scalar-subquery handler in `appendExprText` (Mqlv2SelectTranslator.java:1034) currently restricts to `count()` over a regular `from $collection` subquery. Extend it: if the inner subquery's FROM is an unnest function table, emit `count(<arrayPath> | match (<rewritten-body>))`, reusing `appendPredicateTextInsideAny`. For non-count scalar aggregates over unnest, throw with a clear documented-reason message.
 
 - The existing `InSubQueryPredicate` handler (Mqlv2SelectTranslator.java:937) similarly extends: if the subquery's FROM is an unnest function table, the projected column is rewritten as `$.<col>` and the inner pipeline becomes `<arrayPath> | match (...)`. The outer test value flows through the existing `$__vN` head-binding machinery.
+
+### Phase 5 — Showcase and README polish
+
+Once Phases 2-4 land, add a curated set of elemMatch example queries to:
+
+- **`docs/mqlv2-showcase.md`** — the canonical user-facing tour of MQLv2 features through Hibernate. Each example pairs an HQL snippet with the emitted MQLv2 pipeline. Phase 5 adds a new section covering:
+  - EXISTS over struct-array (single and multi-condition body)
+  - Correlated outer reference inside the EXISTS body
+  - NOT EXISTS
+  - Plural-attribute JOIN with projection and aggregation (Phase 3)
+  - `count(*)` scalar subquery over an array (Phase 4)
+  - Element values in IN-subquery (Phase 4)
+
+- **`src/integrationTest/java/com/mongodb/hibernate/query/mqlv2/Mqlv2ShowcaseVerificationTests.java`** — the test that parses `docs/mqlv2-showcase.md` and verifies each emitted pipeline matches what the translator produces. Phase 5 adds matching `check(...)` calls for each new showcase example so the doc and code never drift.
+
+- **`README.md`** — the project's top-level README. Phase 5 adds a one-paragraph entry under the existing feature/limitation lists noting that `$elemMatch`-style queries over arrays of embedded documents are supported via standard HQL EXISTS / JOIN forms on `@Struct`-annotated embeddable arrays. Includes one short HQL example and a pointer to the showcase doc.
+
+Also: **remove the diagnostic test class `Mqlv2UnnestAstDiagnosticTests`** (and its `CapturingMqlv2TranslatorFactory` / `CapturingMqlv2Dialect` helpers) once Phase 3 lands, since the showcase test now covers the AST shapes positively. The diagnostic was scaffolding for the design and is no longer load-bearing.
 
 ## Data flow
 
