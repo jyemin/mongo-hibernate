@@ -36,14 +36,16 @@ import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.internal.util.collections.Stack;
 import org.hibernate.persister.internal.SqlFragmentPredicate;
 import org.hibernate.query.SortDirection;
+import org.hibernate.query.common.TemporalUnit;
 import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.ComparisonOperator;
 import org.hibernate.query.sqm.SetOperator;
-import org.hibernate.query.sqm.TemporalUnit;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
+import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
+import org.hibernate.query.sqm.sql.internal.EntityValuedPathInterpretation;
+import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.sql.ast.Clause;
-import org.hibernate.sql.ast.SqlAstJoinType;
 import org.hibernate.sql.ast.SqlAstNodeRenderingMode;
 import org.hibernate.sql.ast.SqlAstTranslator;
 import org.hibernate.sql.ast.tree.SqlAstNode;
@@ -55,9 +57,6 @@ import org.hibernate.sql.ast.tree.expression.CaseSearchedExpression;
 import org.hibernate.sql.ast.tree.expression.CaseSimpleExpression;
 import org.hibernate.sql.ast.tree.expression.CastTarget;
 import org.hibernate.sql.ast.tree.expression.Collation;
-import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
-import org.hibernate.query.sqm.sql.internal.EntityValuedPathInterpretation;
-import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.sql.ast.tree.expression.ColumnReference;
 import org.hibernate.sql.ast.tree.expression.Distinct;
 import org.hibernate.sql.ast.tree.expression.Duration;
@@ -75,7 +74,6 @@ import org.hibernate.sql.ast.tree.expression.NestedColumnReference;
 import org.hibernate.sql.ast.tree.expression.Over;
 import org.hibernate.sql.ast.tree.expression.Overflow;
 import org.hibernate.sql.ast.tree.expression.QueryLiteral;
-import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.expression.SelfRenderingExpression;
 import org.hibernate.sql.ast.tree.expression.SqlSelectionExpression;
 import org.hibernate.sql.ast.tree.expression.SqlTuple;
@@ -83,6 +81,7 @@ import org.hibernate.sql.ast.tree.expression.Star;
 import org.hibernate.sql.ast.tree.expression.Summarization;
 import org.hibernate.sql.ast.tree.expression.TrimSpecification;
 import org.hibernate.sql.ast.tree.expression.UnaryOperation;
+import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.from.FunctionTableReference;
 import org.hibernate.sql.ast.tree.from.NamedTableReference;
 import org.hibernate.sql.ast.tree.from.QueryPartTableReference;
@@ -116,24 +115,25 @@ import org.hibernate.sql.ast.tree.select.SortSpecification;
 import org.hibernate.sql.ast.tree.update.Assignment;
 import org.hibernate.sql.ast.tree.update.UpdateStatement;
 import org.hibernate.sql.exec.internal.AbstractJdbcParameter;
+import org.hibernate.sql.exec.internal.JdbcOperationQuerySelect;
 import org.hibernate.sql.exec.spi.ExecutionContext;
-import org.hibernate.sql.exec.spi.JdbcOperationQuerySelect;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 import org.hibernate.sql.exec.spi.JdbcParameterBindings;
-import org.hibernate.type.BasicType;
+import org.hibernate.sql.exec.spi.JdbcSelect;
 import org.hibernate.sql.model.ast.ColumnWriteFragment;
+import org.hibernate.sql.model.internal.OptionalTableUpdate;
 import org.hibernate.sql.model.internal.TableDeleteCustomSql;
 import org.hibernate.sql.model.internal.TableDeleteStandard;
 import org.hibernate.sql.model.internal.TableInsertCustomSql;
 import org.hibernate.sql.model.internal.TableInsertStandard;
 import org.hibernate.sql.model.internal.TableUpdateCustomSql;
 import org.hibernate.sql.model.internal.TableUpdateStandard;
-import org.hibernate.sql.model.internal.OptionalTableUpdate;
 import org.hibernate.sql.results.jdbc.spi.JdbcValuesMappingProducerProvider;
+import org.hibernate.type.BasicType;
 import org.jspecify.annotations.Nullable;
 
 /** Translates a Hibernate SELECT SQL AST directly to a MQLv2 text command. */
-final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuerySelect> {
+final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
     private record SpecTranslation(String mqlv2, List<String> fieldNames) {}
 
@@ -164,7 +164,23 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     @Override
-    public boolean supportsFilterClause() {
+    @SuppressWarnings("TypeParameterUnusedInFormals")
+    public <X> X getLiteralValue(Expression expression) {
+        throw new FeatureNotSupportedException();
+    }
+
+    @Override
+    public org.hibernate.sql.ast.tree.Statement getSqlAst() {
+        return selectStatement;
+    }
+
+    @Override
+    public void renderNamedSetReturningFunction(
+            String functionName,
+            java.util.List<? extends SqlAstNode> sqlAstArguments,
+            org.hibernate.query.sqm.tuple.internal.AnonymousTupleTableGroupProducer tupleType,
+            String tableIdentifierVariable,
+            SqlAstNodeRenderingMode argumentRenderingMode) {
         throw new FeatureNotSupportedException();
     }
 
@@ -180,6 +196,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
 
     @Override
     public Set<String> getAffectedTableNames() {
+        throw new FeatureNotSupportedException();
+    }
+
+    @Override
+    public void addAffectedTableName(String tableName) {
         throw new FeatureNotSupportedException();
     }
 
@@ -204,7 +225,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                     "Unsupported QueryPart: " + queryPart.getClass().getSimpleName());
         }
 
-        var fieldNamesArray = new BsonArray(fieldNames.stream().map(BsonString::new).toList());
+        var fieldNamesArray =
+                new BsonArray(fieldNames.stream().map(BsonString::new).toList());
         var commandDoc = new BsonDocument("mqlv2", new BsonString(mqlv2Text))
                 .append("_mqlv2FieldNames", fieldNamesArray)
                 .append("_mqlv2ParamCount", new org.bson.BsonInt32(parameterBinders.size()));
@@ -212,13 +234,22 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
 
         // For affected table names, walk the first QuerySpec's root
         var firstSpec = queryPart.getFirstQuerySpec();
-        var affectedTableNames = collectAffectedTableNames(firstSpec.getFromClause().getRoots().get(0));
+        var affectedTableNames =
+                collectAffectedTableNames(firstSpec.getFromClause().getRoots().get(0));
         var mappingProducerProvider =
                 sessionFactory.getServiceRegistry().requireService(JdbcValuesMappingProducerProvider.class);
         var mappingProducer = mappingProducerProvider.buildMappingProducer(selectStatement, sessionFactory);
         return new JdbcOperationQuerySelect(
-                commandJson, parameterBinders, mappingProducer, affectedTableNames, 0, MAX_VALUE, emptyMap(), NONE,
-                null, limitJdbcParameter);
+                commandJson,
+                parameterBinders,
+                mappingProducer,
+                affectedTableNames,
+                0,
+                MAX_VALUE,
+                emptyMap(),
+                NONE,
+                null,
+                limitJdbcParameter);
     }
 
     private SpecTranslation translateQuerySpecToMqlv2(QuerySpec querySpec) {
@@ -235,13 +266,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     /**
-     * Builds the MQLv2 pipeline text and field-name list for a single QuerySpec.
-     * Pass non-null {@code queryOptions} at the top level to honour dynamic first/max rows;
-     * pass {@code null} for sub-queries (UNION members, correlated sub-queries) where only
-     * the HQL literal LIMIT clause applies.
+     * Builds the MQLv2 pipeline text and field-name list for a single QuerySpec. Pass non-null {@code queryOptions} at
+     * the top level to honour dynamic first/max rows; pass {@code null} for sub-queries (UNION members, correlated
+     * sub-queries) where only the HQL literal LIMIT clause applies.
      */
-    private SpecTranslation buildQuerySpecTranslation(
-            QuerySpec querySpec, @Nullable QueryOptions queryOptions) {
+    private SpecTranslation buildQuerySpecTranslation(QuerySpec querySpec, @Nullable QueryOptions queryOptions) {
         var sb = new StringBuilder();
         var root = querySpec.getFromClause().getRoots().get(0);
         this.hasJoins = !root.getTableGroupJoins().isEmpty();
@@ -252,7 +281,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         if (!querySpec.getGroupByClauseExpressions().isEmpty()) {
             aggNames = buildAggNames(querySpec.getSelectClause());
             var havingOnlyAggs = collectHavingOnlyAggs(querySpec.getHavingClauseRestrictions());
-            appendGroup(sb, querySpec.getGroupByClauseExpressions(), querySpec.getSelectClause(), aggNames, havingOnlyAggs);
+            appendGroup(
+                    sb, querySpec.getGroupByClauseExpressions(), querySpec.getSelectClause(), aggNames, havingOnlyAggs);
             appendHaving(sb, querySpec);
         } else if (selectHasAggregates(querySpec.getSelectClause())) {
             aggNames = buildAggNames(querySpec.getSelectClause());
@@ -286,27 +316,29 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         var translations = parts.stream()
                 .map(p -> translateQuerySpecToMqlv2(p.getFirstQuerySpec()))
                 .toList();
-        var mqlv2Pipelines = translations.stream().map(t -> "(" + t.mqlv2() + ")").toList();
+        var mqlv2Pipelines =
+                translations.stream().map(t -> "(" + t.mqlv2() + ")").toList();
 
-        var mqlv2 = switch (operator) {
-            case UNION_ALL -> buildArraySourcePipeline(mqlv2Pipelines);
-            case UNION -> buildArraySourcePipeline(mqlv2Pipelines) + " | distinct";
-            case INTERSECT -> {
-                var left = translations.get(0).mqlv2();
-                var right = translations.get(1).mqlv2();
-                var varName = "$__v" + correlatedVarCounter++;
-                yield left + " | match (count(let " + varName + " = $ in (" + right
-                        + " | match ($ == " + varName + "))) > 0)";
-            }
-            case EXCEPT -> {
-                var left = translations.get(0).mqlv2();
-                var right = translations.get(1).mqlv2();
-                var varName = "$__v" + correlatedVarCounter++;
-                yield left + " | match (count(let " + varName + " = $ in (" + right
-                        + " | match ($ == " + varName + "))) == 0)";
-            }
-            default -> throw new FeatureNotSupportedException("Unsupported set operator: " + operator);
-        };
+        var mqlv2 =
+                switch (operator) {
+                    case UNION_ALL -> buildArraySourcePipeline(mqlv2Pipelines);
+                    case UNION -> buildArraySourcePipeline(mqlv2Pipelines) + " | distinct";
+                    case INTERSECT -> {
+                        var left = translations.get(0).mqlv2();
+                        var right = translations.get(1).mqlv2();
+                        var varName = "$__v" + correlatedVarCounter++;
+                        yield left + " | match (count(let " + varName + " = $ in (" + right + " | match ($ == "
+                                + varName + "))) > 0)";
+                    }
+                    case EXCEPT -> {
+                        var left = translations.get(0).mqlv2();
+                        var right = translations.get(1).mqlv2();
+                        var varName = "$__v" + correlatedVarCounter++;
+                        yield left + " | match (count(let " + varName + " = $ in (" + right + " | match ($ == "
+                                + varName + "))) == 0)";
+                    }
+                    default -> throw new FeatureNotSupportedException("Unsupported set operator: " + operator);
+                };
         return new SpecTranslation(mqlv2, translations.get(0).fieldNames());
     }
 
@@ -340,13 +372,14 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             var joinCollName = joinNtr.getTableExpression();
             var joinAlias = joinNtr.getIdentificationVariable();
             var joinType = tgj.getJoinType();
-            var joinKeyword = switch (joinType) {
-                case INNER -> " | join ";
-                case LEFT -> " | join leftOuter ";
-                case RIGHT -> " | join rightOuter ";
-                case FULL -> " | join fullOuter ";
-                default -> throw new FeatureNotSupportedException("Unsupported join type: " + joinType);
-            };
+            var joinKeyword =
+                    switch (joinType) {
+                        case INNER -> " | join ";
+                        case LEFT -> " | join leftOuter ";
+                        case RIGHT -> " | join rightOuter ";
+                        case FULL -> " | join fullOuter ";
+                        default -> throw new FeatureNotSupportedException("Unsupported join type: " + joinType);
+                    };
             sb.append(joinKeyword);
             sb.append(joinAlias).append("=$").append(joinCollName);
             var joinPredicate = tgj.getPredicate();
@@ -416,16 +449,15 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     /**
-     * Translates innerSpec to a MQLv2 pipeline text, binding correlated outer column
-     * references as $__v0, $__v1, ... in correlatedBindings.
+     * Translates innerSpec to a MQLv2 pipeline text, binding correlated outer column references as $__v0, $__v1, ... in
+     * correlatedBindings.
      */
     private String appendQuerySpecPipeline(
-            QuerySpec innerSpec,
-            Set<String> outerQualifiers,
-            Map<String, String> correlatedBindings) {
+            QuerySpec innerSpec, Set<String> outerQualifiers, Map<String, String> correlatedBindings) {
         var innerSb = new StringBuilder();
         var root = innerSpec.getFromClause().getRoots().get(0);
-        if (innerSpec.getFromClause().getRoots().size() != 1 || !root.getTableGroupJoins().isEmpty()) {
+        if (innerSpec.getFromClause().getRoots().size() != 1
+                || !root.getTableGroupJoins().isEmpty()) {
             throw new FeatureNotSupportedException(
                     "Subquery with joins or multiple FROM roots is not supported in MQLv2");
         }
@@ -512,8 +544,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             if (qualifier != null && outerQualifiers.contains(qualifier)) {
                 // Correlated outer reference: bind to a $__vN variable
                 var key = qualifier + "." + cr.getColumnExpression();
-                var varName = correlatedBindings.computeIfAbsent(
-                        key, k -> "$__v" + correlatedVarCounter++);
+                var varName = correlatedBindings.computeIfAbsent(key, k -> "$__v" + correlatedVarCounter++);
                 sb.append(varName);
             } else {
                 // Inner column reference: the subquery is always a simple (non-join) scan,
@@ -527,13 +558,13 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     /**
-     * Wraps innerPipeline with let bindings for all entries in correlatedBindings (EXISTS pattern).
-     * If correlatedBindings is empty, returns "(innerPipeline)" without a let clause.
+     * Wraps innerPipeline with let bindings for all entries in correlatedBindings (EXISTS pattern). If
+     * correlatedBindings is empty, returns "(innerPipeline)" without a let clause.
      *
-     * <p>correlatedBindings maps "qualifier.column" → "$__vN". When the outer query is a simple
-     * scan ({@code hasJoins=false}) the binding value is the unqualified column name; when the
-     * outer query has joins ({@code hasJoins=true}) the full "qualifier.column" path is used so
-     * the reference is unambiguous in MQLv2's aliased-join document context.
+     * <p>correlatedBindings maps "qualifier.column" → "$__vN". When the outer query is a simple scan
+     * ({@code hasJoins=false}) the binding value is the unqualified column name; when the outer query has joins
+     * ({@code hasJoins=true}) the full "qualifier.column" path is used so the reference is unambiguous in MQLv2's
+     * aliased-join document context.
      */
     private String wrapWithLet(String innerPipeline, Map<String, String> correlatedBindings) {
         if (correlatedBindings.isEmpty()) {
@@ -551,12 +582,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     /**
-     * Wraps innerPipeline with a head binding followed by correlated bindings (IN/ANY/ALL pattern).
-     * Produces: {@code let headVarName = headValueText[, $__vN = field, ...] in (innerPipeline)}.
+     * Wraps innerPipeline with a head binding followed by correlated bindings (IN/ANY/ALL pattern). Produces:
+     * {@code let headVarName = headValueText[, $__vN = field, ...] in (innerPipeline)}.
      */
     private String wrapWithLet(
-            String innerPipeline, String headVarName, String headValueText,
-            Map<String, String> correlatedBindings) {
+            String innerPipeline, String headVarName, String headValueText, Map<String, String> correlatedBindings) {
         var sb = new StringBuilder("let ").append(headVarName).append(" = ").append(headValueText);
         for (var entry : correlatedBindings.entrySet()) {
             sb.append(", ").append(entry.getValue()).append(" = ").append(correlatedFieldExpr(entry.getKey()));
@@ -566,8 +596,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     /**
-     * Returns the MQLv2 field expression for a correlated outer binding key ("qualifier.column").
-     * Uses the qualified form in a join context so the reference is unambiguous.
+     * Returns the MQLv2 field expression for a correlated outer binding key ("qualifier.column"). Uses the qualified
+     * form in a join context so the reference is unambiguous.
      */
     private String correlatedFieldExpr(String qualifiedKey) {
         if (hasJoins) {
@@ -600,7 +630,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             if (sel.isVirtual()) continue;
             if (isAggregateFunction(sel.getExpression())) {
                 var name = "_agg" + aggIdx++;
-                aggSignatureToName.put(aggSignature((SelfRenderingFunctionSqlAstExpression) sel.getExpression()), name);
+                aggSignatureToName.put(
+                        aggSignature((SelfRenderingFunctionSqlAstExpression<?>) sel.getExpression()), name);
                 result.add(name);
             } else {
                 result.add(null);
@@ -609,8 +640,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         return result;
     }
 
-    private Map<String, SelfRenderingFunctionSqlAstExpression> collectHavingOnlyAggs(@Nullable Predicate predicate) {
-        var result = new LinkedHashMap<String, SelfRenderingFunctionSqlAstExpression>();
+    private Map<String, SelfRenderingFunctionSqlAstExpression<?>> collectHavingOnlyAggs(@Nullable Predicate predicate) {
+        var result = new LinkedHashMap<String, SelfRenderingFunctionSqlAstExpression<?>>();
         if (predicate != null && !predicate.isEmpty()) {
             collectHavingOnlyAggsInPredicate(predicate, result);
         }
@@ -618,7 +649,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     private void collectHavingOnlyAggsInPredicate(
-            Predicate predicate, Map<String, SelfRenderingFunctionSqlAstExpression> result) {
+            Predicate predicate, Map<String, SelfRenderingFunctionSqlAstExpression<?>> result) {
         if (predicate instanceof ComparisonPredicate cp) {
             collectHavingOnlyAggsInExpr(cp.getLeftHandExpression(), result);
             collectHavingOnlyAggsInExpr(cp.getRightHandExpression(), result);
@@ -637,9 +668,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     private void collectHavingOnlyAggsInExpr(
-            Expression expr, Map<String, SelfRenderingFunctionSqlAstExpression> result) {
+            Expression expr, Map<String, SelfRenderingFunctionSqlAstExpression<?>> result) {
         if (isAggregateFunction(expr)) {
-            var fn = (SelfRenderingFunctionSqlAstExpression) expr;
+            var fn = (SelfRenderingFunctionSqlAstExpression<?>) expr;
             var sig = aggSignature(fn);
             if (!aggSignatureToName.containsKey(sig)) {
                 var name = "_agg" + aggSignatureToName.size();
@@ -652,7 +683,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         }
     }
 
-    private String aggSignature(SelfRenderingFunctionSqlAstExpression fn) {
+    private String aggSignature(SelfRenderingFunctionSqlAstExpression<?> fn) {
         var args = fn.getArguments();
         if (args.isEmpty() || args.get(0) instanceof Star || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
             return fn.getFunctionName() + ":*";
@@ -674,15 +705,15 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
             return aggColumnSignature(bvpi.getColumnReference());
         } else {
-            throw new FeatureNotSupportedException(
-                    "Expected simple column reference in aggregate; got: " + expr.getClass().getSimpleName());
+            throw new FeatureNotSupportedException("Expected simple column reference in aggregate; got: "
+                    + expr.getClass().getSimpleName());
         }
     }
 
     private static final Set<String> AGGREGATE_FUNCTION_NAMES = Set.of("count", "sum", "avg", "min", "max");
 
     private static boolean isAggregateFunction(Expression expr) {
-        return expr instanceof SelfRenderingFunctionSqlAstExpression fn
+        return expr instanceof SelfRenderingFunctionSqlAstExpression<?> fn
                 && AGGREGATE_FUNCTION_NAMES.contains(fn.getFunctionName());
     }
 
@@ -691,7 +722,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             List<Expression> groupByExprs,
             SelectClause selectClause,
             List<@Nullable String> aggNames,
-            Map<String, SelfRenderingFunctionSqlAstExpression> havingOnlyAggs) {
+            Map<String, SelfRenderingFunctionSqlAstExpression<?>> havingOnlyAggs) {
         sb.append(" | group (");
         for (var i = 0; i < groupByExprs.size(); i++) {
             if (i > 0) sb.append(", ");
@@ -701,8 +732,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             appendExprText(sb, expr);
         }
         sb.append(") (");
-        var selections =
-                selectClause.getSqlSelections().stream().filter(s -> !s.isVirtual()).toList();
+        var selections = selectClause.getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
         var first = true;
         for (var i = 0; i < selections.size(); i++) {
             var aggName = aggNames.get(i);
@@ -710,8 +742,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             if (!first) sb.append(", ");
             first = false;
             sb.append(aggName).append("=");
-            appendAggFunctionText(
-                    sb, (SelfRenderingFunctionSqlAstExpression) selections.get(i).getExpression());
+            appendAggFunctionText(sb, (SelfRenderingFunctionSqlAstExpression<?>)
+                    selections.get(i).getExpression());
         }
         for (var entry : havingOnlyAggs.entrySet()) {
             if (!first) sb.append(", ");
@@ -730,7 +762,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
 
     private void appendScalarAgg(StringBuilder sb, SelectClause selectClause, List<@Nullable String> aggNames) {
         sb.append(" | agg {");
-        var selections = selectClause.getSqlSelections().stream().filter(s -> !s.isVirtual()).toList();
+        var selections = selectClause.getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
         var first = true;
         for (var i = 0; i < selections.size(); i++) {
             var aggName = aggNames.get(i);
@@ -738,12 +772,13 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             if (!first) sb.append(", ");
             first = false;
             sb.append(aggName).append(": ");
-            appendAggFunctionText(sb, (SelfRenderingFunctionSqlAstExpression) selections.get(i).getExpression());
+            appendAggFunctionText(sb, (SelfRenderingFunctionSqlAstExpression<?>)
+                    selections.get(i).getExpression());
         }
         sb.append("}");
     }
 
-    private void appendAggFunctionText(StringBuilder sb, SelfRenderingFunctionSqlAstExpression fn) {
+    private void appendAggFunctionText(StringBuilder sb, SelfRenderingFunctionSqlAstExpression<?> fn) {
         var name = fn.getFunctionName();
         var args = fn.getArguments();
         sb.append(name).append("(");
@@ -761,9 +796,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     /**
-     * Appends the field reference for an aggregate function argument using {@code ->} at every
-     * level so that MQLv2's auto-mapping over the group sequence is preserved end-to-end.
-     * Without joins: emits {@code column}. With joins: emits {@code qualifier->column}.
+     * Appends the field reference for an aggregate function argument using {@code ->} at every level so that MQLv2's
+     * auto-mapping over the group sequence is preserved end-to-end. Without joins: emits {@code column}. With joins:
+     * emits {@code qualifier->column}.
      */
     private void appendAggFieldRef(StringBuilder sb, Expression expr) {
         ColumnReference cr;
@@ -772,8 +807,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
             cr = bvpi.getColumnReference();
         } else {
-            throw new FeatureNotSupportedException(
-                    "Expected column reference in aggregate; got: " + expr.getClass().getSimpleName());
+            throw new FeatureNotSupportedException("Expected column reference in aggregate; got: "
+                    + expr.getClass().getSimpleName());
         }
         if (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty()) {
             sb.append(cr.getQualifier()).append("->").append(cr.getColumnExpression());
@@ -799,8 +834,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         var formatParts = new ArrayList<String>();
         var syntheticIdx = 0;
 
-        var selections =
-                selectClause.getSqlSelections().stream().filter(s -> !s.isVirtual()).toList();
+        var selections = selectClause.getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
         for (var i = 0; i < selections.size(); i++) {
             var selExpr = selections.get(i).getExpression();
             var aggName = aggNames != null ? aggNames.get(i) : null;
@@ -840,8 +876,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
      * Translates {@code x op ANY(subquery)} (isAll=false) or {@code x op ALL(subquery)} (isAll=true).
      *
      * <ul>
-     *   <li>ANY: {@code count(let $__vN = x in (inner | match (col op $__vN))) > 0}</li>
-     *   <li>ALL: {@code count(let $__vN = x in (inner | match (col inverse_op $__vN))) == 0}</li>
+     *   <li>ANY: {@code count(let $__vN = x in (inner | match (col op $__vN))) > 0}
+     *   <li>ALL: {@code count(let $__vN = x in (inner | match (col inverse_op $__vN))) == 0}
      * </ul>
      */
     private void appendAnyAllPredicate(
@@ -850,8 +886,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
         var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
                 .findFirst()
-                .orElseThrow(() -> new FeatureNotSupportedException(
-                        "ANY/ALL subquery must project at least one column"))
+                .orElseThrow(
+                        () -> new FeatureNotSupportedException("ANY/ALL subquery must project at least one column"))
                 .getExpression();
         var projectedColName = simpleColumnName(projectedExpr);
 
@@ -882,7 +918,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     private void appendPredicateText(StringBuilder sb, Predicate predicate) {
         if (predicate instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr) {
             appendAnyAllPredicate(sb, cp, anyExpr.getSubquery(), false);
-        } else if (predicate instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Every everyExpr) {
+        } else if (predicate instanceof ComparisonPredicate cp
+                && cp.getRightHandExpression() instanceof Every everyExpr) {
             appendAnyAllPredicate(sb, cp, everyExpr.getSubquery(), true);
         } else if (predicate instanceof ComparisonPredicate cp) {
             sb.append("(");
@@ -939,8 +976,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
                     .filter(s -> !s.isVirtual())
                     .findFirst()
-                    .orElseThrow(() -> new FeatureNotSupportedException(
-                            "IN subquery must project at least one column"))
+                    .orElseThrow(() -> new FeatureNotSupportedException("IN subquery must project at least one column"))
                     .getExpression();
             var projectedColName = simpleColumnName(projectedExpr);
 
@@ -1009,7 +1045,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
             sb.append(" ").append(arithmeticOpText(bae.getOperator())).append(" ");
             appendExprText(sb, bae.getRightHandOperand());
             sb.append(")");
-        } else if (expression instanceof SelfRenderingFunctionSqlAstExpression fn) {
+        } else if (expression instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
             if (isAggregateFunction(expression)) {
                 var aggName = aggSignatureToName.get(aggSignature(fn));
                 if (aggName == null) {
@@ -1037,13 +1073,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                     .filter(s -> !s.isVirtual())
                     .toList();
             if (selections.size() != 1) {
-                throw new FeatureNotSupportedException(
-                        "Scalar subquery in SELECT must project exactly one column");
+                throw new FeatureNotSupportedException("Scalar subquery in SELECT must project exactly one column");
             }
             var selExpr = selections.get(0).getExpression();
             // Only count() is supported: MQLv2 count(pipeline) returns the pipeline cardinality.
             // Other aggregates (sum, avg, min, max) have no equivalent pipeline-argument form in MQLv2.
-            if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression fn)
+            if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression<?> fn)
                     || !"count".equals(fn.getFunctionName())) {
                 throw new FeatureNotSupportedException(
                         "Scalar subquery in SELECT must use count(); other aggregates are not supported");
@@ -1131,9 +1166,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     /**
      * Returns the operator string for {@code col matchOp $__v0} in an ANY match stage.
      *
-     * <p>For {@code x op ANY(subquery)} we want to count rows {@code e} in the subquery where
-     * {@code x op e}, i.e., {@code $__v0 op col}. Written with the column on the left:
-     * {@code col swapOp $__v0}, where swapOp reverses the operand order.
+     * <p>For {@code x op ANY(subquery)} we want to count rows {@code e} in the subquery where {@code x op e}, i.e.,
+     * {@code $__v0 op col}. Written with the column on the left: {@code col swapOp $__v0}, where swapOp reverses the
+     * operand order.
      */
     private static String anyMatchOp(ComparisonOperator op) {
         // swap operand order: a > b becomes b < a
@@ -1151,9 +1186,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     /**
      * Returns the operator string for {@code col matchOp $__v0} in an ALL match stage.
      *
-     * <p>For {@code x op ALL(subquery)} we count rows {@code e} in the subquery where
-     * {@code NOT (x op e)}, i.e., {@code x inverseOp e}, i.e., {@code $__v0 inverseOp col}.
-     * Written with the column on the left: {@code col swapInverseOp $__v0}.
+     * <p>For {@code x op ALL(subquery)} we count rows {@code e} in the subquery where {@code NOT (x op e)}, i.e.,
+     * {@code x inverseOp e}, i.e., {@code $__v0 inverseOp col}. Written with the column on the left: {@code col
+     * swapInverseOp $__v0}.
      */
     private static String allMatchOp(ComparisonOperator op) {
         // negate then swap operand order
@@ -1290,8 +1325,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
     }
 
     @Override
-    public void visitAggregateColumnWriteExpression(
-            AggregateColumnWriteExpression aggregateColumnWriteExpression) {
+    public void visitAggregateColumnWriteExpression(AggregateColumnWriteExpression aggregateColumnWriteExpression) {
         throw new FeatureNotSupportedException();
     }
 
@@ -1588,5 +1622,4 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcOperationQuery
                             executionContext.getSession());
         }
     }
-
 }

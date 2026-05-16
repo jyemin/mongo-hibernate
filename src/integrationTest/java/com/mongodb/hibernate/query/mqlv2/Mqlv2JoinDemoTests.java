@@ -51,8 +51,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 /**
- * Demo: three-way JOIN query over 10 000 customers, 50 000 orders, and 150 000 line items
- * translated to MQLv2 and executed against a real MongoDB server. Inspired by TPC-H schema.
+ * Demo: three-way JOIN query over 10 000 customers, 50 000 orders, and 150 000 line items translated to MQLv2 and
+ * executed against a real MongoDB server. Inspired by TPC-H schema.
  *
  * <p>Run with: {@code ./gradlew integrationTest --tests "*.Mqlv2JoinDemoTests"}
  */
@@ -68,8 +68,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
             @Setting(name = DIALECT, value = "com.mongodb.hibernate.query.mqlv2.TestMqlv2Dialect"),
             @Setting(
                     name = "hibernate.session_factory.statement_inspector",
-                    value =
-                            "com.mongodb.hibernate.query.mqlv2.Mqlv2ShowcaseVerificationTests$MqlCapture")
+                    value = "com.mongodb.hibernate.query.mqlv2.Mqlv2ShowcaseVerificationTests$MqlCapture")
         })
 @ExtendWith(MongoExtension.class)
 @Disabled
@@ -220,7 +219,8 @@ class Mqlv2JoinDemoTests implements SessionFactoryScopeAware, ServiceRegistrySco
         for (var coll : List.of(customersCollection, ordersCollection, lineitemsCollection)) {
             coll.listIndexes(BsonDocument.class).forEach(idx -> {
                 if (!idx.getString("name").getValue().equals("_id_")) {
-                    System.out.printf("Index: %s on %s%n",
+                    System.out.printf(
+                            "Index: %s on %s%n",
                             idx.getDocument("key").toJson(), coll.getNamespace().getCollectionName());
                 }
             });
@@ -252,8 +252,8 @@ class Mqlv2JoinDemoTests implements SessionFactoryScopeAware, ServiceRegistrySco
         System.out.println("HQL:   " + hql);
 
         long t0 = System.nanoTime();
-        List<Customer> results = sessionFactoryScope.fromSession(session ->
-                session.createQuery(hql, Customer.class).getResultList());
+        List<Customer> results = sessionFactoryScope.fromSession(
+                session -> session.createQuery(hql, Customer.class).getResultList());
         double elapsed = (System.nanoTime() - t0) / 1e9;
 
         var captured = Mqlv2ShowcaseVerificationTests.MqlCapture.LAST.get();
@@ -264,20 +264,22 @@ class Mqlv2JoinDemoTests implements SessionFactoryScopeAware, ServiceRegistrySco
 
         var db = mongoClient.getDatabase(customersCollection.getNamespace().getDatabaseName());
         var explainResult = db.runCommand(
-                new BsonDocument("explain", new BsonDocument("mqlv2", new BsonString(mqlv2))),
-                BsonDocument.class);
+                new BsonDocument("explain", new BsonDocument("mqlv2", new BsonString(mqlv2))), BsonDocument.class);
         var queryPlan = explainResult
-                .getArray("stages").get(0).asDocument()
+                .getArray("stages")
+                .get(0)
+                .asDocument()
                 .getDocument("$cursor")
                 .getDocument("queryPlanner")
                 .getDocument("winningPlan");
-        System.out.println("QueryPlan:\n" + queryPlan.toJson(JsonWriterSettings.builder().indent(true).build()));
+        System.out.println("QueryPlan:\n"
+                + queryPlan.toJson(JsonWriterSettings.builder().indent(true).build()));
 
-        System.out.printf("%nResult: %,d distinct customers matched in %.3fs%n%n",
-                results.size(), elapsed);
+        System.out.printf("%nResult: %,d distinct customers matched in %.3fs%n%n", results.size(), elapsed);
         System.out.println("First 10:");
-        results.stream().limit(10).forEach(c ->
-                System.out.printf("  {id: %5d, name: %-14s, age: %2d, active: %b}%n",
-                        c.id, c.name, c.age, c.active));
+        results.stream()
+                .limit(10)
+                .forEach(c -> System.out.printf(
+                        "  {id: %5d, name: %-14s, age: %2d, active: %b}%n", c.id, c.name, c.age, c.active));
     }
 }

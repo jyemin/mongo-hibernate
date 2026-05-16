@@ -129,15 +129,13 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     // ---- Test data ----
 
     private static final List<Customer> CUSTOMERS = List.of(
-            new Customer(1, "Alice", 30, true),
-            new Customer(2, "Bob", 25, false),
-            new Customer(3, "Carol", 35, true));
+            new Customer(1, "Alice", 30, true), new Customer(2, "Bob", 25, false), new Customer(3, "Carol", 35, true));
 
     private static final List<Order> ORDERS = List.of(
-            new Order(10, 1, 150.0, "shipped",   Instant.parse("2023-03-15T10:00:00Z")),
-            new Order(11, 1, 80.0,  "pending",   Instant.parse("2024-07-04T14:30:00Z")),
-            new Order(12, 2, 200.0, "shipped",   Instant.parse("2023-11-20T09:15:45Z")),
-            new Order(13, 3, 50.0,  "cancelled", Instant.parse("2024-01-08T18:45:00Z")));
+            new Order(10, 1, 150.0, "shipped", Instant.parse("2023-03-15T10:00:00Z")),
+            new Order(11, 1, 80.0, "pending", Instant.parse("2024-07-04T14:30:00Z")),
+            new Order(12, 2, 200.0, "shipped", Instant.parse("2023-11-20T09:15:45Z")),
+            new Order(13, 3, 50.0, "cancelled", Instant.parse("2024-01-08T18:45:00Z")));
 
     // Order 10 (Alice, shipped): items 1=AIR, 2=TRUCK
     // Order 11 (Alice, pending): item 3=AIR  — pending, so won't satisfy o.status='shipped'
@@ -147,7 +145,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             new LineItem(1, 10, 30, "AIR"),
             new LineItem(2, 10, 10, "TRUCK"),
             new LineItem(3, 11, 50, "AIR"),
-            new LineItem(4, 12,  5, "AIR"),
+            new LineItem(4, 12, 5, "AIR"),
             new LineItem(5, 13, 40, "AIR"));
 
     @BeforeEach
@@ -164,7 +162,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     @Test
     void testBasicSelect() {
         sessionFactoryScope.inSession(session -> {
-            var result = session.createSelectionQuery("from Customer", Customer.class).getResultList();
+            var result = session.createSelectionQuery("from Customer", Customer.class)
+                    .getResultList();
             assertThat(result).hasSize(3);
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
         });
@@ -195,8 +194,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     @Test
     void testWhereWithAndConjunction() {
         sessionFactoryScope.inSession(session -> {
-            var result = session.createSelectionQuery(
-                            "from Customer c where c.age > 20 and c.age < 32", Customer.class)
+            var result = session.createSelectionQuery("from Customer c where c.age > 20 and c.age < 32", Customer.class)
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
@@ -291,8 +289,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     @Test
     void testSelectArithmetic() {
         sessionFactoryScope.inSession(session -> {
-            var result = session.createSelectionQuery(
-                            "select c.age * 2 from Customer c where c.id = 1", Integer.class)
+            var result = session.createSelectionQuery("select c.age * 2 from Customer c where c.id = 1", Integer.class)
                     .getSingleResult();
             assertThat(result).isEqualTo(60); // Alice age 30 * 2
         });
@@ -373,8 +370,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     void testArithmeticInWhere() {
         sessionFactoryScope.inSession(session -> {
             // age * 2 > 55: Alice 60 ✓, Bob 50 ✗, Carol 70 ✓
-            var result = session.createSelectionQuery(
-                            "from Customer c where c.age * 2 > 55", Customer.class)
+            var result = session.createSelectionQuery("from Customer c where c.age * 2 > 55", Customer.class)
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Carol");
         });
@@ -383,8 +379,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     @Test
     void testExtractInWhere() {
         sessionFactoryScope.inSession(session -> {
-            var result = session.createSelectionQuery(
-                            "from Order o where year(o.orderDate) = 2023", Order.class)
+            var result = session.createSelectionQuery("from Order o where year(o.orderDate) = 2023", Order.class)
                     .getResultList();
             assertThat(result.stream().map(o -> o.id)).containsExactlyInAnyOrder(10, 12);
         });
@@ -393,9 +388,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     @Test
     void testUnsupportedFunctionInSelect() {
         sessionFactoryScope.inSession(session -> {
-            assertThatThrownBy(() -> session.createSelectionQuery(
-                            "select upper(c.name) from Customer c", String.class)
-                    .getResultList())
+            assertThatThrownBy(() -> session.createSelectionQuery("select upper(c.name) from Customer c", String.class)
+                            .getResultList())
                     .isInstanceOf(FeatureNotSupportedException.class)
                     .hasMessageContaining("Unsupported function: upper()");
         });
@@ -404,9 +398,9 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     @Test
     void testUnsupportedExtractUnitInSelect() {
         sessionFactoryScope.inSession(session -> {
-            assertThatThrownBy(() -> session.createSelectionQuery(
-                            "select week(o.orderDate) from Order o", Integer.class)
-                    .getResultList())
+            assertThatThrownBy(
+                            () -> session.createSelectionQuery("select week(o.orderDate) from Order o", Integer.class)
+                                    .getResultList())
                     .isInstanceOf(FeatureNotSupportedException.class)
                     .hasMessageContaining("Unsupported extract() unit:");
         });
@@ -427,8 +421,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     void testInnerJoin() {
         sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery(
-                            "select distinct c from Customer c join Order o on c.id = o.customerId",
-                            Customer.class)
+                            "select distinct c from Customer c join Order o on c.id = o.customerId", Customer.class)
                     .getResultList();
             assertThat(result).hasSize(3);
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
@@ -463,8 +456,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         sessionFactoryScope.inSession(session -> {
             // All 4 orders have a matching customer, so right join returns all 4 orders
             var result = session.createSelectionQuery(
-                            "select distinct o from Customer c right join Order o on c.id = o.customerId",
-                            Order.class)
+                            "select distinct o from Customer c right join Order o on c.id = o.customerId", Order.class)
                     .getResultList();
             assertThat(result).hasSize(4);
             assertThat(result.stream().map(o -> o.id)).containsExactlyInAnyOrder(10, 11, 12, 13);
@@ -499,8 +491,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(3);
             assertThat(result)
                     .extracting(r -> r[0], r -> r[1])
-                    .containsExactlyInAnyOrder(
-                            tuple("shipped", 2L), tuple("pending", 1L), tuple("cancelled", 1L));
+                    .containsExactlyInAnyOrder(tuple("shipped", 2L), tuple("pending", 1L), tuple("cancelled", 1L));
         });
     }
 
@@ -560,8 +551,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         sessionFactoryScope.inSession(session -> {
             // Only "shipped" has count > 1 (orders 10 and 12 are both shipped)
             var result = session.createSelectionQuery(
-                            "select o.status, count(o.id) from Order o group by o.status"
-                                    + " having count(o.id) > 1",
+                            "select o.status, count(o.id) from Order o group by o.status" + " having count(o.id) > 1",
                             Object[].class)
                     .getResultList();
             assertThat(result).hasSize(1);
@@ -590,8 +580,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         sessionFactoryScope.inSession(session -> {
             // count(o.id) is in HAVING but not SELECT — shipped has 2 orders, others have 1
             var result = session.createSelectionQuery(
-                            "select o.status from Order o group by o.status having count(o.id) > 1",
-                            String.class)
+                            "select o.status from Order o group by o.status having count(o.id) > 1", String.class)
                     .getResultList();
             assertThat(result).containsExactly("shipped");
         });
@@ -602,8 +591,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         sessionFactoryScope.inSession(session -> {
             // sum(o.total) in HAVING but not SELECT: shipped=350, pending=80, cancelled=50
             var result = session.createSelectionQuery(
-                            "select o.status from Order o group by o.status having sum(o.total) > 100",
-                            String.class)
+                            "select o.status from Order o group by o.status having sum(o.total) > 100", String.class)
                     .getResultList();
             assertThat(result).containsExactly("shipped");
         });
@@ -656,8 +644,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         sessionFactoryScope.inSession(session -> {
             // NOT (count > 1): shipped excluded (count=2), pending and cancelled included (count=1)
             var result = session.createSelectionQuery(
-                            "select o.status from Order o group by o.status"
-                                    + " having not (count(o.id) > 1)",
+                            "select o.status from Order o group by o.status" + " having not (count(o.id) > 1)",
                             String.class)
                     .getResultList();
             assertThat(result).containsExactlyInAnyOrder("pending", "cancelled");
@@ -669,8 +656,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         sessionFactoryScope.inSession(session -> {
             // count * 2: shipped=4 > 3 included, pending=2 and cancelled=2 excluded
             var result = session.createSelectionQuery(
-                            "select o.status from Order o group by o.status"
-                                    + " having count(o.id) * 2 > 3",
+                            "select o.status from Order o group by o.status" + " having count(o.id) * 2 > 3",
                             String.class)
                     .getResultList();
             assertThat(result).containsExactly("shipped");
@@ -682,8 +668,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         sessionFactoryScope.inSession(session -> {
             // count(o.id) in (1): pending and cancelled (count=1) included, shipped (count=2) excluded
             var result = session.createSelectionQuery(
-                            "select o.status from Order o group by o.status"
-                                    + " having count(o.id) in (1)",
+                            "select o.status from Order o group by o.status" + " having count(o.id) in (1)",
                             String.class)
                     .getResultList();
             assertThat(result).containsExactlyInAnyOrder("pending", "cancelled");
@@ -755,11 +740,9 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     void testInList() {
         sessionFactoryScope.inSession(session -> {
             // ages 25 and 30 → Alice(30) and Bob(25) match; Carol(35) does not
-            var result = session.createSelectionQuery(
-                            "from Customer c where c.age in (25, 30)", Customer.class)
+            var result = session.createSelectionQuery("from Customer c where c.age in (25, 30)", Customer.class)
                     .getResultList();
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Alice", "Bob");
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
     }
 
@@ -767,8 +750,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     void testNotInList() {
         sessionFactoryScope.inSession(session -> {
             // not in (25, 30) → only Carol (35)
-            var result = session.createSelectionQuery(
-                            "from Customer c where c.age not in (25, 30)", Customer.class)
+            var result = session.createSelectionQuery("from Customer c where c.age not in (25, 30)", Customer.class)
                     .getResultList();
             assertThat(result).hasSize(1);
             assertThat(result.get(0).name).isEqualTo("Carol");
@@ -784,8 +766,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                             "from Customer c where exists (select 1 from Order o where o.customerId = c.id and o.total > 100)",
                             Customer.class)
                     .getResultList();
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Alice", "Bob");
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
     }
 
@@ -807,8 +788,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         sessionFactoryScope.inSession(session -> {
             // Uncorrelated EXISTS: no orders have total > 1000, so subquery returns nothing → 0 customers
             var result = session.createSelectionQuery(
-                            "from Customer c where exists (select 1 from Order o where o.total > 1000)",
-                            Customer.class)
+                            "from Customer c where exists (select 1 from Order o where o.total > 1000)", Customer.class)
                     .getResultList();
             assertThat(result).isEmpty();
         });
@@ -823,8 +803,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                             "from Customer c where c.id in (select o.customerId from Order o where o.total > 100)",
                             Customer.class)
                     .getResultList();
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Alice", "Bob");
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
     }
 
@@ -833,8 +812,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         sessionFactoryScope.inSession(session -> {
             // all 3 customer ids appear in orders, so NOT IN returns empty
             var result = session.createSelectionQuery(
-                            "from Customer c where c.id not in (select o.customerId from Order o)",
-                            Customer.class)
+                            "from Customer c where c.id not in (select o.customerId from Order o)", Customer.class)
                     .getResultList();
             assertThat(result).isEmpty();
         });
@@ -850,8 +828,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                             "from Customer c where c.id > any (select o.customerId from Order o where o.total > 100)",
                             Customer.class)
                     .getResultList();
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Bob", "Carol");
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Bob", "Carol");
         });
     }
 
@@ -879,8 +856,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                             "from Customer c where c.id > some (select o.customerId from Order o where o.total > 100)",
                             Customer.class)
                     .getResultList();
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Bob", "Carol");
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Bob", "Carol");
         });
     }
 
@@ -896,10 +872,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(3);
             assertThat(result)
                     .extracting(r -> r[0], r -> r[1])
-                    .containsExactlyInAnyOrder(
-                            tuple("Alice", 2L),
-                            tuple("Bob", 1L),
-                            tuple("Carol", 1L));
+                    .containsExactlyInAnyOrder(tuple("Alice", 2L), tuple("Bob", 1L), tuple("Carol", 1L));
         });
     }
 
@@ -916,8 +889,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                             Customer.class)
                     .getResultList();
             assertThat(result).hasSize(3);
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Carol", "Alice", "Carol");
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Carol", "Alice", "Carol");
         });
     }
 
@@ -930,8 +902,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                             Customer.class)
                     .getResultList();
             assertThat(result).hasSize(2);
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Carol", "Alice");
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Carol", "Alice");
         });
     }
 
@@ -965,9 +936,9 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     void testIntersectAllThrows() {
         sessionFactoryScope.inSession(session -> {
             assertThatThrownBy(() -> session.createSelectionQuery(
-                            "from Customer c where c.age > 30 intersect all from Customer c where c.active = true",
-                            Customer.class)
-                    .getResultList())
+                                    "from Customer c where c.age > 30 intersect all from Customer c where c.active = true",
+                                    Customer.class)
+                            .getResultList())
                     .isInstanceOf(FeatureNotSupportedException.class);
         });
     }
@@ -976,9 +947,9 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
     void testExceptAllThrows() {
         sessionFactoryScope.inSession(session -> {
             assertThatThrownBy(() -> session.createSelectionQuery(
-                            "from Customer c where c.active = true except all from Customer c where c.age > 30",
-                            Customer.class)
-                    .getResultList())
+                                    "from Customer c where c.active = true except all from Customer c where c.age > 30",
+                                    Customer.class)
+                            .getResultList())
                     .isInstanceOf(FeatureNotSupportedException.class);
         });
     }
@@ -992,7 +963,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         // Customer.id and Order.id share the unqualified name "id", so in a JOIN + GROUP BY
         // query the translator emits "group (id=id) (_agg0=count($->id))" where both "id"
         // references are ambiguous, producing wrong grouping or wrong counts.
-         sessionFactoryScope.inSession(session -> {
+        sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery(
                             "select c.id, count(o.id)"
                                     + " from Customer c join Order o on c.id = o.customerId"
@@ -1005,10 +976,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(3);
             assertThat(result)
                     .extracting(r -> r[0], r -> r[1])
-                    .containsExactlyInAnyOrder(
-                            tuple(1, 2L),
-                            tuple(2, 1L),
-                            tuple(3, 1L));
+                    .containsExactlyInAnyOrder(tuple(1, 2L), tuple(2, 1L), tuple(3, 1L));
         });
     }
 
@@ -1024,8 +992,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                                     + "   where (o.customerId = c.id and o.total > 100))",
                             Customer.class)
                     .getResultList();
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Alice", "Bob");
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
     }
 
@@ -1035,12 +1002,10 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
         // Bug: appendLiteralText correctly emits \" for embedded double-quote characters,
         // but the Haskell parseString in Lexer.hs has no escape handling and terminates
         // the string at the first " it encounters, producing a malformed MQLv2 query.
-        sessionFactoryScope.inTransaction(session ->
-                session.persist(new Customer(4, "Alice \"Ace\" Smith", 28, true)));
+        sessionFactoryScope.inTransaction(session -> session.persist(new Customer(4, "Alice \"Ace\" Smith", 28, true)));
         sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery(
-                            "from Customer c where c.name = 'Alice \"Ace\" Smith'",
-                            Customer.class)
+                            "from Customer c where c.name = 'Alice \"Ace\" Smith'", Customer.class)
                     .getResultList();
             assertThat(result).hasSize(1);
             assertThat(result.get(0).name).isEqualTo("Alice \"Ace\" Smith");
@@ -1067,9 +1032,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                                     + "   where o2.customerId = c.id and o2.total > 100)",
                             Customer.class)
                     .getResultList();
-            assertThat(result.stream().map(c -> c.name))
-                    .containsExactlyInAnyOrder("Alice", "Bob");
+            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
     }
-
 }

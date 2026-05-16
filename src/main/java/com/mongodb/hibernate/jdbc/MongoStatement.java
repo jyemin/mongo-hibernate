@@ -141,8 +141,7 @@ class MongoStatement implements StatementAdapter {
                     .map(v -> v.asString().getValue())
                     .toList();
             startTransactionIfNeeded();
-            var iterable = mongoDatabase
-                    .mqlv2(clientSession, () -> mqlv2Text, BsonDocument.class);
+            var iterable = mongoDatabase.mqlv2(clientSession, () -> mqlv2Text, BsonDocument.class);
             if (command.containsKey("let")) {
                 iterable = iterable.let(command.getDocument("let"));
             }

@@ -25,7 +25,6 @@ import org.hibernate.engine.spi.SharedSessionContractImplementor;
 import org.hibernate.generator.BeforeExecutionGenerator;
 import org.hibernate.generator.EventType;
 import org.hibernate.generator.GeneratorCreationContext;
-import org.hibernate.id.factory.spi.CustomIdGeneratorCreationContext;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -45,15 +44,11 @@ public final class ObjectIdGenerator implements BeforeExecutionGenerator {
     public ObjectIdGenerator(
             com.mongodb.hibernate.annotations.ObjectIdGenerator config,
             Member annotatedMember,
-            CustomIdGeneratorCreationContext context) {
-        this(true);
-    }
-
-    public ObjectIdGenerator(
-            com.mongodb.hibernate.annotations.ObjectIdGenerator config,
-            Member annotatedMember,
             GeneratorCreationContext context) {
-        this(false);
+        // Hibernate 7 unified the creation-context type for both `@IdGeneratorType` and `@ValueGenerationType`
+        // (previously these used distinct types `CustomIdGeneratorCreationContext` vs `GeneratorCreationContext`),
+        // so we disambiguate by checking whether the property being generated is the entity identifier.
+        this(context.getRootClass() != null && context.getRootClass().getIdentifierProperty() == context.getProperty());
     }
 
     private ObjectIdGenerator(boolean forIdentifier) {

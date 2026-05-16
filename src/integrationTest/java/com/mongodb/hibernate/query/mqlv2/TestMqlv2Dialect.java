@@ -27,6 +27,10 @@ public final class TestMqlv2Dialect extends TestMongoDialect {
         super(info);
     }
 
+    public TestMqlv2Dialect() {
+        super();
+    }
+
     @Override
     public SqlAstTranslatorFactory getSqlAstTranslatorFactory() {
         return new Mqlv2TranslatorFactory();
