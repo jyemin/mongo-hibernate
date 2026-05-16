@@ -55,7 +55,7 @@ The viable alternative is `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` with `LATERAL u
 - HQL `index()` inside unnest bodies. Orthogonal to elemMatch; defer.
 - Nested unnest inside the outer FROM (chained `| unwind` in the top-level pipeline). EXISTS-bodies-with-nested-unnest are in scope; outer-FROM nesting is not, in this design.
 - Behavior changes to the v1 translator. Phase 0 mechanically adapts call sites for Hibernate 7 API changes but preserves all observable v1 behavior. No new v1 features.
-- Comprehensive embeddable-array storage coverage across all BSON field types. Tracked as a separate effort. Phase 1 ships only the smoke test that validates the design's load-bearing storage assumption.
+- Comprehensive embeddable-array storage coverage across all BSON field types. Tracked as a separate effort. Phase 1 ships only the smoke test that validates v2 SELECT hydration of array fields, not exhaustive type coverage.
 
 ## Architecture
 
