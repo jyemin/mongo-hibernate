@@ -1,18 +1,56 @@
 # MQLv2 `$elemMatch` via SQL UNNEST — Design
 
-**Status:** Draft for review
-**Date:** 2026-05-15
+**Status:** Phase 0 complete; phases 1-4 ready to plan
+**Date:** 2026-05-15 (revised after Phase 0 findings)
 **Author:** Jeff Yemin (with Claude)
 
 ## Summary
 
 Expose full MongoDB `$elemMatch` semantics — including arrays of nested documents with multi-field predicates — through HQL in the MQLv2 Hibernate translator, by leveraging SQL-standard `UNNEST` (which Hibernate ORM 7 added at MongoDB's request).
 
-The HQL surface uses standard SQL constructs: `EXISTS (SELECT 1 FROM LATERAL unnest(o.array) li WHERE ...)` for cardinality-preserving element matching, and the plural-attribute-join sugar `FROM O o JOIN o.array li` (which Hibernate 7 desugars to `LATERAL unnest(...)`) for row-multiplying element traversal. The translator pattern-matches the `FunctionTableReference(unnest, ...)` SQL AST node and emits MQLv2 `any(...)` (for EXISTS) or `| unwind` (for outer-FROM joins).
+The HQL surface uses **collection-valued path expressions in idiomatic Hibernate syntax**:
 
-Storage shape: `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` for embeddable arrays. Scalar arrays use whatever Hibernate-default mapping currently produces BSON arrays of scalars (already in the v1 mapper's supported set). No `@ElementCollection` involvement — that mapping continues to throw at SessionFactory build.
+| Shape | HQL idiom | MQLv2 emission |
+|---|---|---|
+| EXISTS over array (canonical `$elemMatch`) | `WHERE EXISTS (SELECT 1 FROM o.array a WHERE …)` | `array any (<rewritten body>)` |
+| JOIN form (row-multiplying) | `FROM O o JOIN o.array a` (struct arrays) | `\| unwind array \| match (…)` |
+| JOIN form (scalar) | `FROM O o JOIN LATERAL unnest(o.array) a ON 1=1` | `\| unwind array \| match (…)` |
+| Scalar `count(*)` subquery over array | `(SELECT count(*) FROM o.array a WHERE …)` | `count(array \| match (…))` |
+| Element values in IN subquery | `WHERE x IN (SELECT a.col FROM o.array a)` | embedded `count(let … in (array \| match …)) > 0` |
 
-This design lands as a five-phase project, starting with a Hibernate 7.x upgrade.
+In every case Hibernate's SQL AST contains a `FunctionTableReference("unnest", …)`. The translator pattern-matches that node and emits MQLv2 `any(...)` (for EXISTS / scalar subquery) or `| unwind` (for outer-FROM joins).
+
+Storage shape: an embeddable array uses `@Embeddable @Struct(name = "…")` on the element class and a plain `T[]` field on the parent — no `@JdbcTypeCode` annotation. Scalar arrays use the Hibernate-default array mapping. No `@ElementCollection` involvement — that mapping continues to throw at SessionFactory build.
+
+This design lands as a five-phase project. Phase 0 (Hibernate 7.x upgrade + AST-shape diagnostics) is complete on the `mqlv2` branch. Phases 1-4 remain.
+
+## Phase 0 findings (load-bearing for the plan)
+
+Phase 0 wrote 13 diagnostic tests that exercise the AST machinery for every HQL shape used in Phases 2-4. The results govern every concrete design decision below.
+
+**HQL forms that produce `FunctionTableReference("unnest")` and are usable design targets:**
+
+| HQL | AST | Used by |
+|---|---|---|
+| `WHERE EXISTS (SELECT 1 FROM i.structTags t WHERE t.x = ?)` | EXISTS predicate; inner FROM root = `FunctionTableReference("unnest")` | Phase 2 |
+| `WHERE EXISTS (SELECT 1 FROM Item i2 JOIN i2.structTags t WHERE i2 = i AND t.x = ?)` | EXISTS predicate; inner FROM root = `NamedTableReference` (Item) + TableGroupJoin to `FunctionTableReference("unnest")` | Phase 2 (alternative) |
+| `FROM Item i JOIN i.structTags t` | Outer FROM root has TableGroupJoin to `FunctionTableReference("unnest")` | Phase 3 (struct sugar) |
+| `FROM Item i JOIN LATERAL unnest(i.tags) t ON 1=1` | Same shape | Phase 3 (scalar fallback) |
+| `SELECT i.id, (SELECT count(*) FROM i.structTags t WHERE t.y > ?) FROM Item i` | Scalar SelectStatement expression whose FROM root = `FunctionTableReference("unnest")` | Phase 4 |
+
+**HQL forms confirmed NOT to work:**
+
+| HQL | Failure | Implication |
+|---|---|---|
+| `WHERE EXISTS (SELECT 1 FROM LATERAL unnest(…) t WHERE …)` | `SyntaxException` at `(` after `unnest` | Hibernate's HQL grammar does not accept `LATERAL unnest(…)` inside subqueries. **The original spec's main idiom is unbuildable**; use implicit collection-path form instead. |
+| `(SELECT count(*) FROM LATERAL unnest(…) t WHERE …)` in scalar SELECT | `SyntaxException` | Same reason. Phase 4 must use implicit collection-path. |
+| `FROM Item i JOIN i.tags t WHERE t > 0` (int[] scalar sugar) | Hibernate `SqmMappingModelHelper.resolveSqmPath` AssertionError | Scalar sugar form unusable; scalar arrays must use the explicit `lateral unnest(...)` form in Phase 3. |
+
+**Prerequisites Phase 0 put in place that Phases 2-4 build on:**
+
+- `unnest` registered in `MongoDialect.initializeFunctionRegistry` (otherwise Hibernate's semantic analyzer rejects the function).
+- Test-only `CapturingMqlv2TranslatorFactory` + `CapturingMqlv2Dialect` for AST inspection at the boundary between Hibernate and the translator.
+- `Mqlv2UnnestAstDiagnosticTests` documents the AST shapes Phases 2-4 expect and locks them in against regression.
 
 ## Motivation
 
@@ -20,41 +58,34 @@ MQLv1 has `$elemMatch` for matching arrays of documents with multi-field predica
 
 The natural Hibernate route — `@ElementCollection` of `@Embeddable` — does not work for MongoDB: through JDBC, Hibernate plans the parent insert and child-table inserts as separate statements with no synchronous hook to coalesce them into an embedded array on the parent document. The v1 mapper rejects this mapping at SessionFactory build time, and that decision is preserved in this design.
 
-The viable alternative is `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` with `LATERAL unnest()` as the HQL surface. Hibernate 7 introduces `UnnestFunction` as a set-returning function descriptor producing a `FunctionTableReference` in the SQL AST, and desugars plural-attribute joins to lateral unnest under the hood. The translator can pattern-match this AST shape unambiguously and emit MQLv2's `any` or `| unwind`.
+The viable alternative is `@Embeddable @Struct(name = "…")` on the element class with a plain `T[]` field on the parent. Hibernate 7 introduces `UnnestFunction` as a set-returning function descriptor producing a `FunctionTableReference` in the SQL AST, and — when the dialect registers `unnest()` — desugars idiomatic HQL forms that reference collection-valued paths (the EXISTS-subquery and JOIN forms above) into `FunctionTableReference("unnest")` joins or roots. The translator pattern-matches this AST shape and emits MQLv2's `any` or `| unwind`.
 
 ## Scope
 
 ### In scope
 
-- HQL `EXISTS (SELECT 1 FROM LATERAL unnest(o.array) li WHERE <predicate>)` → MQLv2 `array any (<predicate>)` — the canonical `$elemMatch` analog with parent-cardinality preserved.
-- HQL plural-attribute-join sugar `FROM O o JOIN o.array li WHERE <predicate>` (Hibernate 7 desugaring) → MQLv2 `| unwind array | match (...)` — row-multiplying join semantics.
-- Projection of unnest-alias columns via the join-sugar form: `SELECT o.id, li.sku FROM O o JOIN o.array li`.
-- Aggregates over unnest-alias columns via the join-sugar form: `SELECT o.id, sum(li.qty) FROM O o JOIN o.array li GROUP BY o.id`.
-- `count(*)` scalar subqueries over `unnest()` in SELECT lists: `SELECT o.id, (SELECT count(*) FROM LATERAL unnest(o.array) WHERE ...) FROM O o`.
-- Element values in IN/NOT-IN subqueries: `WHERE x IN (SELECT li.col FROM LATERAL unnest(o.array) li)`.
-- Both struct-array and scalar-array unnest, on equal footing. The scalar case (`unnest(o.intsCollection)`) uses `$` directly inside the `any` body where the struct case uses `$.<field>`. Hibernate 7 supports joining "basic plural attributes" directly as syntax sugar for `lateral unnest(...)`, so the scalar case has the same HQL surface as the struct case:
-
-  | Operation | HQL | MQLv2 |
-  | --- | --- | --- |
-  | EXISTS over unnest | `where exists (select 1 from lateral unnest(o.array) e where <pred>)` | `array any (<pred-rewritten>)` |
-  | JOIN on plural attribute | `from O o join o.array e where <pred>` | `\| unwind array \| match (<pred-rewritten>)` |
-  | Project element | `select e ...` (scalar) / `select e.field ...` (struct) | Element reachable via field path after unwind |
-  | Aggregate over elements | `sum(e)` / `sum(e.qty)` after join | `sum($->array)` / `sum($->array.qty)` after unwind |
-
-  The exact HQL surface for referencing the *scalar element value* inside the unnest body (alias-as-value `e > 5` vs. Hibernate's default basic-array column name `e.<defaultColumn> > 5`) is an investigation item resolved in Phase 2 by inspecting the SQL AST Hibernate 7 produces.
-- Nested unnest inside an EXISTS body: array-of-docs-each-containing-an-array. Translates to nested `any(...)`. The unnest-alias stack tracks the innermost element rebinding.
+- HQL `WHERE EXISTS (SELECT 1 FROM o.array a WHERE <predicate>)` → MQLv2 `array any (<predicate>)` — the canonical `$elemMatch` analog with parent-cardinality preserved. Works for both struct and scalar arrays via the same HQL form.
+- HQL plural-attribute JOIN `FROM O o JOIN o.array a WHERE <predicate>` → MQLv2 `| unwind array | match (...)` — row-multiplying join semantics. Works for struct arrays (`Tag[]` with `@Embeddable @Struct(name=…)` on Tag). Scalar arrays (`int[]`) require the explicit `FROM O o JOIN LATERAL unnest(o.array) a ON 1=1` form because Hibernate's SQM resolution of basic-array aliases triggers an internal assertion under the sugar form (`SqmMappingModelHelper.resolveSqmPath`).
+- Projection of join-alias columns: `SELECT o.id, a.sku FROM O o JOIN o.array a`.
+- Aggregates over join-alias columns: `SELECT o.id, sum(a.qty) FROM O o JOIN o.array a GROUP BY o.id`.
+- `count(*)` scalar subqueries over a collection-valued path in SELECT lists: `SELECT o.id, (SELECT count(*) FROM o.array a WHERE …) FROM O o`.
+- Element values in IN/NOT-IN subqueries: `WHERE x IN (SELECT a.col FROM o.array a)`.
+- Both struct-array and scalar-array shapes for EXISTS, scalar subqueries, and IN subqueries. The HQL form is identical (implicit collection-path); the MQLv2 emission differs only in the inner column-reference rewrite (`$.<field>` for structs vs. `$` for scalars).
+- Nested EXISTS over array of docs each containing an array: `WHERE EXISTS (SELECT 1 FROM o.array a WHERE EXISTS (SELECT 1 FROM a.subarray b WHERE …))`. Translates to nested `any(...)`. The unnest-alias stack tracks the innermost element rebinding.
 - Correlation: inner predicates may reference outer-query columns through the existing `$__vN` `let`-binding mechanism. No new infrastructure.
-- `NOT EXISTS`, `NOT IN` over unnest — flow through existing negation handling with `(not ...)`.
+- `NOT EXISTS`, `NOT IN` — flow through existing negation handling with `(not ...)`.
 
 ### Out of scope
 
 - `@ElementCollection` of `@Embeddable`. Continues to throw at SessionFactory build, unchanged.
-- `@JdbcTypeCode(SqlTypes.JSON)` array storage. Storage is `STRUCT_ARRAY` only.
-- Projecting unnest-alias fields from inside an EXISTS subquery. Throws with a message pointing to the join-sugar form.
-- Non-count scalar aggregates over unnest (`(SELECT max(li.price) FROM LATERAL unnest(...) li)`). MQLv2 has no `max(pipeline)` / `sum(pipeline)` / `avg(pipeline)` / `min(pipeline)` form; only `count(pipeline)`. Throws with a documented reason; the feature lights up automatically if MQLv2 grows the missing forms upstream.
-- HQL `index()` inside unnest bodies. Orthogonal to elemMatch; defer.
-- Nested unnest inside the outer FROM (chained `| unwind` in the top-level pipeline). EXISTS-bodies-with-nested-unnest are in scope; outer-FROM nesting is not, in this design.
-- Behavior changes to the v1 translator. Phase 0 mechanically adapts call sites for Hibernate 7 API changes but preserves all observable v1 behavior. No new v1 features.
+- `@JdbcTypeCode(SqlTypes.JSON)` array storage. Storage uses `@Embeddable @Struct(name=…)` only.
+- `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` on the field — Phase 0 found this fails with *"No JdbcTypeConstructor registered for SqlTypes.STRUCT_ARRAY"* under MongoDialect. The struct nature must come from `@Struct` on the embeddable class, not from `@JdbcTypeCode` on the field.
+- The HQL `LATERAL unnest(…)` form inside EXISTS subqueries or scalar SELECT subqueries. Hibernate 7's HQL grammar rejects this; use the implicit collection-path form instead.
+- Projecting join-alias fields from inside an EXISTS subquery. Throws with a message pointing to the JOIN form.
+- Non-count scalar aggregates over unnest (`(SELECT max(a.price) FROM o.array a)`). MQLv2 has no `max(pipeline)` / `sum(pipeline)` / `avg(pipeline)` / `min(pipeline)` form; only `count(pipeline)`. Throws with a documented reason; the feature lights up automatically if MQLv2 grows the missing forms upstream.
+- HQL `index()` over arrays. Orthogonal to elemMatch; defer.
+- Nested arrays in the outer FROM (chained `| unwind` in the top-level pipeline). EXISTS-bodies-with-nested-unnest are in scope; outer-FROM nesting is not, in this design.
+- Behavior changes to the v1 translator. Phase 0 mechanically adapted call sites for Hibernate 7 API changes and registered `unnest` for HQL parsing, but preserved all observable v1 query behavior. No new v1 features.
 - Comprehensive embeddable-array storage coverage across all BSON field types. Tracked as a separate effort. Phase 1 ships only the smoke test that validates v2 SELECT hydration of array fields, not exhaustive type coverage.
 
 ## Architecture
@@ -85,12 +116,16 @@ The phasing is chosen because:
 
 ## Components
 
-### Phase 0 — Hibernate 7.x upgrade
+### Phase 0 — Hibernate 7.x upgrade and AST-shape diagnostics ✅ Complete
 
-- Bump `hibernate-core` and related artifacts in the project's Gradle configuration to the latest 7.x.
-- Adapt all compile errors in `src/main/java/com/mongodb/hibernate/` arising from Hibernate 7 API changes (visitor signatures, SQM types, function-descriptor APIs). Mechanical only — no behavior changes.
-- Verify both translators (`MongoTranslator` v1, `Mqlv2SelectTranslator`) and all existing integration tests pass. CI is the gatekeeper.
-- One new diagnostic-style integration test confirming that `from O o join o.array li` desugars to a `FunctionTableReference` for `unnest` in the inspected SQL AST. This locks Phase 3's assumption before Phase 3 begins.
+Landed commits on the `mqlv2` branch:
+
+- `4811f79` — `test: align MongoResultSetTests with widened cross-int-type coercions` (pre-existing test staleness, surfaced by the test run)
+- `795ca48` — `build: upgrade hibernate-orm from 6.6.34.Final to 7.3.4.Final` — Gradle version bump, MongoDialect / TestMongoDialect / TestMqlv2Dialect gain functional no-arg constructors for Hibernate 7's defaults bootstrap path, MongoDialect adds `supportsUserDefinedTypes()`, MongoDatabaseMetaData implements the methods Hibernate 7's metadata snapshot queries, MongoStructJdbcType migrated to `StructuredJdbcType`. Obsolete `NativeBootstrappingIntegrationTests` deleted. Temporal-test `assertNotSupported` broadened to accept `AnnotationException` (Hibernate 7's PropertyContainer rejects unbound generic types earlier than the v1 type contributor). MongoDialectTests.noArgConstructorFails → noArgConstructorSucceeds.
+- `99b193c` — `test: lock in unnest AST-shape assumption for elemMatch design` — `unnest` registered in `MongoDialect.initializeFunctionRegistry`; test-only `CapturingMqlv2TranslatorFactory` + `CapturingMqlv2Dialect` introduced; `Mqlv2UnnestAstDiagnosticTests` confirms `lateral unnest(...)` HQL syntax produces a `FunctionTableReference("unnest")` in the SQL AST, for both scalar and struct arrays.
+- `4833790` — `test: expand unnest AST-shape diagnostic to validate all design shapes` — 11 more diagnostic cases covering the full HQL surface area Phases 2-4 rely on. Documented findings (the **Phase 0 findings** section above is the authoritative reference for HQL idioms that work vs. do not).
+
+All existing tests pass on 7.3.4.Final.
 
 ### Phase 1 — v2 SELECT hydration smoke test for array fields
 
@@ -99,9 +134,9 @@ A small integration test class verifies the design's load-bearing v2-SELECT assu
 **Background — what's already proven and what isn't.** Storage (INSERT/UPDATE) for both struct-array and scalar-array fields is handled by `MongoTranslatorFactory`, which the v2 factory delegates to (`Mqlv2TranslatorFactory.buildMutationTranslator(...)`). v1 integration tests already cover round-trip of both shapes — `ArrayAndCollectionIntegrationTests` for scalar arrays and `StructAggregateEmbeddable[]` for struct arrays. The v2 SELECT translator, however, is independent of v1 and is currently exercised only by `Mqlv2SelectIntegrationTests`, which uses no array fields at all. Phase 1 closes that gap.
 
 - Entity: `Order` with `@Id int id`, plus both shapes on equal footing:
-  - `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY) LineItem[] lineItems` — struct array.
-  - `int[] scores` and `Collection<String> tags` — scalar array and scalar collection.
-- Embeddable: `LineItem(String sku, int qty, double price)`.
+  - `LineItem[] lineItems` (struct array; the struct nature comes from `@Embeddable @Struct(name = "LineItem")` on `LineItem`, **not** from any annotation on the field — Phase 0 confirmed `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` on the field fails with "No JdbcTypeConstructor registered").
+  - `int[] scores` and `Collection<String> tags` — scalar array and scalar collection, no annotations.
+- Embeddable: `@Embeddable @Struct(name = "LineItem") LineItem(String sku, int qty, double price)`.
 - Tests: `session.find(Order.class, id)`, trivial HQL `from Order o where o.id = :id`, and `from Order o` (full scan). Verify the returned entity's array fields contain the expected values, in the right order, with null/empty cases included.
 - Dialect under test: the v2 dialect (`TestMqlv2Dialect`).
 
@@ -111,10 +146,12 @@ Comprehensive embeddable-array coverage across all BSON-mappable field types rem
 
 ### Phase 2 — EXISTS-over-unnest → `any(...)`
 
+**HQL user surface:** `WHERE EXISTS (SELECT 1 FROM o.array a WHERE …)` — the implicit collection-path form. Phase 0 confirmed Hibernate produces an `ExistsPredicate` whose inner subquery's FROM root is `FunctionTableReference("unnest")`. (The `WHERE EXISTS (SELECT 1 FROM LATERAL unnest(…) …)` form does **not** parse — Hibernate's HQL grammar rejects `lateral unnest` inside subqueries. The implicit form is the only Phase 2 surface.)
+
 Translator additions in `Mqlv2SelectTranslator`:
 
 - Three new AST helpers (used by Phases 2-4):
-  - `isUnnestFunctionTable(TableReference)` — true iff the reference is a `FunctionTableReference` whose function descriptor is Hibernate's `UnnestFunction` (matched by descriptor identity or function name `unnest`).
+  - `isUnnestFunctionTable(TableReference)` — true iff the reference is a `FunctionTableReference` whose `getFunctionExpression().getFunctionName()` is `"unnest"`.
   - `extractUnnestArrayPath(FunctionTableReference)` — returns the single argument expression to `unnest(...)`. Validates that the argument is a `ColumnReference` / `BasicValuedPathInterpretation`. Throws `FeatureNotSupportedException` otherwise.
   - `extractUnnestAlias(TableGroup)` — returns the identification variable that names the rows of the unnest output.
 
@@ -131,7 +168,13 @@ Translator additions in `Mqlv2SelectTranslator`:
 
 - `appendUnnestExistsPredicate` extracts the unnest array path, the inner alias, and translates the inner WHERE through `appendPredicateTextInsideAny`. The result is wrapped as `(arrayPath any (<rewritten-body>))`, with correlated bindings wrapped in a `let` clause as in the existing EXISTS path. Negation wraps with `(not ...)`.
 
-### Phase 3 — Plural-attribute-join sugar → `| unwind`
+### Phase 3 — Plural-attribute JOIN → `| unwind`
+
+**HQL user surface:**
+- Struct arrays: `FROM O o JOIN o.array a WHERE a.x = …` — Hibernate desugars this to a `TableGroupJoin` whose joined group's primary table reference is `FunctionTableReference("unnest")`. Phase 0 confirmed.
+- Scalar arrays: `FROM O o JOIN LATERAL unnest(o.array) a ON 1=1 WHERE a > …` — same AST shape, different HQL form. The scalar sugar form (`FROM O o JOIN o.array a`) fails with a Hibernate-internal AssertionError in `SqmMappingModelHelper.resolveSqmPath`; the explicit `LATERAL unnest` is the supported workaround. (`LATERAL unnest` *is* legal in the outer FROM, only forbidden inside subqueries.)
+
+The translator does not need to distinguish the two HQL forms — both land at the same AST node.
 
 Translator additions in `Mqlv2SelectTranslator`:
 
@@ -145,7 +188,13 @@ Translator additions in `Mqlv2SelectTranslator`:
 
 - **`hasJoins` state for unnest joins.** The existing translator sets `hasJoins=true` whenever a `TableGroupJoin` is present, which causes column references to be emitted with their qualifier prefix (e.g., `o.id`). An unnest join is conceptually a document transformation, not a separate-table join, so it does not need outer aliasing in MQLv2 — `from $orders | unwind lineItems` keeps outer columns unqualified. Phase 3 introduces a finer-grained signal that distinguishes "entity joins are present" (which require aliasing) from "only unnest joins are present" (which do not). Mixed cases — an entity join *and* an unnest join in the same query — fall back to the aliased form `from o=$orders | unwind o.lineItems | …`, so both regular outer joins and unnest-joins can coexist.
 
-### Phase 4 — Translatable subset of "C"
+### Phase 4 — Scalar subqueries and IN subqueries over arrays
+
+**HQL user surfaces:**
+- `count(*)` scalar subquery: `SELECT o.id, (SELECT count(*) FROM o.array a WHERE …) FROM O o`. Implicit collection-path form; Phase 0 confirmed the SQL AST contains a `SelectStatement` expression whose FROM root is `FunctionTableReference("unnest")`.
+- IN subquery: `WHERE x IN (SELECT a.col FROM o.array a WHERE …)`. Same shape inside an `InSubQueryPredicate`.
+
+The `LATERAL unnest` form inside scalar SELECT subqueries does **not** parse in HQL; use the implicit collection-path form throughout Phase 4.
 
 Translator additions in `Mqlv2SelectTranslator`:
 
@@ -160,7 +209,7 @@ Translator additions in `Mqlv2SelectTranslator`:
 Input HQL:
 ```hql
 from Order o
-where exists (select 1 from lateral unnest(o.lineItems) li
+where exists (select 1 from o.lineItems li
               where li.sku = :sku and li.qty > o.minQty)
 ```
 
@@ -190,8 +239,8 @@ Negated EXISTS wraps with `(not ...)`.
 Input HQL (array of docs each containing an array of subdocs):
 ```hql
 from Order o where exists (
-  select 1 from lateral unnest(o.lineItems) li
-  where exists (select 1 from lateral unnest(li.taxes) t
+  select 1 from o.lineItems li
+  where exists (select 1 from li.taxes t
                 where t.code = :code))
 ```
 
@@ -235,11 +284,11 @@ from $orders | unwind lineItems | match (lineItems.qty > $p0) | format {_f0: id,
 
 Cardinality is preserved by `| unwind`: one Order with three matching line items produces three result rows.
 
-### Phase 4 — `count(*)` scalar subquery over unnest
+### Phase 4 — `count(*)` scalar subquery over array
 
 Input HQL:
 ```hql
-select o.id, (select count(*) from lateral unnest(o.lineItems) li where li.qty > 5) as big
+select o.id, (select count(*) from o.lineItems li where li.qty > 5) as big
 from Order o
 ```
 
@@ -256,7 +305,7 @@ For non-count scalar aggregates over unnest, throw with: *"Scalar subquery over 
 
 Input HQL:
 ```hql
-from Order o where 'WIDGET-1' in (select li.sku from lateral unnest(o.lineItems) li)
+from Order o where 'WIDGET-1' in (select li.sku from o.lineItems li)
 ```
 
 The `InSubQueryPredicate` handler is extended: if the subquery's FROM is an unnest function table, the projected column is rewritten as `$.<col>` and the inner pipeline becomes `<arrayPath> | match (...)`. The outer test value flows through the existing `$__vN` head-binding machinery.
@@ -282,20 +331,21 @@ All unsupported cases throw `FeatureNotSupportedException` with a specific, debu
 
 **Negation handling.** `NOT EXISTS (...)`, `NOT IN (...)` flow through the existing negation machinery — a single `(not ...)` wrap around the translated predicate. Tested explicitly.
 
-**Empty unnest body.** `exists (select 1 from lateral unnest(o.lineItems) li)` with no WHERE clause is semantically "has at least one element." Translates to `lineItems any (true)`, which MQLv2 evaluates as "non-empty array."
+**Empty unnest body.** `exists (select 1 from o.lineItems li)` with no WHERE clause is semantically "has at least one element." Translates to `lineItems any (true)`, which MQLv2 evaluates as "non-empty array."
 
 **Null array handling.** When `o.lineItems` is missing or null on a document, MQLv2's `any` on a non-sequence returns false (per spec section on `any`). This matches SQL `EXISTS` semantics on a NULL-valued plural attribute. No special-case logic needed; covered by integration tests.
 
 ## Testing strategy
 
-### Phase 0 — Hibernate 7.x upgrade
+### Phase 0 — Hibernate 7.x upgrade ✅ Complete
 
-- All existing tests pass on 7.x. No new feature tests.
-- One diagnostic test confirming that `from O o join o.array li` desugars to a `FunctionTableReference` named `unnest` in the inspected SQL AST. This locks Phase 3's design assumption before Phase 3 begins.
+- All existing tests pass on 7.3.4.Final.
+- `Mqlv2UnnestAstDiagnosticTests` — 13 diagnostic methods exercising every HQL shape Phases 2-4 rely on. Each method either asserts the expected `FunctionTableReference("unnest")` AST shape (positive cases) or documents the parse / Hibernate-internal failure (negative cases, e.g., `lateral unnest` in subqueries).
+- The diagnostic tests stay in place until Phase 3 lands, at which point they're replaced by positive feature assertions in the Phase 3 test class.
 
 ### Phase 1 — v2 SELECT hydration smoke
 
-- One new test class. ~5-8 test methods covering `session.find()` and trivial HQL SELECTs against an entity with both a struct-array field (`@JdbcTypeCode(SqlTypes.STRUCT_ARRAY) LineItem[]`) and a scalar-array field (`int[]` / `Collection<String>`). Verify hydrated entity state matches seeded values, including null and empty cases.
+- One new test class. ~5-8 test methods covering `session.find()` and trivial HQL SELECTs against an entity with both a struct-array field (`LineItem[]` with `@Embeddable @Struct(name = "LineItem")` on the element class, no annotation on the field) and a scalar-array field (`int[]` / `Collection<String>`). Verify hydrated entity state matches seeded values, including null and empty cases.
 - Dialect under test: v2 only. Storage (INSERT/UPDATE) is exercised incidentally to seed the test data but is not the assertion target — v1 tests already cover storage round-trip for both shapes.
 
 ### Phases 2-4 — Translator feature work
@@ -323,21 +373,24 @@ Tests are parameterized or duplicated across the two shapes for the core support
 
 **Cross-phase regression net.** Every phase keeps the entire existing test suite green. CI is the gatekeeper.
 
-## Open items resolved at design time
+## Open items resolved at design time (or by Phase 0)
 
-- **Storage shape:** `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` only. JSON storage is out of scope.
+- **Storage shape:** `@Embeddable @Struct(name=…)` on the element class, plain `T[]` field on the parent. No `@JdbcTypeCode` on the field. Phase 0 confirmed `@JdbcTypeCode(SqlTypes.STRUCT_ARRAY)` on the field fails with "No JdbcTypeConstructor registered". JSON storage out of scope.
+- **HQL surface for elemMatch:** the **implicit collection-path form** (`WHERE EXISTS (SELECT 1 FROM o.array a WHERE …)`, `(SELECT count(*) FROM o.array a)`, `WHERE x IN (SELECT a.col FROM o.array a)`). Phase 0 confirmed `LATERAL unnest(...)` syntax inside subqueries does not parse in HQL.
+- **HQL surface for JOIN:** the sugar form (`FROM O o JOIN o.array a`) for struct arrays; the explicit `FROM O o JOIN LATERAL unnest(o.array) a ON 1=1` for scalar arrays (the sugar form for `int[]` triggers a Hibernate-internal AssertionError).
 - **Correlation mechanism:** reuse the existing `$__vN` `let`-binding infrastructure. No new mechanism.
-- **Nesting:** allow nested `unnest` inside EXISTS bodies (translates to nested `any`). Outer-FROM nesting (chained `| unwind`) is out of scope.
-- **Scalar vs. struct arrays:** equal-footing support — same HQL surface (EXISTS/JOIN/projection/aggregation), same MQLv2 emissions modulo the inner column-reference rewrite (`$` for scalars, `$.field` for structs). The precise HQL form for referencing the scalar element value inside the unnest body is investigated in Phase 2.
-- **Projection scope:** Option B from brainstorming — projection works via the plural-join sugar form; EXISTS bodies remain predicate-only. Plus the translatable subset of Option C — `count(*)` scalar subqueries over unnest, element values in IN subqueries. Non-count scalar aggregates over unnest are out of scope due to upstream MQLv2 expression-repertoire limits.
-- **Hibernate 7 upgrade ownership:** part of this design as Phase 0; not deferred to a separate effort.
-- **v1 translator behavior:** unchanged. Phase 0 may touch v1 code mechanically for API compatibility; no behavior changes.
+- **Nesting:** allow nested EXISTS (translates to nested `any`). Outer-FROM nesting (chained `| unwind`) is out of scope.
+- **Scalar vs. struct arrays:** equal-footing support for EXISTS / scalar subquery / IN subquery (identical HQL form). The JOIN form differs by storage shape per the row above. MQLv2 emissions differ only in the inner column-reference rewrite (`$` for scalars, `$.field` for structs).
+- **Projection scope:** projection works via the JOIN form; EXISTS bodies remain predicate-only. Plus `count(*)` scalar subqueries and element values in IN subqueries. Non-count scalar aggregates over unnest are out of scope due to upstream MQLv2 expression-repertoire limits.
+- **Hibernate 7 upgrade ownership:** done in Phase 0.
+- **v1 translator behavior:** unchanged in observable contract. Phase 0 touched v1 code mechanically for API compatibility and registered `unnest()` for HQL parsing, but added no new query-translation features.
+- **AST shapes for every supported HQL form:** confirmed by `Mqlv2UnnestAstDiagnosticTests` in Phase 0. The diagnostic tests are the authoritative reference and will be removed once Phase 3 lands.
 
 ## Risks
 
-- **Hibernate 7 upgrade scope.** The user has flagged that 7.x has breaking changes the project has not yet absorbed. Phase 0 is the discovery phase for the full extent. If the upgrade reveals incompatibilities that can't be resolved cleanly, the entire design is blocked.
-- **v2 SELECT-side hydration of array fields.** The design's load-bearing assumption is that the v2 SELECT translator correctly reads array-valued fields back into entity state. Storage (write) is shared with v1 and already proven; read-side hydration under v2 is currently unverified for any array shape and is what Phase 1 closes.
-- **AST shape variation.** Hibernate's exact SQM/SQL AST representation of `LATERAL unnest(...)` may differ subtly from the design's assumed `FunctionTableReference` shape (e.g., wrapped in a `LateralTable` or similar). Phase 0's diagnostic test catches this early.
+- **v2 SELECT-side hydration of array fields.** The design's remaining load-bearing assumption is that the v2 SELECT translator correctly reads array-valued fields back into entity state. Storage (write) is shared with v1 and already proven; read-side hydration under v2 is currently unverified for any array shape and is what Phase 1 closes.
+- **`appendPredicateTextCorrelated` / `appendPredicateTextInsideAny` consolidation.** Phase 2 plans to refactor the existing correlated-predicate walker around a column-reference resolver. If the refactor is more invasive than expected, it could break existing correlated-EXISTS / IN / ANY-ALL tests. Mitigated by keeping the existing tests as the regression net.
+- **Sugar form for struct arrays going forward.** Phase 0 confirmed the JOIN sugar form works today on Hibernate 7.3.4 with `@Embeddable @Struct` on the element. A future Hibernate upgrade could change the SQM-to-SQL transformation; the diagnostic test guards against regressions but cannot prevent upstream changes.
 
 ## Future work (explicitly out of this design)
 
