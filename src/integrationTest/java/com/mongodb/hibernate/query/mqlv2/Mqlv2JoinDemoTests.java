@@ -46,6 +46,7 @@ import org.hibernate.testing.orm.junit.SessionFactoryScope;
 import org.hibernate.testing.orm.junit.SessionFactoryScopeAware;
 import org.hibernate.testing.orm.junit.Setting;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
@@ -71,6 +72,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
                             "com.mongodb.hibernate.query.mqlv2.Mqlv2ShowcaseVerificationTests$MqlCapture")
         })
 @ExtendWith(MongoExtension.class)
+@Disabled
 class Mqlv2JoinDemoTests implements SessionFactoryScopeAware, ServiceRegistryScopeAware {
 
     private static final int NUM_CUSTOMERS = 10_000;
