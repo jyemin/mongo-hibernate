@@ -441,6 +441,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         // These must be enumerated in the unwind body to be preserved across the stage.
         var parentCols = new LinkedHashSet<String>();
         collectParentColumnNames(querySpec, rootAlias, parentCols);
+        // Always include the array field itself: subsequent pipeline stages reference it as
+        // arrayField.subField (e.g., lineItems.sku), so the unwind body must carry it forward.
+        parentCols.add(arrayFieldPath);
 
         // Emit: | unwind $__elem = arrayField in {col1: col1, ..., arrayField: $__elem}
         // The array field is mapped to the element variable (a single struct document), allowing

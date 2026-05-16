@@ -85,6 +85,19 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 3);
     }
 
+    @Test
+    void joinOverStructArray_projectsAliasField() {
+        var hql = "select o.id, a.sku from Order o join o.lineItems a where a.sku = 'WIDGET-1'";
+        var results = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, Object[].class).getResultList());
+
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem}"
+                        + " | match (lineItems.sku == \"WIDGET-1\") | format {_id: _id, sku: lineItems.sku}");
+        assertThat(results).hasSize(2);
+        assertThat(results).extracting(r -> r[1]).containsOnly("WIDGET-1");
+    }
+
     // ---- Test entity / embeddable ----
 
     @Entity(name = "Order")
