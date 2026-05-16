@@ -61,6 +61,20 @@ Use ["Extension for Hibernate ORM" at jira.mongodb.org](https://jira.mongodb.org
 
 Use ["Drivers & Frameworks"/"Frameworks (e.g. Django, Hibernate, EFCore)" at feedback.mongodb.com](https://feedback.mongodb.com/?category=7548141831345841376).
 
+## MQLv2 Backend (Skunkworks)
+
+A new query backend — `Mqlv2SelectTranslator` — translates HQL SELECT queries directly into
+[MQLv2](docs/mqlv2-showcase.md) rather than the existing MQLv1 aggregation pipeline path.
+The translator walks Hibernate's SQL AST and emits a textual MQLv2 pipeline that MongoDB evaluates
+server-side. Supported constructs include WHERE (comparisons, nullability, arithmetic, date parts,
+IN/NOT IN, IS NULL/IS NOT NULL), ORDER BY/LIMIT, scalar aggregates, GROUP BY/HAVING, all JOIN types,
+EXISTS/NOT EXISTS/IN/NOT IN/ANY/ALL subqueries, UNION/INTERSECT/EXCEPT, and scalar `count(*)` subqueries.
+
+**`$elemMatch` over embedded arrays.** Query inside arrays of nested documents using standard HQL
+EXISTS, JOIN, and scalar-subquery forms on `@Struct`-annotated embeddable arrays. The translator
+emits MQLv2 `any()` and `unwind` to evaluate predicates element-by-element, server-side.
+See [`docs/mqlv2-showcase.md`](docs/mqlv2-showcase.md) for a full worked example tour.
+
 ## Contributor Documentation
 
 [Gradle](https://gradle.org/) is used as a build tool.
