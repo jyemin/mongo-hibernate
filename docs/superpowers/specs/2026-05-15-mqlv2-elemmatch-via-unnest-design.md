@@ -1,4 +1,4 @@
-# MQLv2 `$elemMatch` via SQL UNNEST — Design
+# MQLv2 `$elemMatch` via Hibernate collection-valued paths — Design
 
 **Status:** Phase 0 complete; phases 1-4 ready to plan
 **Date:** 2026-05-15 (revised after Phase 0 findings)
@@ -6,19 +6,18 @@
 
 ## Summary
 
-Expose full MongoDB `$elemMatch` semantics — including arrays of nested documents with multi-field predicates — through HQL in the MQLv2 Hibernate translator, by leveraging SQL-standard `UNNEST` (which Hibernate ORM 7 added at MongoDB's request).
+Expose full MongoDB `$elemMatch` semantics — including arrays of nested documents with multi-field predicates — through HQL in the MQLv2 Hibernate translator. The user writes idiomatic Hibernate collection-valued path expressions; the translator recognizes the resulting SQL AST shape and emits MQLv2 `any(...)`.
 
-The HQL surface uses **collection-valued path expressions in idiomatic Hibernate syntax**:
+The user-facing HQL surface contains **no `unnest` keyword**:
 
-| Shape | HQL idiom | MQLv2 emission |
+| Shape | User HQL | MQLv2 emission |
 |---|---|---|
 | EXISTS over array (canonical `$elemMatch`) | `WHERE EXISTS (SELECT 1 FROM o.array a WHERE …)` | `array any (<rewritten body>)` |
-| JOIN form (row-multiplying) | `FROM O o JOIN o.array a` (struct arrays) | `\| unwind array \| match (…)` |
-| JOIN form (scalar) | `FROM O o JOIN LATERAL unnest(o.array) a` | `\| unwind array \| match (…)` |
+| JOIN form, row-multiplying (struct arrays only) | `FROM O o JOIN o.array a WHERE …` | `\| unwind array \| match (…)` |
 | Scalar `count(*)` subquery over array | `(SELECT count(*) FROM o.array a WHERE …)` | `count(array \| match (…))` |
 | Element values in IN subquery | `WHERE x IN (SELECT a.col FROM o.array a)` | embedded `count(let … in (array \| match …)) > 0` |
 
-In every case Hibernate's SQL AST contains a `FunctionTableReference("unnest", …)`. The translator pattern-matches that node and emits MQLv2 `any(...)` (for EXISTS / scalar subquery) or `| unwind` (for outer-FROM joins).
+**How this works under the hood.** Hibernate 7 introduced `UnnestFunction` as a set-returning function descriptor. When the dialect registers `unnest()` (which `MongoDialect` now does — see Phase 0), Hibernate's SQM resolver desugars collection-valued path references like `o.array a` into a `FunctionTableReference("unnest", o.array)` in the SQL AST. The translator pattern-matches that node and emits MQLv2 `any(...)` (for EXISTS / scalar subquery / IN subquery) or `| unwind` (for outer-FROM joins). The `unnest` keyword is an internal AST detail, never something users type.
 
 Storage shape: an embeddable array uses `@Embeddable @Struct(name = "…")` on the element class and a plain `T[]` field on the parent — no `@JdbcTypeCode` annotation. Scalar arrays use the Hibernate-default array mapping. No `@ElementCollection` involvement — that mapping continues to throw at SessionFactory build.
 
@@ -59,7 +58,7 @@ MQLv1 has `$elemMatch` for matching arrays of documents with multi-field predica
 
 The natural Hibernate route — `@ElementCollection` of `@Embeddable` — does not work for MongoDB: through JDBC, Hibernate plans the parent insert and child-table inserts as separate statements with no synchronous hook to coalesce them into an embedded array on the parent document. The v1 mapper rejects this mapping at SessionFactory build time, and that decision is preserved in this design.
 
-The viable alternative is `@Embeddable @Struct(name = "…")` on the element class with a plain `T[]` field on the parent. Hibernate 7 introduces `UnnestFunction` as a set-returning function descriptor producing a `FunctionTableReference` in the SQL AST, and — when the dialect registers `unnest()` — desugars idiomatic HQL forms that reference collection-valued paths (the EXISTS-subquery and JOIN forms above) into `FunctionTableReference("unnest")` joins or roots. The translator pattern-matches this AST shape and emits MQLv2's `any` or `| unwind`.
+The viable alternative is `@Embeddable @Struct(name = "…")` on the element class with a plain `T[]` field on the parent. Users write idiomatic HQL that references the collection-valued path directly (e.g., `o.lineItems a` inside a subquery FROM, or `o.lineItems a` as a join target). Hibernate 7 — once we register `unnest()` in the dialect — internally desugars those collection-path references into a `FunctionTableReference("unnest", o.array)` in the SQL AST. The translator pattern-matches this AST shape and emits MQLv2's `any` or `| unwind`. The user never types `unnest` themselves; it's how Hibernate represents the desugaring internally.
 
 ## Scope
 
