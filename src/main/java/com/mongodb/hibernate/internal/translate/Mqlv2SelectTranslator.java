@@ -83,6 +83,7 @@ import org.hibernate.sql.ast.tree.expression.TrimSpecification;
 import org.hibernate.sql.ast.tree.expression.UnaryOperation;
 import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.from.FunctionTableReference;
+import org.hibernate.sql.ast.tree.from.TableReference;
 import org.hibernate.sql.ast.tree.from.NamedTableReference;
 import org.hibernate.sql.ast.tree.from.QueryPartTableReference;
 import org.hibernate.sql.ast.tree.from.TableGroup;
@@ -1214,6 +1215,49 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         for (var tgj : group.getTableGroupJoins()) {
             collectAffectedTableNamesRecursive(tgj.getJoinedGroup(), names);
         }
+    }
+
+    // ---- Phase 2/3/4 unnest helpers ----
+
+    /**
+     * @return true iff the table reference is a {@link FunctionTableReference} whose function
+     *     descriptor identifies as "unnest".
+     */
+    @SuppressWarnings("UnusedMethod")
+    private static boolean isUnnestFunctionTable(TableReference ref) {
+        return ref instanceof FunctionTableReference ftr
+                && "unnest".equals(ftr.getFunctionExpression().getFunctionName());
+    }
+
+    /**
+     * Returns the single argument expression to {@code unnest(<arg>)}. Throws {@link
+     * FeatureNotSupportedException} if the argument is not a simple {@link ColumnReference} or
+     * {@link BasicValuedPathInterpretation} (which would mean the user passed a literal array, a
+     * function call, or some other non-path expression).
+     */
+    @SuppressWarnings("UnusedMethod")
+    private static Expression extractUnnestArrayPath(FunctionTableReference ftr) {
+        var args = ftr.getFunctionExpression().getArguments();
+        if (args.size() != 1) {
+            throw new FeatureNotSupportedException(
+                    "unnest() requires exactly one argument; got " + args.size());
+        }
+        var arg = args.get(0);
+        if (arg instanceof ColumnReference || arg instanceof BasicValuedPathInterpretation<?>) {
+            return (Expression) arg;
+        }
+        throw new FeatureNotSupportedException(
+                "unnest() argument must be a path expression on an outer entity; got: "
+                        + arg.getClass().getSimpleName());
+    }
+
+    /**
+     * Returns the identification variable that aliases the rows of the unnest output (the "a" in
+     * {@code FROM o.array a}).
+     */
+    @SuppressWarnings("UnusedMethod")
+    private static String extractUnnestAlias(TableGroup group) {
+        return ((FunctionTableReference) group.getPrimaryTableReference()).getIdentificationVariable();
     }
 
     // SqlAstWalker visitor methods — only the ones used above are implemented;
