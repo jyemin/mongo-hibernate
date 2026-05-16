@@ -129,7 +129,7 @@ The phasing is chosen because:
 - The Hibernate 7 upgrade has independent breaking changes that should soak in CI before any feature depends on it.
 - Phase 1 surfaces the v2 SELECT-side risk. Storage round-trip is *not* the open question — INSERT/UPDATE go through `MongoTranslatorFactory` (shared with v1) and v1 tests already cover struct-array and scalar-array storage. The open question is whether the v2 SELECT translator correctly hydrates array fields back into entity state when reading documents; `Mqlv2SelectIntegrationTests` uses no array fields, so this is currently untested under v2.
 - Phases 2-4 are largely independent: Phase 2 owns the EXISTS-over-unnest hook in `appendPredicateText`; Phase 3 owns the FROM-clause hook in `appendJoins`; Phase 4 extends the scalar-subquery and IN-subquery branches. None block one another in the codebase.
-- Phase 5 (showcase + README polish) lands after the feature phases are complete. It's user-facing documentation; the diagnostic test class is removed at this point too since the showcase test now covers the same AST shapes via positive feature assertions.
+- Phase 5 (showcase + README polish) lands after the feature phases are complete. It's user-facing documentation only — no translator changes. The diagnostic test class (`Mqlv2UnnestAstDiagnosticTests` + its `CapturingMqlv2TranslatorFactory` / `CapturingMqlv2Dialect` helpers) **stays in place**, since its negative tests (the ones locking Hibernate-SQM limitations) act as canaries: if a future Hibernate version lifts a limitation, the negative test fails loudly and we can extend the feature surface accordingly.
 - Phase 6 (upstream feedback) is independent of Phase 5 — bug reports and enhancement requests can be filed in parallel. If Hibernate fixes the SQM limitations Phase 2-4 documented, follow-up MR-sized work re-enables the corresponding surfaces (scalar EXISTS, scalar JOIN body predicates, nested EXISTS, IN-subqueries) without further design.
 
 ## Components
@@ -236,7 +236,7 @@ Once Phases 2-4 land, add a curated set of elemMatch example queries to:
 
 - **`README.md`** — the project's top-level README. Phase 5 adds a one-paragraph entry under the existing feature/limitation lists noting that `$elemMatch`-style queries over arrays of embedded documents are supported via standard HQL EXISTS / JOIN forms on `@Struct`-annotated embeddable arrays. Includes one short HQL example and a pointer to the showcase doc.
 
-Also: **remove the diagnostic test class `Mqlv2UnnestAstDiagnosticTests`** (and its `CapturingMqlv2TranslatorFactory` / `CapturingMqlv2Dialect` helpers) once Phase 3 lands, since the showcase test now covers the AST shapes positively. The diagnostic was scaffolding for the design and is no longer load-bearing.
+The diagnostic test class (`Mqlv2UnnestAstDiagnosticTests` + `CapturingMqlv2TranslatorFactory` + `CapturingMqlv2Dialect`) **stays in place** even after Phase 5 documents the supported surface via positive showcase examples. The diagnostic's value isn't redundant with the showcase — the diagnostic includes negative tests that lock the contract for HQL forms Hibernate cannot compile today (scalar EXISTS body predicates, nested EXISTS, IN-subquery over array, etc.). If a future Hibernate version lifts an SQM limitation, those negative tests fail loudly and surface a feature opportunity. The capturing infrastructure also stays as a reusable tool for future AST-shape investigations.
 
 ### Phase 6 — Upstream feedback
 
@@ -461,7 +461,7 @@ Tests are parameterized or duplicated across the two shapes for the core support
 - **Projection scope:** projection works via the JOIN form; EXISTS bodies remain predicate-only. Plus `count(*)` scalar subqueries and element values in IN subqueries. Non-count scalar aggregates over unnest are out of scope due to upstream MQLv2 expression-repertoire limits.
 - **Hibernate 7 upgrade ownership:** done in Phase 0.
 - **v1 translator behavior:** unchanged in observable contract. Phase 0 touched v1 code mechanically for API compatibility and registered `unnest()` for HQL parsing, but added no new query-translation features.
-- **AST shapes for every supported HQL form:** confirmed by `Mqlv2UnnestAstDiagnosticTests` in Phase 0. The diagnostic tests are the authoritative reference and will be removed once Phase 3 lands.
+- **AST shapes for every supported HQL form:** confirmed by `Mqlv2UnnestAstDiagnosticTests` in Phase 0. The diagnostic tests stay in place as canaries — their negative tests lock the contract for Hibernate-SQM limitations and will fail loudly if a future Hibernate version lifts any of them, surfacing a feature opportunity.
 
 ## Risks
 
