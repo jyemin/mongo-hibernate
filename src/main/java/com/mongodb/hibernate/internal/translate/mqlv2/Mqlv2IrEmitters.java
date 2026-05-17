@@ -20,7 +20,9 @@ import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.mqlv2.ast.BinaryOpType;
 import com.mongodb.mqlv2.ast.Expr;
 import com.mongodb.mqlv2.ast.Value;
+import java.util.List;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
+import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.sql.ast.tree.expression.BinaryArithmeticExpression;
@@ -112,5 +114,20 @@ public final class Mqlv2IrEmitters {
             default ->
                 throw new FeatureNotSupportedException("Unsupported arithmetic operator in IR translation: " + op);
         };
+    }
+
+    /**
+     * Translate {@code array_length(arr)} / {@code cardinality(arr)} → {@code count(arr)}.
+     *
+     * @param fn the function call AST node.
+     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
+     *     {@link #translateExpression(Expression, int[])}.
+     */
+    public static Expr translateArrayLength(SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+        if (!(fn.getArguments().get(0) instanceof Expression arg)) {
+            throw new FeatureNotSupportedException(
+                    "Non-expression argument in " + fn.getFunctionName() + "()");
+        }
+        return new Expr.FunctionCall("count", List.of(translateExpression(arg, parameterIndex)));
     }
 }

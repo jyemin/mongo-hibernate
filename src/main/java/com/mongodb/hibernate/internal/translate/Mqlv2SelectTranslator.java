@@ -21,6 +21,9 @@ import static java.util.Collections.emptyMap;
 import static org.hibernate.sql.exec.spi.JdbcLockStrategy.NONE;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
+import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters;
+import com.mongodb.mqlv2.Serializer;
+import com.mongodb.mqlv2.ast.Expr;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -141,6 +144,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private final SessionFactoryImplementor sessionFactory;
     private final SelectStatement selectStatement;
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
+    private final Serializer serializer = new Serializer();
     private @org.jspecify.annotations.Nullable LimitJdbcParameter limitJdbcParameter = null;
     private boolean hasJoins = false;
     /**
@@ -825,6 +829,21 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         return dotIdx >= 0 ? qualifiedKey.substring(dotIdx + 1) : qualifiedKey;
     }
 
+    /**
+     * Phase A invariant: when an IR translation finishes, its {@code parameterIndex} cursor should match
+     * {@link #parameterBinders} {@code size()} — i.e., no parameters were consumed by the IR helper that
+     * weren't also pushed onto the binder list. Group-A function arguments rarely contain JDBC parameters
+     * at this position; predicates with parameter needles are handled via {@code tryAppendArrayPredicateFunction}
+     * which does its own parameter-binder pre-collection (Tasks 6/7).
+     */
+    private void assertParameterIndexUnchanged(int newIdx) {
+        if (newIdx != parameterBinders.size()) {
+            throw new IllegalStateException(
+                    "IR translation consumed parameters not yet appended to parameterBinders: "
+                            + "expected size=" + parameterBinders.size() + ", got idx=" + newIdx);
+        }
+    }
+
     private static Set<String> collectOuterQualifiers(QuerySpec outerSpec) {
         var result = new LinkedHashSet<String>();
         for (var root : outerSpec.getFromClause().getRoots()) {
@@ -1352,9 +1371,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Returns {@code true} and emits MQLv2 surface text if {@code expression} is a known
-     * boolean-returning array function that v2 supports as a predicate; returns {@code false}
-     * otherwise (caller falls through to unsupported-predicate error).
+     * Returns {@code true} and emits MQLv2 surface text if {@code expression} is a known boolean-returning array
+     * function that v2 supports as a predicate; returns {@code false} otherwise (caller falls through to
+     * unsupported-predicate error).
      */
     private boolean tryAppendArrayPredicateFunction(StringBuilder sb, SelfRenderingExpression expression) {
         if (!(expression instanceof SelfRenderingFunctionSqlAstExpression<?> fn)) {
@@ -1366,8 +1385,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             // _nullable uses `is` so a null-valued JdbcParameter matches null elements;
             // non-nullable uses `==` per Hibernate's null-propagation contract.
             var eqOp = name.endsWith("_nullable") ? "is" : "==";
-            if (!(args.get(0) instanceof Expression haystack)
-                    || !(args.get(1) instanceof Expression needle)) {
+            if (!(args.get(0) instanceof Expression haystack) || !(args.get(1) instanceof Expression needle)) {
                 throw new FeatureNotSupportedException("Non-expression argument in " + name + "()");
             }
             sb.append("(");
@@ -1447,16 +1465,13 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 appendExprText(sb, dateExpr);
                 sb.append(")");
             } else if ("array_length".equals(fn.getFunctionName())) {
-                if (!(fn.getArguments().get(0) instanceof Expression argExpr)) {
-                    throw new FeatureNotSupportedException("Non-expression argument in array_length()");
-                }
-                sb.append("count(");
-                appendExprText(sb, argExpr);
-                sb.append(")");
+                int[] idx = {parameterBinders.size()};
+                Expr ir = Mqlv2IrEmitters.translateArrayLength(fn, idx);
+                assertParameterIndexUnchanged(idx[0]);
+                sb.append(serializer.serialize(ir));
             } else if ("array_get".equals(fn.getFunctionName())) {
                 var args = fn.getArguments();
-                if (!(args.get(0) instanceof Expression haystack)
-                        || !(args.get(1) instanceof Expression index)) {
+                if (!(args.get(0) instanceof Expression haystack) || !(args.get(1) instanceof Expression index)) {
                     throw new FeatureNotSupportedException("Non-expression argument in array_get()");
                 }
                 appendExprText(sb, haystack);
