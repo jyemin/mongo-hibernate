@@ -42,6 +42,7 @@ import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
 import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
 import org.hibernate.sql.ast.tree.predicate.GroupedPredicate;
+import org.hibernate.sql.ast.tree.predicate.Junction;
 import org.hibernate.sql.ast.tree.predicate.NullnessPredicate;
 import org.hibernate.sql.ast.tree.predicate.Predicate;
 
@@ -396,14 +397,35 @@ public final class Mqlv2IrEmitters {
 
     /**
      * Convert a Hibernate {@link Predicate} to a driver-mqlv2 {@link Expr}. Phase C scope: leaf-shape predicates
-     * (Comparison, Nullness, BooleanExpression). Junction, Grouped, Negated, InList, InSubQuery, Exists deferred to
-     * subsequent tasks.
+     * (Comparison, Nullness, BooleanExpression, Grouped) and conjunctions/disjunctions (Junction). Negated, InList,
+     * InSubQuery, Exists deferred to subsequent tasks.
+     *
+     * <p>Junction with N predicates builds a left-associative {@link Expr.BinaryOp} chain: {@code (p1 op p2 op p3)}
+     * becomes {@code ((p1 op p2) op p3)}. The Serializer adds inner parentheses around each binary sub-expression,
+     * producing {@code ((p1 op p2) op p3)} — identical output to the old hand-rolled emission for 2-predicate cases;
+     * 3+ predicate cases get extra nesting (D6 drift).
      *
      * @param p the Hibernate predicate to translate.
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      * @return the equivalent driver-mqlv2 {@link Expr} subtree.
      */
     public static Expr translatePredicate(Predicate p, Mqlv2TranslationContext ctx) {
+        if (p instanceof Junction j) {
+            BinaryOpType op = j.getNature() == Junction.Nature.CONJUNCTION ? BinaryOpType.AND : BinaryOpType.OR;
+            var preds = j.getPredicates();
+            if (preds.isEmpty()) {
+                // Identity element: AND-empty = true, OR-empty = false (SQL semantics).
+                return new Expr.ValueLit(new Value.VBool(op == BinaryOpType.AND));
+            }
+            if (preds.size() == 1) {
+                return translatePredicate(preds.get(0), ctx);
+            }
+            Expr acc = translatePredicate(preds.get(0), ctx);
+            for (int i = 1; i < preds.size(); i++) {
+                acc = new Expr.BinaryOp(op, acc, translatePredicate(preds.get(i), ctx));
+            }
+            return acc;
+        }
         if (p instanceof ComparisonPredicate cp) {
             return new Expr.BinaryOp(
                     translateComparisonOp(cp.getOperator()),

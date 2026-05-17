@@ -1257,15 +1257,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             appendAnyAllPredicate(sb, cp, everyExpr.getSubquery(), true);
         } else if (predicate instanceof ComparisonPredicate) {
             sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
-        } else if (predicate instanceof Junction junction) {
-            var preds = junction.getPredicates();
-            var op = junction.getNature() == Junction.Nature.CONJUNCTION ? "and" : "or";
-            sb.append("(");
-            for (var i = 0; i < preds.size(); i++) {
-                if (i > 0) sb.append(" ").append(op).append(" ");
-                appendPredicateText(sb, preds.get(i));
-            }
-            sb.append(")");
+        } else if (predicate instanceof Junction) {
+            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
         } else if (predicate instanceof GroupedPredicate) {
             sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
         } else if (predicate instanceof NegatedPredicate np) {
