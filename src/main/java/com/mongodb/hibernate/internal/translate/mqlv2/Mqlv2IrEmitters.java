@@ -288,6 +288,21 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
+     * Translate a reference to an aggregate function whose alias has been resolved by the surrounding translator (e.g.,
+     * {@code _agg0}). Emits a bare field-access shape so the Serializer renders the alias without a {@code $} prefix.
+     *
+     * <p>Example: after a {@code | group} or {@code | agg} stage assigns {@code _agg0} to a count aggregate, a
+     * downstream {@code | format} or {@code | match} that refers back to that aggregate emits {@code _agg0} (bare),
+     * which corresponds to {@code FieldAccess(CurrentValue(), "_agg0")}.
+     *
+     * @param aggName the alias name assigned to the aggregate (e.g., {@code "_agg0"}).
+     * @return a {@code FieldAccess} expression that the Serializer renders as the bare alias.
+     */
+    public static Expr translateAggregateReference(String aggName) {
+        return new Expr.FieldAccess(new Expr.CurrentValue(), aggName);
+    }
+
+    /**
      * Translate {@code extract(UNIT FROM dateExpr)} to a MQLv2 date-part function call, e.g.
      * {@code extract(YEAR FROM orderDate)} → {@code year(orderDate)}.
      *

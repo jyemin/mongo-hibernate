@@ -1450,7 +1450,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                     throw new FeatureNotSupportedException(
                             "Aggregate function in expression not found in SELECT: " + fn.getFunctionName() + "()");
                 }
-                sb.append(aggName);
+                sb.append(serializer.serialize(Mqlv2IrEmitters.translateAggregateReference(aggName)));
             } else if ("extract".equals(fn.getFunctionName())) {
                 appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateExtract);
             } else if ("array_length".equals(fn.getFunctionName())) {
