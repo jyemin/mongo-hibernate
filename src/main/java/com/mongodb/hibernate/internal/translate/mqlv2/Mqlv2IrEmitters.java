@@ -41,6 +41,7 @@ import org.hibernate.sql.ast.tree.expression.Star;
 import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
 import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
+import org.hibernate.sql.ast.tree.predicate.GroupedPredicate;
 import org.hibernate.sql.ast.tree.predicate.NullnessPredicate;
 import org.hibernate.sql.ast.tree.predicate.Predicate;
 
@@ -408,6 +409,9 @@ public final class Mqlv2IrEmitters {
                     translateComparisonOp(cp.getOperator()),
                     translateExpression(cp.getLeftHandExpression(), ctx),
                     translateExpression(cp.getRightHandExpression(), ctx));
+        }
+        if (p instanceof GroupedPredicate gp) {
+            return translatePredicate(gp.getSubPredicate(), ctx);
         }
         if (p instanceof NullnessPredicate np) {
             var inner = translateExpression(np.getExpression(), ctx);
