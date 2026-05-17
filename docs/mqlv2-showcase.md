@@ -901,13 +901,13 @@ HQL uses 1-based indexing; the translator subtracts 1 to convert to MQLv2's 0-ba
 ```
 HQL:   from Inventory i where array_contains(i.scores, 30)
 
-MQLv2: from $inventory | match (scores any ($ == 30)) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+MQLv2: from $inventory | match (scores any (($ == 30))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
 ```
 
 ```
 HQL:   from Inventory i where not array_contains(i.scores, 30)
 
-MQLv2: from $inventory | match (not (scores any ($ == 30))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+MQLv2: from $inventory | match (not (scores any (($ == 30)))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
 ```
 
 Negation wraps the entire `any(...)` expression in `(not ...)`.
@@ -919,7 +919,7 @@ Negation wraps the entire `any(...)` expression in `(not ...)`.
 ```
 HQL:   from Inventory i where array_contains_nullable(i.boxedScores, :needle)   -- :needle bound to null
 
-MQLv2: from $inventory | match (boxedScores any ($ is $p0)) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+MQLv2: from $inventory | match (boxedScores any (($ is $p0))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
 ```
 
 The `_nullable` variant uses `is` (structural equality) instead of `==`, allowing it to match `null` elements.

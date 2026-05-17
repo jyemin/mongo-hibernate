@@ -180,4 +180,33 @@ public final class Mqlv2IrEmitters {
         }
         return new Expr.FunctionCall("count", List.of(translateExpression(arg, parameterIndex)));
     }
+
+    /**
+     * Translate {@code array_contains(arr, x)} / {@code array_contains_nullable(arr, x)} to an MQLv2 {@code any}
+     * expression.
+     *
+     * <ul>
+     *   <li>{@code array_contains(arr, x)} → {@code arr any ($ == x)} (non-nullable uses {@code ==})
+     *   <li>{@code array_contains_nullable(arr, x)} → {@code arr any ($ is x)} (nullable uses {@code is})
+     * </ul>
+     *
+     * <p>D3 paren drift vs. the legacy hand-rolled emission: the Serializer does not add outer parens around the
+     * predicate at the match stage, but does double-wrap the {@code any} body (producing {@code any (($ op x))} vs.
+     * the old {@code (arr any ($ op x))}).
+     *
+     * @param fn the function call AST node.
+     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
+     *     {@link #translateExpression(Expression, int[])}.
+     */
+    public static Expr translateArrayContains(SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+        var name = fn.getFunctionName();
+        var args = fn.getArguments();
+        if (!(args.get(0) instanceof Expression haystack) || !(args.get(1) instanceof Expression needle)) {
+            throw new FeatureNotSupportedException("Non-expression argument in " + name + "()");
+        }
+        BinaryOpType eqOp = name.endsWith("_nullable") ? BinaryOpType.IS : BinaryOpType.EQ;
+        return new Expr.Any(
+                translateExpression(haystack, parameterIndex),
+                new Expr.BinaryOp(eqOp, new Expr.CurrentValue(), translateExpression(needle, parameterIndex)));
+    }
 }

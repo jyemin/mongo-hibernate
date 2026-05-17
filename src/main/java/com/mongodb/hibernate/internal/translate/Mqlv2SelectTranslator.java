@@ -844,6 +844,30 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         }
     }
 
+    /**
+     * DFS-collect {@link JdbcParameter} instances under {@code e} into {@code out}, in left-to-right order.
+     * Used by IR-emitting predicate arms (Tasks 6/7) to pre-allocate parameter binder indices before the
+     * IR helper runs. Phase B will replace this with a proper translation context that allocates indices
+     * as it walks.
+     */
+    private static void collectJdbcParametersDfs(Expression e, List<JdbcParameterBinder> out) {
+        if (e instanceof JdbcParameter jp) {
+            out.add(jp.getParameterBinder());
+        } else if (e instanceof BasicValuedPathInterpretation<?> bvpi) {
+            collectJdbcParametersDfs(bvpi.getColumnReference(), out);
+        } else if (e instanceof SqmParameterInterpretation spi) {
+            collectJdbcParametersDfs(spi.getResolvedExpression(), out);
+        } else if (e instanceof BinaryArithmeticExpression bae) {
+            collectJdbcParametersDfs(bae.getLeftHandOperand(), out);
+            collectJdbcParametersDfs(bae.getRightHandOperand(), out);
+        } else if (e instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
+            for (var arg : fn.getArguments()) {
+                if (arg instanceof Expression sub) collectJdbcParametersDfs(sub, out);
+            }
+        }
+        // Other expression types (literals, column refs, …): no nested parameters to collect.
+    }
+
     private static Set<String> collectOuterQualifiers(QuerySpec outerSpec) {
         var result = new LinkedHashSet<String>();
         for (var root : outerSpec.getFromClause().getRoots()) {
@@ -1382,17 +1406,20 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         var name = fn.getFunctionName();
         var args = fn.getArguments();
         if ("array_contains".equals(name) || "array_contains_nullable".equals(name)) {
-            // _nullable uses `is` so a null-valued JdbcParameter matches null elements;
-            // non-nullable uses `==` per Hibernate's null-propagation contract.
-            var eqOp = name.endsWith("_nullable") ? "is" : "==";
-            if (!(args.get(0) instanceof Expression haystack) || !(args.get(1) instanceof Expression needle)) {
-                throw new FeatureNotSupportedException("Non-expression argument in " + name + "()");
-            }
-            sb.append("(");
-            appendExprText(sb, haystack);
-            sb.append(" any ($ ").append(eqOp).append(" ");
-            appendExprText(sb, needle);
-            sb.append("))");
+            // TODO(phase-b): replace this pre-collection dance with a proper translation context.
+            // We must push JdbcParameter binders onto parameterBinders BEFORE the IR helper runs,
+            // so that parameterIndex values line up with the binder list positions.
+            int starting = parameterBinders.size();
+            if (args.get(0) instanceof Expression haystack) collectJdbcParametersDfs(haystack, parameterBinders);
+            if (args.get(1) instanceof Expression needle) collectJdbcParametersDfs(needle, parameterBinders);
+            int[] idx = {starting};
+            Expr ir = Mqlv2IrEmitters.translateArrayContains(fn, idx);
+            // Wrap in parens so that NegatedPredicate's "(not <inner>)" wrapping produces valid MQLv2.
+            // The Serializer emits "arr any (($ op x))" without outer parens; without this wrapping,
+            // "(not arr any (...))" is invalid — MongoDB misparses the negation scope.
+            // D3a paren drift (outer match parens) is intentionally preserved here until Phase C
+            // folds the NegatedPredicate arm into IR.
+            sb.append("(").append(serializer.serialize(ir)).append(")");
             return true;
         }
         if ("array_intersects".equals(name) || "array_intersects_nullable".equals(name)) {

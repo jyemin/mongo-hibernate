@@ -489,18 +489,18 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "from Inventory i where array_contains(i.scores, 30)",
-                    "from $inventory | match (scores any ($ == 30)) | " + fmtInv);
+                    "from $inventory | match (scores any (($ == 30))) | " + fmtInv);
 
             check(
                     soft,
                     "from Inventory i where not array_contains(i.scores, 30)",
-                    "from $inventory | match (not (scores any ($ == 30))) | " + fmtInv);
+                    "from $inventory | match (not (scores any (($ == 30)))) | " + fmtInv);
 
             check(
                     soft,
                     "from Inventory i where array_contains_nullable(i.boxedScores, :needle)",
                     q -> q.setParameter("needle", (Integer) null),
-                    "from $inventory | match (boxedScores any ($ is $p0)) | " + fmtInv);
+                    "from $inventory | match (boxedScores any (($ is $p0))) | " + fmtInv);
 
             check(
                     soft,
