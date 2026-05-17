@@ -63,9 +63,7 @@ public final class Mqlv2IrEmitters {
             return translateExpression(bvpi.getColumnReference(), ctx);
         }
         if (e instanceof ColumnReference cr) {
-            // Phase A scope: simple column references (no joins, no unnest aliases). Qualifier
-            // rules will be folded in by Phase C when predicate dispatch moves to IR.
-            return new Expr.FieldAccess(new Expr.CurrentValue(), cr.getColumnExpression());
+            return translateColumnRef(cr, ctx);
         }
         if (e instanceof QueryLiteral<?> ql) {
             return new Expr.ValueLit(translateLiteralValue(ql.getLiteralValue()));
@@ -126,6 +124,45 @@ public final class Mqlv2IrEmitters {
             default ->
                 throw new FeatureNotSupportedException("Unsupported arithmetic operator in IR translation: " + op);
         };
+    }
+
+    /**
+     * Translate a column reference into a {@code FieldAccess} chain, honoring the qualifier rules
+     * carried by {@code ctx}.
+     *
+     * <ul>
+     *   <li>Unnest alias: {@code li.sku} → {@code lineItems.sku} (uses the context's alias→path map).
+     *   <li>Joined qualifier: {@code o.id} → {@code o.id} (preserves the alias dot column).
+     *   <li>Bare column: {@code id} (no qualifier).
+     * </ul>
+     */
+    private static Expr translateColumnRef(ColumnReference cr, Mqlv2TranslationContext ctx) {
+        String qualifier = cr.getQualifier();
+        String column = cr.getColumnExpression();
+        if (qualifier != null && ctx.unnestAliasToFieldPath().containsKey(qualifier)) {
+            return buildFieldChain(ctx.unnestAliasToFieldPath().get(qualifier) + "." + column);
+        }
+        if (ctx.hasJoins() && qualifier != null && !qualifier.isEmpty()) {
+            return buildFieldChain(qualifier + "." + column);
+        }
+        return new Expr.FieldAccess(new Expr.CurrentValue(), column);
+    }
+
+    /**
+     * Build a left-leaning {@code FieldAccess} chain from a dot-separated path. For example,
+     * {@code "a.b.c"} becomes {@code FieldAccess(FieldAccess(FieldAccess($, "a"), "b"), "c")}, which
+     * the Serializer renders as {@code a.b.c}.
+     */
+    private static Expr buildFieldChain(String dotPath) {
+        Expr e = new Expr.CurrentValue();
+        int start = 0;
+        int dot;
+        while ((dot = dotPath.indexOf('.', start)) != -1) {
+            e = new Expr.FieldAccess(e, dotPath.substring(start, dot));
+            start = dot + 1;
+        }
+        e = new Expr.FieldAccess(e, dotPath.substring(start));
+        return e;
     }
 
     /**
