@@ -186,6 +186,7 @@ buildConfig {
 dependencies {
     testImplementation(libs.bundles.test.common)
     testImplementation(libs.mockito.junit.jupiter)
+    testImplementation(libs.mongo.java.driver.mqlv2)
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testCompileOnly(libs.checker.qual)
 
