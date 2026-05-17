@@ -34,9 +34,9 @@ Splitting node construction from formatting (the standard compiler IR pattern) a
 
 This covers every construct `Mqlv2SelectTranslator` currently emits.
 
-### One upstream change needed
+### One upstream change — landed
 
-`Stage.LimitStage` is `record LimitStage(Stage prev, int count)`. Hibernate binds `setMaxResults` as a JDBC parameter, which we render as `$pN` — `int` can't carry a parameter reference. Change to `record LimitStage(Stage prev, Expr count)`, with `Serializer` calling `ser(count)` instead of `Integer.toString`. Parallel to `SortSpec` which already takes `Expr`. Submit upstream PR alongside the migration; we already pin `driver-mqlv2` as a SNAPSHOT, so the cycle is tight.
+`Stage.LimitStage` was `record LimitStage(Stage prev, int count)`. Hibernate binds `setMaxResults` as a JDBC parameter, which we render as `$pN` — `int` can't carry a parameter reference. Changed to `record LimitStage(Stage prev, Expr count)`, with `Serializer` calling `ser(count)` instead of string-concatenating an int. Parallel to `SortSpec` which already takes `Expr`. Committed to `mongo-java-driver` `mqlv2` branch as `6e1f35e792` and published to local Maven as `org.mongodb:driver-mqlv2:5.8.0-SNAPSHOT` (skip-javadoc: a pre-existing `ExprT.java:42` doc warning is unrelated). No further upstream changes are anticipated for the migration.
 
 ## Translator shape after migration
 
@@ -169,15 +169,15 @@ private Optional<Expr> translateBooleanFunction(SelfRenderingFunctionSqlAstExpre
 
 **Decision: side channel.** Identical to current behavior; isolates Hibernate-specific concerns from the driver's IR.
 
-The existing `LimitJdbcParameter` inner class (line 2059) and the limit-parameter machinery is unchanged in scope but moves into `translateLimit`, which produces `new LimitStage(prev, new VarRef("p" + index))` after appending the binder. The upstream `LimitStage` change above makes this expressible.
+The existing `LimitJdbcParameter` inner class (line 2059) and the limit-parameter machinery is unchanged in scope but moves into `translateLimit`, which produces `new LimitStage(prev, new VarRef("p" + index))` after appending the binder. The upstream `LimitStage` change above (already landed) makes this expressible.
 
 ## Dependency arrangement
 
 `driver-mqlv2` is unpublished SNAPSHOT. mongo-hibernate already depends on the SNAPSHOT for the `MongoDatabase.mqlv2(...)` entry point, so adding a transitive on `driver-mqlv2` is incremental.
 
 - **Build dependency**: add `driver-mqlv2` to `build.gradle.kts` as a compile-time and runtime dependency. Same version as the existing `driver-sync` / `driver-core` SNAPSHOT pin.
-- **Composite build**: if local iteration on driver-mqlv2 + mongo-hibernate is needed during migration (likely, given the LimitStage change), add `includeBuild("../mongo-java-driver")` to `settings.gradle.kts` behind a local-dev flag. CI continues to consume the published SNAPSHOT.
-- **Upstream contributions**: at minimum the LimitStage change. Other small additions may surface (e.g., if Serializer's paren rules differ from our test assertions in a way that's a Serializer bug rather than a test-expectation cleanup). Each contribution is its own small PR to mongo-java-driver.
+- **Composite build**: if local iteration on driver-mqlv2 + mongo-hibernate is needed mid-migration, add `includeBuild("../mongo-java-driver")` to `settings.gradle.kts` behind a local-dev flag. CI continues to consume the published SNAPSHOT.
+- **Upstream contributions**: the LimitStage change is landed; further additions are unanticipated but possible (e.g., if Serializer's paren rules differ from our test assertions in a way that's a Serializer bug rather than a test-expectation cleanup). Each would be its own small PR to mongo-java-driver.
 
 ## Migration strategy
 
@@ -222,7 +222,7 @@ If the whole experiment proves a mistake (unlikely given the analysis, but possi
 ## Open questions / risks
 
 1. **Serializer paren divergence.** The current translator over-parenthesizes (`(scores any ($ == 30))` wraps the outer `any` in parens via `tryAppendArrayPredicateFunction`'s `sb.append("(")`). The Serializer emits parens based on the AST shape only — operator nodes get parens, `Any` nodes don't. The showcase verification tests assert the current emission; some will need updating. Risk: low; cost is mechanical test updates.
-2. **LimitStage upstream PR turnaround.** If the upstream cycle is slow we can use a local fork or a `_LimitStageExt` wrapper class until the change lands. Risk: low.
+2. ~~**LimitStage upstream PR turnaround.**~~ Resolved — landed in `mongo-java-driver` `mqlv2` branch as `6e1f35e792` and published locally.
 3. **Field-path qualifier handling.** Today qualifier rules (`qualifier != null && hasJoins`) live inline in `appendExprText`'s `ColumnReference` arm. In IR-world they have to land somewhere — either in `translateExpression`'s `ColumnReference` arm (building `FieldAccess` or `VarRef` based on the same rules) or as a translator-context state. Decision: keep in `translateColumnRef`, identical to today's logic, just returning `Expr` instead of mutating a StringBuilder. Risk: low; behavior is preserved verbatim.
 4. **Correlated-binding `let` wrapping.** The current `wrapWithLet` helper produces text like `let $__v0 = field in (innerPipeline)`. In IR-world this is `new LetExpr(bindings, body)` where `body` is itself a `SubPipelineExpr`. Verify the Serializer produces equivalent text. Risk: low-medium; might need a Serializer fix if paren placement differs.
 5. **`mqlv2Enabled` gate.** Already addressed by `@Setting` in tests; unchanged by the migration.
@@ -250,6 +250,6 @@ If this probe goes well, the per-feature migration is straightforward execution.
 | Function dispatch | Two ladders by name (`appendExprText`, `tryAppendArrayPredicateFunction`) | One `switch` returning `Expr` |
 | Test surface | Integration tests + showcase verification (byte-exact strings) | Same, plus per-AST-node construction tests |
 | Wire path | Translator → text → JDBC | Same. (`Pipeline.toMqlv2()` is the boundary.) |
-| Upstream impact | None | One small PR: `Stage.LimitStage(Stage prev, Expr count)`. |
+| Upstream impact | None | `Stage.LimitStage(Stage prev, Expr count)` — landed and published. |
 
 The IR exists. The Serializer exists. The wire path is unchanged. The work is mechanical refactor of the translator's internals, staged per-feature, with rollback at every commit.
