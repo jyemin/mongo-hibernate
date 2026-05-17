@@ -1255,19 +1255,14 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         } else if (predicate instanceof ComparisonPredicate cp
                 && cp.getRightHandExpression() instanceof Every everyExpr) {
             appendAnyAllPredicate(sb, cp, everyExpr.getSubquery(), true);
-        } else if (predicate instanceof ComparisonPredicate) {
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
-        } else if (predicate instanceof Junction) {
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
-        } else if (predicate instanceof GroupedPredicate) {
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
-        } else if (predicate instanceof NegatedPredicate) {
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
-        } else if (predicate instanceof NullnessPredicate) {
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
-        } else if (predicate instanceof BooleanExpressionPredicate) {
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
-        } else if (predicate instanceof InListPredicate) {
+        } else if (predicate instanceof ComparisonPredicate
+                || predicate instanceof Junction
+                || predicate instanceof GroupedPredicate
+                || predicate instanceof NegatedPredicate
+                || predicate instanceof NullnessPredicate
+                || predicate instanceof BooleanExpressionPredicate
+                || predicate instanceof InListPredicate
+                || predicate instanceof SelfRenderingPredicate) {
             sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
         } else if (predicate instanceof InSubQueryPredicate isp) {
             // Note: IN-subquery over an unnest function table is Hibernate-SQM-blocked
@@ -1317,34 +1312,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 var countOp = ep.isNegated() ? " == 0)" : " > 0)";
                 sb.append("(count(").append(wrapped).append(")").append(countOp);
             }
-        } else if (predicate instanceof SelfRenderingPredicate srp) {
-            if (!tryAppendArrayPredicateFunction(sb, srp.getSelfRenderingExpression())) {
-                throw new FeatureNotSupportedException(
-                        "Unsupported predicate: " + predicate.getClass().getSimpleName());
-            }
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported predicate: " + predicate.getClass().getSimpleName());
         }
-    }
-
-    /**
-     * Returns {@code true} and emits MQLv2 surface text if {@code expression} is a known boolean-returning array
-     * function that v2 supports as a predicate; returns {@code false} otherwise (caller falls through to
-     * unsupported-predicate error).
-     */
-    private boolean tryAppendArrayPredicateFunction(StringBuilder sb, SelfRenderingExpression expression) {
-        if (!(expression instanceof SelfRenderingFunctionSqlAstExpression<?> fn)) {
-            return false;
-        }
-        var name = fn.getFunctionName();
-        if ("array_contains".equals(name) || "array_contains_nullable".equals(name)) {
-            return emitIrPredicateFunction(sb, fn, Mqlv2IrEmitters::translateArrayContains);
-        }
-        if ("array_intersects".equals(name) || "array_intersects_nullable".equals(name)) {
-            return emitIrPredicateFunction(sb, fn, Mqlv2IrEmitters::translateArrayIntersects);
-        }
-        return false;
     }
 
     /**
@@ -1357,20 +1328,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             IrFunctionTranslator translator) {
         Expr ir = translator.translate(fn, newContext());
         sb.append(serializer.serialize(ir));
-    }
-
-    /**
-     * Emits a boolean-valued IR predicate function, wrapping the serialized result in outer parens (required for
-     * NegatedPredicate compatibility; see D3a), and returning {@code true}. Parameter binders are allocated
-     * in DFS order naturally as the IR helper walks the AST.
-     */
-    private boolean emitIrPredicateFunction(
-            StringBuilder sb,
-            SelfRenderingFunctionSqlAstExpression<?> fn,
-            IrFunctionTranslator translator) {
-        Expr ir = translator.translate(fn, newContext());
-        sb.append("(").append(serializer.serialize(ir)).append(")");
-        return true;
     }
 
     private String appendExprTextToString(Expression expression) {

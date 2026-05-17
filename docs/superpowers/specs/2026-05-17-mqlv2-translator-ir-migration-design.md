@@ -225,7 +225,32 @@ The existing `LimitJdbcParameter` inner class (line 2059) and the limit-paramete
   only the function-name arm and SelectStatement arm remain hand-rolled. SelectStatement
   (scalar subquery) deferred to Phase D — its translation cross-cuts the
   pipeline-translation machinery.
-- **Phase C (predicates)** — port `translatePredicate`: `ComparisonPredicate`, `Junction`, `GroupedPredicate`, `NegatedPredicate`, `NullnessPredicate`, `BooleanExpressionPredicate`, `InListPredicate`, `InSubQueryPredicate`, `ExistsPredicate`, `SelfRenderingPredicate`. The unnest-EXISTS and IN-subquery branches are the most intricate; do them last.
+- **Phase C (complete, 2026-05-17)** — Predicate translation in `Mqlv2IrEmitters.translatePredicate`.
+  Migrated:
+  - ComparisonPredicate, NullnessPredicate, BooleanExpressionPredicate
+  - GroupedPredicate (no IR node — just recurses)
+  - Junction (AND/OR) — left-associative BinaryOp chain; D6 drift (paren shape) absorbed where it surfaced
+  - NegatedPredicate — UnaryOp(NOT, inner)
+  - SelfRenderingPredicate — routes to translateArrayContains/translateArrayIntersects for the function-shaped cases
+  - InListPredicate — D6-style chain
+
+  Required upstream Serializer fix (driver-mqlv2 `541e473d5c`): when `UnaryOp(NOT, ...)`'s argument
+  is an `Any`, wrap the Any in extra parens. MQLv2 grammar precedence: `not` (prec 4) binds tighter
+  than `any` (prec 1); without the fix, `not arr any (cond)` parses as `(not arr) any (cond)`.
+
+  Deferred to Phase D:
+  - ExistsPredicate, InSubQueryPredicate — both reference inner pipelines, needs Stage IR.
+  - ComparisonPredicate with Any/Every RHS (ANY/ALL subqueries) — same reason.
+
+  Also extended `Mqlv2IrEmitters.translateExpression` to dispatch to migrated function helpers
+  (`array_length`/`array_get`/`extract`) when they appear as sub-expressions, and added aggregate
+  resolution via `aggSignatureToName` field on `Mqlv2TranslationContext`.
+
+  Cleanup (C7): consolidated `appendPredicateText`'s 7 separate IR arms plus `SelfRenderingPredicate`
+  into a single `instanceof`-chain block. Removed dead helpers `tryAppendArrayPredicateFunction` and
+  `emitIrPredicateFunction` (the outer-parens wrapper that was needed for NegatedPredicate
+  compatibility; D3a absorbed since NegatedPredicate is now IR-routed). Updated 6 test assertions to
+  drop the hand-rolled outer parens from `any`-predicate match stages.
 - **Phase D (stages)** — port the `appendMatch` / `appendSort` / `appendLimit` / `appendGroup` / `appendHaving` / `appendFormat` / `appendJoin` / `appendUnnestJoin` methods. By this point, all sub-pieces (expressions, predicates) return AST nodes; stage methods are mostly assembly.
 - **Phase E (cleanup)** — delete the `StringBuilder sb` parameter from any helpers that still have it; remove the old `appendX` methods; collapse to the new top-level `translateQuerySpec` flow.
 
