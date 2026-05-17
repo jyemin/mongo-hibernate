@@ -57,9 +57,9 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
     void seed() {
         sessionFactoryScope.inTransaction(session -> {
             session.createMutationQuery("delete from ArrayDoc").executeUpdate();
-            session.persist(new ArrayDoc(1, new int[] {10, 20, 30}));
-            session.persist(new ArrayDoc(2, new int[] {30, 40}));
-            session.persist(new ArrayDoc(3, new int[] {}));
+            session.persist(new ArrayDoc(1, new int[] {10, 20, 30}, new Integer[] {}));
+            session.persist(new ArrayDoc(2, new int[] {30, 40}, new Integer[] {}));
+            session.persist(new ArrayDoc(3, new int[] {}, new Integer[] {}));
         });
         MqlCapture.LAST.remove();
     }
@@ -77,7 +77,7 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
                 session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs | match (count(scores) > 2)"
-                        + " | format {_id: _id, scores: scores}");
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
         assertThat(rows).extracting(d -> d.id).containsExactly(1);
     }
 
@@ -88,7 +88,7 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
                 session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs | match (count(scores) == 0)"
-                        + " | format {_id: _id, scores: scores}");
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
         assertThat(rows).extracting(d -> d.id).containsExactly(3);
     }
 
@@ -99,8 +99,42 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
                 session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs | match (scores[(1) - 1] == 10)"
-                        + " | format {_id: _id, scores: scores}");
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
         assertThat(rows).extracting(d -> d.id).containsExactly(1);
+    }
+
+    @Test
+    void arrayContains() {
+        var hql = "from ArrayDoc d where array_contains(d.scores, 30)";
+        var rows = sessionFactoryScope.fromSession(session ->
+                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        assertThat(capturedPipeline())
+                .isEqualTo("from $array_docs | match (scores any ($ == 30))"
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
+        assertThat(rows).extracting(d -> d.id).containsExactlyInAnyOrder(1, 2);
+    }
+
+    @Test
+    void arrayContainsNegated() {
+        var hql = "from ArrayDoc d where not array_contains(d.scores, 30)";
+        var rows = sessionFactoryScope.fromSession(session ->
+                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        assertThat(capturedPipeline())
+                .isEqualTo("from $array_docs | match (not (scores any ($ == 30)))"
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
+        assertThat(rows).extracting(d -> d.id).containsExactly(3);
+    }
+
+    @Test
+    void arrayContainsNullableWithNullParameter() {
+        sessionFactoryScope.inTransaction(session ->
+                session.persist(new ArrayDoc(4, new int[] {0}, new Integer[] {null, 50})));
+        var hql = "from ArrayDoc d where array_contains_nullable(d.boxedScores, :needle)";
+        var rows = sessionFactoryScope.fromSession(session -> session.createSelectionQuery(hql, ArrayDoc.class)
+                .setParameter("needle", (Integer) null)
+                .getResultList());
+        assertThat(capturedPipeline()).contains("(boxedScores any ($ is $p0))");
+        assertThat(rows).extracting(d -> d.id).containsExactly(4);
     }
 
     @Entity(name = "ArrayDoc")
@@ -111,11 +145,18 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
 
         int[] scores;
 
+        Integer[] boxedScores;
+
         ArrayDoc() {}
 
         ArrayDoc(int id, int[] scores) {
+            this(id, scores, null);
+        }
+
+        ArrayDoc(int id, int[] scores, Integer[] boxedScores) {
             this.id = id;
             this.scores = scores;
+            this.boxedScores = boxedScores;
         }
     }
 }

@@ -1340,10 +1340,44 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 var countOp = ep.isNegated() ? " == 0)" : " > 0)";
                 sb.append("(count(").append(wrapped).append(")").append(countOp);
             }
+        } else if (predicate instanceof SelfRenderingPredicate srp) {
+            if (!tryAppendArrayPredicateFunction(sb, srp.getSelfRenderingExpression())) {
+                throw new FeatureNotSupportedException(
+                        "Unsupported predicate: " + predicate.getClass().getSimpleName());
+            }
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported predicate: " + predicate.getClass().getSimpleName());
         }
+    }
+
+    /**
+     * Returns {@code true} and emits MQLv2 surface text if {@code expression} is a known
+     * boolean-returning array function that v2 supports as a predicate; returns {@code false}
+     * otherwise (caller falls through to unsupported-predicate error).
+     */
+    private boolean tryAppendArrayPredicateFunction(StringBuilder sb, SelfRenderingExpression expression) {
+        if (!(expression instanceof SelfRenderingFunctionSqlAstExpression<?> fn)) {
+            return false;
+        }
+        var name = fn.getFunctionName();
+        var args = fn.getArguments();
+        if ("array_contains".equals(name) || "array_contains_nullable".equals(name)) {
+            // _nullable uses `is` so a null-valued JdbcParameter matches null elements;
+            // non-nullable uses `==` per Hibernate's null-propagation contract.
+            var eqOp = "array_contains_nullable".equals(name) ? "is" : "==";
+            if (!(args.get(0) instanceof Expression haystack)
+                    || !(args.get(1) instanceof Expression needle)) {
+                throw new FeatureNotSupportedException("Non-expression argument in " + name + "()");
+            }
+            sb.append("(");
+            appendExprText(sb, haystack);
+            sb.append(" any ($ ").append(eqOp).append(" ");
+            appendExprText(sb, needle);
+            sb.append("))");
+            return true;
+        }
+        return false;
     }
 
     private String appendExprTextToString(Expression expression) {
