@@ -115,23 +115,17 @@ private Expr translateFunction(SelfRenderingFunctionSqlAstExpression<?> fn) {
     return switch (fn.getFunctionName()) {
         case "array_length", "cardinality" ->
                 new FunctionCall("count", List.of(translateExpression((Expression) fn.getArguments().get(0))));
-        case "array_get" -> {
-            var args = fn.getArguments();
-            yield new ArrayIndex(
-                    translateExpression((Expression) args.get(0)),
-                    new BinaryOp(SUBTRACT,
-                            translateExpression((Expression) args.get(1)),
-                            new ValueLit(Value.VInt.of(1))));
-        }
+        case "array_get" -> new ArrayIndex(
+                translateExpression((Expression) fn.getArguments().get(0)),
+                new BinaryOp(SUBTRACT,
+                        translateExpression((Expression) fn.getArguments().get(1)),
+                        new ValueLit(Value.VInt.of(1))));
         case "array", "array_list" -> new ArrayConstructor(
                 fn.getArguments().stream()
                         .map(a -> translateExpression((Expression) a))
                         .toList());
         case "extract" -> translateExtract(fn);
-        default -> {
-            if (isAggregateFunction(fn)) yield translateAggregateRef(fn);
-            throw new FeatureNotSupportedException("Unsupported function: " + fn.getFunctionName());
-        }
+        default -> translateOtherFunction(fn);   // aggregates or throw
     };
 }
 ```
@@ -153,7 +147,14 @@ private Optional<Expr> translateBooleanFunction(SelfRenderingFunctionSqlAstExpre
                 new BinaryOp(eqOp, new CurrentValue(), translateExpression((Expression) args.get(1)))));
     }
     if (name.equals("array_intersects") || name.equals("array_intersects_nullable")) {
-        // … construct nested Any / Let / Any …
+        var eqOp = name.endsWith("_nullable") ? IS : EQ;
+        Expr a = translateExpression((Expression) args.get(0));
+        Expr b = translateExpression((Expression) args.get(1));
+        return Optional.of(new Any(
+                a,
+                new LetExpr(
+                        List.of(Map.entry("__x", new CurrentValue())),
+                        new Any(b, new BinaryOp(eqOp, new CurrentValue(), new VarRef("__x"))))));
     }
     return Optional.empty();
 }
