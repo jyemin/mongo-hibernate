@@ -25,6 +25,7 @@ import com.mongodb.hibernate.internal.dialect.TestMongoDialect;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayConstructorFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayContainsFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayIncludesFunction;
+import com.mongodb.hibernate.internal.dialect.function.array.Mqlv2OnlyArrayGetFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.Mqlv2OnlyArrayLengthFunction;
 import com.mongodb.hibernate.internal.translate.MongoTranslatorFactory;
 import com.mongodb.hibernate.internal.translate.Mqlv2TranslatorFactory;
@@ -361,6 +362,7 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
             functionRegistry.register(
                     "array_length", new Mqlv2OnlyArrayLengthFunction(typeConfiguration));
             functionRegistry.registerAlternateKey("cardinality", "array_length");
+            functionRegistry.register("array_get", new Mqlv2OnlyArrayGetFunction());
         }
         // Register Hibernate's standard `unnest` set-returning function so HQL like
         // `from O o join lateral unnest(o.array) a on 1=1` is parseable. The v2 translator

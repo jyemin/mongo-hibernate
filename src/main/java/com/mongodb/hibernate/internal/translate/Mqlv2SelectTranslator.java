@@ -1405,6 +1405,16 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 sb.append("count(");
                 appendExprText(sb, argExpr);
                 sb.append(")");
+            } else if ("array_get".equals(fn.getFunctionName())) {
+                var args = fn.getArguments();
+                if (!(args.get(0) instanceof Expression haystack)
+                        || !(args.get(1) instanceof Expression index)) {
+                    throw new FeatureNotSupportedException("Non-expression argument in array_get()");
+                }
+                appendExprText(sb, haystack);
+                sb.append("[(");
+                appendExprText(sb, index);
+                sb.append(") - 1]");
             } else {
                 throw new FeatureNotSupportedException("Unsupported function: " + fn.getFunctionName() + "()");
             }

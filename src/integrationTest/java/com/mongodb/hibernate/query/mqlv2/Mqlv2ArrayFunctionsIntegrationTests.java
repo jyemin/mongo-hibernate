@@ -92,6 +92,17 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
         assertThat(rows).extracting(d -> d.id).containsExactly(3);
     }
 
+    @Test
+    void arrayGet() {
+        var hql = "from ArrayDoc d where array_get(d.scores, 1) = 10";
+        var rows = sessionFactoryScope.fromSession(session ->
+                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        assertThat(capturedPipeline())
+                .isEqualTo("from $array_docs | match (scores[(1) - 1] == 10)"
+                        + " | format {_id: _id, scores: scores}");
+        assertThat(rows).extracting(d -> d.id).containsExactly(1);
+    }
+
     @Entity(name = "ArrayDoc")
     @Table(name = "array_docs")
     static class ArrayDoc {
