@@ -105,6 +105,22 @@ EXISTS, JOIN, and scalar-subquery forms on `@Struct`-annotated embeddable arrays
 emits MQLv2 `any()` and `unwind` to evaluate predicates element-by-element, server-side.
 See [`docs/mqlv2-showcase.md`](docs/mqlv2-showcase.md) for a full worked example tour.
 
+**Array functions.** The following HQL array functions are translated directly to MQLv2:
+
+| HQL | MQLv2 emission |
+| --- | --- |
+| `array(e1, …, en)` / `array_list(...)` | `[e1, …, en]` |
+| `array_length(a)` / `cardinality(a)` | `count(a)` |
+| `array_get(a, i)` | `a[(i) - 1]` (HQL is 1-based, MQLv2 is 0-based) |
+| `array_contains(a, x)` | `(a any ($ == x))` |
+| `array_contains_nullable(a, x)` | `(a any ($ is x))` |
+| `array_intersects(a, b)` / `array_overlaps(a, b)` | `(a any (let $__x = $ in b any ($ == $__x)))` |
+| `array_intersects_nullable(a, b)` / `array_overlaps_nullable(a, b)` | `(a any (let $__x = $ in b any ($ is $__x)))` |
+
+The `_nullable` variants emit `is` (structural equality) instead of `==` (type-bracketed) so a
+null-valued parameter matches null elements. The non-nullable variants emit `==`, following
+Hibernate's null-propagation contract.
+
 ## Contributor Documentation
 
 [Gradle](https://gradle.org/) is used as a build tool.
