@@ -52,13 +52,15 @@ import org.junit.jupiter.api.extension.ExtendWith;
         annotatedClasses = {
             Mqlv2SelectIntegrationTests.Customer.class,
             Mqlv2SelectIntegrationTests.Order.class,
-            Mqlv2ShowcaseVerificationTests.Cart.class
+            Mqlv2ShowcaseVerificationTests.Cart.class,
+            Mqlv2ShowcaseVerificationTests.Inventory.class
         })
 @SessionFactory(exportSchema = false)
 @ServiceRegistry(
         settings = {
             @Setting(name = DIALECT, value = "com.mongodb.hibernate.query.mqlv2.TestMqlv2Dialect"),
-            @Setting(name = STATEMENT_INSPECTOR, value = "com.mongodb.hibernate.query.mqlv2.MqlCapture")
+            @Setting(name = STATEMENT_INSPECTOR, value = "com.mongodb.hibernate.query.mqlv2.MqlCapture"),
+            @Setting(name = "mongo.hibernate.mqlv2.enabled", value = "true")
         })
 @ExtendWith(MongoExtension.class)
 class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, ServiceRegistryScopeAware {
@@ -89,12 +91,18 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             new Cart(2, 5, new LineItem[] {new LineItem("GADGET-1", 10)}),
             new Cart(3, 1, new LineItem[] {new LineItem("WIDGET-1", 0)}));
 
+    private static final List<Inventory> INVENTORY = List.of(
+            new Inventory(1, new int[] {10, 20, 30}, new Integer[] {}),
+            new Inventory(2, new int[] {30, 40}, new Integer[] {}),
+            new Inventory(3, new int[] {}, new Integer[] {}));
+
     @BeforeEach
     void setUp() {
         sessionFactoryScope.inTransaction(session -> {
             CUSTOMERS.forEach(session::persist);
             ORDERS.forEach(session::persist);
             CARTS.forEach(session::persist);
+            INVENTORY.forEach(session::persist);
         });
     }
 
@@ -461,6 +469,38 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
                     soft,
                     "select c.id, (select count(*) from c.lineItems li where li.qty > 4) from Cart c order by c.id",
                     "from $carts | sort _id | format {_id: _id, _f0: (count((from lineItems | match ($.qty > 4))))}");
+
+            // Array functions
+            var fmtInv = "format {_id: _id, boxedScores: boxedScores, scores: scores}";
+
+            check(soft, "from Inventory i where array_length(i.scores) > 2",
+                    "from $inventory | match (count(scores) > 2) | " + fmtInv);
+
+            check(soft, "from Inventory i where cardinality(i.scores) = 0",
+                    "from $inventory | match (count(scores) == 0) | " + fmtInv);
+
+            check(soft, "from Inventory i where array_get(i.scores, 1) = 10",
+                    "from $inventory | match (scores[(1) - 1] == 10) | " + fmtInv);
+
+            check(soft, "from Inventory i where array_contains(i.scores, 30)",
+                    "from $inventory | match (scores any ($ == 30)) | " + fmtInv);
+
+            check(soft, "from Inventory i where not array_contains(i.scores, 30)",
+                    "from $inventory | match (not (scores any ($ == 30))) | " + fmtInv);
+
+            check(soft, "from Inventory i where array_contains_nullable(i.boxedScores, :needle)",
+                    q -> q.setParameter("needle", (Integer) null),
+                    "from $inventory | match (boxedScores any ($ is $p0)) | " + fmtInv);
+
+            check(soft, "from Inventory i where array_intersects(i.scores, array(30, 99))",
+                    "from $inventory | match (scores any (let $__x = $ in [30, 99] any ($ == $__x))) | " + fmtInv);
+
+            check(soft, "from Inventory i where array_overlaps(i.scores, array(10, 40))",
+                    "from $inventory | match (scores any (let $__x = $ in [10, 40] any ($ == $__x))) | " + fmtInv);
+
+            check(soft, "from Inventory i where array_intersects_nullable(i.boxedScores, :needles)",
+                    q -> q.setParameter("needles", new Integer[] {null}),
+                    "from $inventory | match (boxedScores any (let $__x = $ in $p0 any ($ is $__x))) | " + fmtInv);
         });
     }
 
@@ -531,6 +571,25 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
         @Override
         public int hashCode() {
             return Objects.hash(sku, qty);
+        }
+    }
+
+    @Entity(name = "Inventory")
+    @Table(name = "inventory")
+    static class Inventory {
+        @Id
+        int id;
+
+        int[] scores;
+
+        Integer[] boxedScores;
+
+        Inventory() {}
+
+        Inventory(int id, int[] scores, Integer[] boxedScores) {
+            this.id = id;
+            this.scores = scores;
+            this.boxedScores = boxedScores;
         }
     }
 }

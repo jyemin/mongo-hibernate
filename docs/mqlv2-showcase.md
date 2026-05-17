@@ -845,6 +845,118 @@ their cardinality.
 
 ---
 
+## Array functions
+
+Hibernate's HQL array functions are translated into MQLv2 array primitives: `any` (element-wise iteration),
+`count` (array length), positional indexing (`a[(i) - 1]`), and `[...]` array literals. The `_nullable` variants
+emit `is` (structural equality, matching `null` values) instead of `==` (type-bracketed equality); see the
+README's function table for the full list.
+
+### Inventory entity (used in examples below)
+
+```java
+@Entity(name = "Inventory")
+@Table(name = "inventory")
+class Inventory {
+    @Id int id;
+    int[] scores;
+    Integer[] boxedScores;
+}
+```
+
+---
+
+### array_length / cardinality
+
+```
+HQL:   from Inventory i where array_length(i.scores) > 2
+
+MQLv2: from $inventory | match (count(scores) > 2) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+```
+
+```
+HQL:   from Inventory i where cardinality(i.scores) = 0
+
+MQLv2: from $inventory | match (count(scores) == 0) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+```
+
+Both `array_length` and `cardinality` are aliases; both translate to MQLv2 `count(field)`.
+
+---
+
+### array_get
+
+```
+HQL:   from Inventory i where array_get(i.scores, 1) = 10
+
+MQLv2: from $inventory | match (scores[(1) - 1] == 10) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+```
+
+HQL uses 1-based indexing; the translator subtracts 1 to convert to MQLv2's 0-based positional access.
+
+---
+
+### array_contains
+
+```
+HQL:   from Inventory i where array_contains(i.scores, 30)
+
+MQLv2: from $inventory | match (scores any ($ == 30)) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+```
+
+```
+HQL:   from Inventory i where not array_contains(i.scores, 30)
+
+MQLv2: from $inventory | match (not (scores any ($ == 30))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+```
+
+Negation wraps the entire `any(...)` expression in `(not ...)`.
+
+---
+
+### array_contains_nullable
+
+```
+HQL:   from Inventory i where array_contains_nullable(i.boxedScores, :needle)   -- :needle bound to null
+
+MQLv2: from $inventory | match (boxedScores any ($ is $p0)) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+```
+
+The `_nullable` variant uses `is` (structural equality) instead of `==`, allowing it to match `null` elements.
+
+---
+
+### array_intersects / array_overlaps
+
+```
+HQL:   from Inventory i where array_intersects(i.scores, array(30, 99))
+
+MQLv2: from $inventory | match (scores any (let $__x = $ in [30, 99] any ($ == $__x))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+```
+
+```
+HQL:   from Inventory i where array_overlaps(i.scores, array(10, 40))
+
+MQLv2: from $inventory | match (scores any (let $__x = $ in [10, 40] any ($ == $__x))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+```
+
+`array_overlaps` is an alias for `array_intersects`; both produce identical MQLv2 output. The translator binds
+each outer element into `$__x` via `let` so the inner `any` can reference it without ambiguity.
+
+---
+
+### array_intersects_nullable
+
+```
+HQL:   from Inventory i where array_intersects_nullable(i.boxedScores, :needles)   -- :needles bound to Integer[] {null}
+
+MQLv2: from $inventory | match (boxedScores any (let $__x = $ in $p0 any ($ is $__x))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+```
+
+The `_nullable` variant uses `is` for the inner comparison, enabling matching of `null` elements in either array.
+
+---
+
 ## Known limitations (current scope)
 
 - OFFSET / skip — MQLv2 has no skip stage; throws `FeatureNotSupportedException`
