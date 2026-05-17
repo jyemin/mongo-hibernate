@@ -1267,21 +1267,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
         } else if (predicate instanceof BooleanExpressionPredicate) {
             sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
-        } else if (predicate instanceof InListPredicate ilp) {
-            var exprs = ilp.getListExpressions();
-            var negated = ilp.isNegated();
-            var op = negated ? " != " : " == ";
-            var logic = negated ? " and " : " or ";
-            sb.append("(");
-            for (var i = 0; i < exprs.size(); i++) {
-                if (i > 0) sb.append(logic);
-                sb.append("(");
-                appendExprText(sb, ilp.getTestExpression());
-                sb.append(op);
-                appendExprText(sb, exprs.get(i));
-                sb.append(")");
-            }
-            sb.append(")");
+        } else if (predicate instanceof InListPredicate) {
+            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
         } else if (predicate instanceof InSubQueryPredicate isp) {
             // Note: IN-subquery over an unnest function table is Hibernate-SQM-blocked
             // (resolveSqmPath AssertionError on the unnest FunctionJoin path during type

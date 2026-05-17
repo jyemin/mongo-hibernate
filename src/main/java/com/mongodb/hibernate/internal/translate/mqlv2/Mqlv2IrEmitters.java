@@ -43,6 +43,7 @@ import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
 import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
 import org.hibernate.sql.ast.tree.predicate.GroupedPredicate;
+import org.hibernate.sql.ast.tree.predicate.InListPredicate;
 import org.hibernate.sql.ast.tree.predicate.Junction;
 import org.hibernate.sql.ast.tree.predicate.NegatedPredicate;
 import org.hibernate.sql.ast.tree.predicate.NullnessPredicate;
@@ -454,6 +455,22 @@ public final class Mqlv2IrEmitters {
                     BinaryOpType.EQ,
                     translateExpression(bp.getExpression(), ctx),
                     new Expr.ValueLit(new Value.VBool(!bp.isNegated())));
+        }
+        if (p instanceof InListPredicate ilp) {
+            var exprs = ilp.getListExpressions();
+            boolean negated = ilp.isNegated();
+            BinaryOpType cmpOp = negated ? BinaryOpType.NE : BinaryOpType.EQ;
+            BinaryOpType logicOp = negated ? BinaryOpType.AND : BinaryOpType.OR;
+            if (exprs.isEmpty()) {
+                return new Expr.ValueLit(new Value.VBool(negated));
+            }
+            Expr testIr = translateExpression(ilp.getTestExpression(), ctx);
+            Expr acc = new Expr.BinaryOp(cmpOp, testIr, translateExpression(exprs.get(0), ctx));
+            for (int i = 1; i < exprs.size(); i++) {
+                Expr cmp = new Expr.BinaryOp(cmpOp, testIr, translateExpression(exprs.get(i), ctx));
+                acc = new Expr.BinaryOp(logicOp, acc, cmp);
+            }
+            return acc;
         }
         if (p instanceof SelfRenderingPredicate srp
                 && srp.getSelfRenderingExpression() instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
