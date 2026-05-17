@@ -41,7 +41,6 @@ import org.hibernate.internal.util.collections.Stack;
 import org.hibernate.persister.internal.SqlFragmentPredicate;
 import org.hibernate.query.SortDirection;
 import org.hibernate.query.spi.QueryOptions;
-import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.ComparisonOperator;
 import org.hibernate.query.sqm.SetOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
@@ -1417,32 +1416,15 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     private void appendExprText(StringBuilder sb, Expression expression) {
-        if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
-            appendExprText(sb, bvpi.getColumnReference());
-        } else if (expression instanceof ColumnReference cr) {
-            var qualifier = cr.getQualifier();
-            if (qualifier != null && unnestAliasToFieldPath.containsKey(qualifier)) {
-                sb.append(unnestAliasToFieldPath.get(qualifier)).append(".").append(cr.getColumnExpression());
-            } else if (hasJoins && qualifier != null && !qualifier.isEmpty()) {
-                sb.append(qualifier).append(".").append(cr.getColumnExpression());
-            } else {
-                sb.append(cr.getColumnExpression());
-            }
-        } else if (expression instanceof QueryLiteral<?> ql) {
-            appendLiteralText(sb, ql.getLiteralValue());
-        } else if (expression instanceof UnparsedNumericLiteral<?> unl) {
-            sb.append(unl.getLiteralValue());
-        } else if (expression instanceof SqmParameterInterpretation spi) {
-            appendExprText(sb, spi.getResolvedExpression());
-        } else if (expression instanceof JdbcParameter jp) {
-            sb.append("$p").append(parameterBinders.size());
-            parameterBinders.add(jp.getParameterBinder());
-        } else if (expression instanceof BinaryArithmeticExpression bae) {
-            sb.append("(");
-            appendExprText(sb, bae.getLeftHandOperand());
-            sb.append(" ").append(arithmeticOpText(bae.getOperator())).append(" ");
-            appendExprText(sb, bae.getRightHandOperand());
-            sb.append(")");
+        if (expression instanceof BasicValuedPathInterpretation<?>
+                || expression instanceof ColumnReference
+                || expression instanceof QueryLiteral<?>
+                || expression instanceof UnparsedNumericLiteral<?>
+                || expression instanceof SqmParameterInterpretation
+                || expression instanceof JdbcParameter
+                || expression instanceof BinaryArithmeticExpression) {
+            Expr ir = Mqlv2IrEmitters.translateExpression(expression, newContext());
+            sb.append(serializer.serialize(ir));
         } else if (expression instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
             if (isAggregateFunction(expression)) {
                 var aggName = aggSignatureToName.get(aggSignature(fn));
@@ -1493,48 +1475,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             throw new FeatureNotSupportedException(
                     "Unsupported expression: " + expression.getClass().getSimpleName());
         }
-    }
-
-    private static void appendLiteralText(StringBuilder sb, Object value) {
-        if (value instanceof String s) {
-            sb.append('"');
-            for (var i = 0; i < s.length(); i++) {
-                char c = s.charAt(i);
-                if (c == '"') {
-                    sb.append("\\\"");
-                } else if (c == '\\') {
-                    sb.append("\\\\");
-                } else if (c == '\n') {
-                    sb.append("\\n");
-                } else if (c == '\r') {
-                    sb.append("\\r");
-                } else if (c == '\t') {
-                    sb.append("\\t");
-                } else if (c < 0x20) {
-                    sb.append(String.format("\\u%04x", (int) c));
-                } else {
-                    sb.append(c);
-                }
-            }
-            sb.append('"');
-        } else if (value instanceof Number || value instanceof Boolean) {
-            sb.append(value);
-        } else if (value == null) {
-            sb.append("null");
-        } else {
-            throw new FeatureNotSupportedException(
-                    "Unsupported literal type: " + value.getClass().getSimpleName());
-        }
-    }
-
-    private static String arithmeticOpText(BinaryArithmeticOperator op) {
-        return switch (op) {
-            case ADD -> "+";
-            case SUBTRACT -> "-";
-            case MULTIPLY -> "*";
-            case DIVIDE, DIVIDE_PORTABLE, QUOT -> "/";
-            default -> throw new FeatureNotSupportedException("Unsupported arithmetic operator: " + op);
-        };
     }
 
     private static String comparisonOpSurface(ComparisonOperator op) {
