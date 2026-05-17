@@ -40,7 +40,6 @@ import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.internal.util.collections.Stack;
 import org.hibernate.persister.internal.SqlFragmentPredicate;
 import org.hibernate.query.SortDirection;
-import org.hibernate.query.common.TemporalUnit;
 import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.ComparisonOperator;
@@ -1453,16 +1452,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 }
                 sb.append(aggName);
             } else if ("extract".equals(fn.getFunctionName())) {
-                var args = fn.getArguments();
-                if (args.size() != 2 || !(args.get(0) instanceof ExtractUnit eu)) {
-                    throw new FeatureNotSupportedException("Unsupported extract() form");
-                }
-                if (!(args.get(1) instanceof Expression dateExpr)) {
-                    throw new FeatureNotSupportedException("Non-expression date argument in extract()");
-                }
-                sb.append(mqlv2ExtractName(eu.getUnit())).append("(");
-                appendExprText(sb, dateExpr);
-                sb.append(")");
+                appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateExtract);
             } else if ("array_length".equals(fn.getFunctionName())) {
                 appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateArrayLength);
             } else if ("array_get".equals(fn.getFunctionName())) {
@@ -1544,20 +1534,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             case MULTIPLY -> "*";
             case DIVIDE, DIVIDE_PORTABLE, QUOT -> "/";
             default -> throw new FeatureNotSupportedException("Unsupported arithmetic operator: " + op);
-        };
-    }
-
-    private static String mqlv2ExtractName(TemporalUnit unit) {
-        return switch (unit) {
-            case YEAR -> "year";
-            case MONTH -> "month";
-            case DAY, DAY_OF_MONTH -> "dayOfMonth";
-            case DAY_OF_YEAR -> "dayOfYear";
-            case DAY_OF_WEEK -> "dayOfWeek";
-            case HOUR -> "hour";
-            case MINUTE -> "minute";
-            case SECOND -> "second";
-            default -> throw new FeatureNotSupportedException("Unsupported extract() unit: " + unit);
         };
     }
 

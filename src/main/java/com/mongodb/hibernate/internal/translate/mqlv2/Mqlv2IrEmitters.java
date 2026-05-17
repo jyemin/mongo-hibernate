@@ -23,6 +23,7 @@ import com.mongodb.mqlv2.ast.Value;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.hibernate.query.common.TemporalUnit;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
@@ -30,6 +31,7 @@ import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.sql.ast.tree.expression.BinaryArithmeticExpression;
 import org.hibernate.sql.ast.tree.expression.ColumnReference;
 import org.hibernate.sql.ast.tree.expression.Expression;
+import org.hibernate.sql.ast.tree.expression.ExtractUnit;
 import org.hibernate.sql.ast.tree.expression.JdbcParameter;
 import org.hibernate.sql.ast.tree.expression.QueryLiteral;
 import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
@@ -283,5 +285,37 @@ public final class Mqlv2IrEmitters {
         return new Expr.Any(
                 translateExpression(haystack, ctx),
                 new Expr.BinaryOp(eqOp, new Expr.CurrentValue(), translateExpression(needle, ctx)));
+    }
+
+    /**
+     * Translate {@code extract(UNIT FROM dateExpr)} to a MQLv2 date-part function call, e.g.
+     * {@code extract(YEAR FROM orderDate)} → {@code year(orderDate)}.
+     *
+     * @param fn the function call AST node (function name must be {@code "extract"}).
+     * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
+     */
+    public static Expr translateExtract(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
+        var args = fn.getArguments();
+        if (args.size() != 2 || !(args.get(0) instanceof ExtractUnit eu)) {
+            throw new FeatureNotSupportedException("Unsupported extract() form");
+        }
+        if (!(args.get(1) instanceof Expression dateExpr)) {
+            throw new FeatureNotSupportedException("Non-expression date argument in extract()");
+        }
+        return new Expr.FunctionCall(mqlv2ExtractName(eu.getUnit()), List.of(translateExpression(dateExpr, ctx)));
+    }
+
+    private static String mqlv2ExtractName(TemporalUnit unit) {
+        return switch (unit) {
+            case YEAR -> "year";
+            case MONTH -> "month";
+            case DAY, DAY_OF_MONTH -> "dayOfMonth";
+            case DAY_OF_YEAR -> "dayOfYear";
+            case DAY_OF_WEEK -> "dayOfWeek";
+            case HOUR -> "hour";
+            case MINUTE -> "minute";
+            case SECOND -> "second";
+            default -> throw new FeatureNotSupportedException("Unsupported extract() unit: " + unit);
+        };
     }
 }
