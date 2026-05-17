@@ -17,6 +17,7 @@
 package com.mongodb.hibernate.internal.translate.mqlv2;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
+import com.mongodb.mqlv2.ast.Assignment;
 import com.mongodb.mqlv2.ast.BinaryOpType;
 import com.mongodb.mqlv2.ast.Expr;
 import com.mongodb.mqlv2.ast.SortDirection;
@@ -131,8 +132,7 @@ public final class Mqlv2IrEmitters {
             if ("extract".equals(fnName)) {
                 return translateExtract(fn, ctx);
             }
-            throw new FeatureNotSupportedException(
-                    "Unsupported function in IR translation: " + fnName);
+            throw new FeatureNotSupportedException("Unsupported function in IR translation: " + fnName);
         }
         throw new FeatureNotSupportedException(
                 "Unsupported expression in IR translation: " + e.getClass().getSimpleName());
@@ -146,9 +146,7 @@ public final class Mqlv2IrEmitters {
      */
     private static String aggSignature(SelfRenderingFunctionSqlAstExpression<?> fn, boolean hasJoins) {
         var args = fn.getArguments();
-        if (args.isEmpty()
-                || args.get(0) instanceof Star
-                || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
+        if (args.isEmpty() || args.get(0) instanceof Star || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
             return fn.getFunctionName() + ":*";
         }
         if (args.get(0) instanceof Expression argExpr) {
@@ -203,8 +201,8 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Translate a column reference into a {@code FieldAccess} chain, honoring the qualifier rules
-     * carried by {@code ctx}.
+     * Translate a column reference into a {@code FieldAccess} chain, honoring the qualifier rules carried by
+     * {@code ctx}.
      *
      * <ul>
      *   <li>Unnest alias: {@code li.sku} → {@code lineItems.sku} (uses the context's alias→path map).
@@ -225,9 +223,8 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Build a left-leaning {@code FieldAccess} chain from a dot-separated path. For example,
-     * {@code "a.b.c"} becomes {@code FieldAccess(FieldAccess(FieldAccess($, "a"), "b"), "c")}, which
-     * the Serializer renders as {@code a.b.c}.
+     * Build a left-leaning {@code FieldAccess} chain from a dot-separated path. For example, {@code "a.b.c"} becomes
+     * {@code FieldAccess(FieldAccess(FieldAccess($, "a"), "b"), "c")}, which the Serializer renders as {@code a.b.c}.
      */
     private static Expr buildFieldChain(String dotPath) {
         Expr e = new Expr.CurrentValue();
@@ -253,15 +250,12 @@ public final class Mqlv2IrEmitters {
     public static Expr translateArrayGet(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var args = fn.getArguments();
         if (!(args.get(0) instanceof Expression arr) || !(args.get(1) instanceof Expression idx)) {
-            throw new FeatureNotSupportedException(
-                    "Non-expression argument in " + fn.getFunctionName() + "()");
+            throw new FeatureNotSupportedException("Non-expression argument in " + fn.getFunctionName() + "()");
         }
         return new Expr.ArrayIndex(
                 translateExpression(arr, ctx),
                 new Expr.BinaryOp(
-                        BinaryOpType.SUB,
-                        translateExpression(idx, ctx),
-                        new Expr.ValueLit(new Value.VInt(1))));
+                        BinaryOpType.SUB, translateExpression(idx, ctx), new Expr.ValueLit(new Value.VInt(1))));
     }
 
     /**
@@ -276,8 +270,7 @@ public final class Mqlv2IrEmitters {
         List<Expr> elements = new ArrayList<>(args.size());
         for (var arg : args) {
             if (!(arg instanceof Expression elemExpr)) {
-                throw new FeatureNotSupportedException(
-                        "Non-expression argument in " + fn.getFunctionName() + "()");
+                throw new FeatureNotSupportedException("Non-expression argument in " + fn.getFunctionName() + "()");
             }
             elements.add(translateExpression(elemExpr, ctx));
         }
@@ -292,8 +285,7 @@ public final class Mqlv2IrEmitters {
      */
     public static Expr translateArrayLength(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         if (!(fn.getArguments().get(0) instanceof Expression arg)) {
-            throw new FeatureNotSupportedException(
-                    "Non-expression argument in " + fn.getFunctionName() + "()");
+            throw new FeatureNotSupportedException("Non-expression argument in " + fn.getFunctionName() + "()");
         }
         return new Expr.FunctionCall("count", List.of(translateExpression(arg, ctx)));
     }
@@ -309,8 +301,8 @@ public final class Mqlv2IrEmitters {
      *       {@code is})
      * </ul>
      *
-     * <p>D3b paren drift: the Serializer double-wraps the inner {@code any} body binop, producing
-     * {@code any (($ op $__x))} vs. the old {@code any ($ op $__x)}.
+     * <p>D3b paren drift: the Serializer double-wraps the inner {@code any} body binop, producing {@code any (($ op
+     * $__x))} vs. the old {@code any ($ op $__x)}.
      *
      * @param fn the function call AST node.
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
@@ -342,8 +334,8 @@ public final class Mqlv2IrEmitters {
      * </ul>
      *
      * <p>D3 paren drift vs. the legacy hand-rolled emission: the Serializer does not add outer parens around the
-     * predicate at the match stage, but does double-wrap the {@code any} body (producing {@code any (($ op x))} vs.
-     * the old {@code (arr any ($ op x))}).
+     * predicate at the match stage, but does double-wrap the {@code any} body (producing {@code any (($ op x))} vs. the
+     * old {@code (arr any ($ op x))}).
      *
      * @param fn the function call AST node.
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
@@ -377,8 +369,8 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Translate {@code extract(UNIT FROM dateExpr)} to a MQLv2 date-part function call, e.g.
-     * {@code extract(YEAR FROM orderDate)} → {@code year(orderDate)}.
+     * Translate {@code extract(UNIT FROM dateExpr)} to a MQLv2 date-part function call, e.g. {@code extract(YEAR FROM
+     * orderDate)} → {@code year(orderDate)}.
      *
      * @param fn the function call AST node (function name must be {@code "extract"}).
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
@@ -415,8 +407,8 @@ public final class Mqlv2IrEmitters {
      *
      * <p>Junction with N predicates builds a left-associative {@link Expr.BinaryOp} chain: {@code (p1 op p2 op p3)}
      * becomes {@code ((p1 op p2) op p3)}. The Serializer adds inner parentheses around each binary sub-expression,
-     * producing {@code ((p1 op p2) op p3)} — identical output to the old hand-rolled emission for 2-predicate cases;
-     * 3+ predicate cases get extra nesting (D6 drift).
+     * producing {@code ((p1 op p2) op p3)} — identical output to the old hand-rolled emission for 2-predicate cases; 3+
+     * predicate cases get extra nesting (D6 drift).
      *
      * <p>NegatedPredicate emits {@code UnaryOp(NOT, inner)}. The Serializer's UnaryOp branch wraps an {@code Any}
      * argument in extra parens, preserving correct precedence for negated array-function predicates.
@@ -511,26 +503,25 @@ public final class Mqlv2IrEmitters {
     // ---- Stage-level translation helpers (Phase D2) ----
 
     /**
-     * Return value of {@link #translateFormat}: the updated pipeline {@link Stage} and the ordered
-     * list of field names for the JdbcOperationQuerySelect result-set mapping.
+     * Return value of {@link #translateFormat}: the updated pipeline {@link Stage} and the ordered list of field names
+     * for the JdbcOperationQuerySelect result-set mapping.
      *
      * @hidden
      */
     public record FormatTranslation(Stage stage, List<String> fieldNames) {}
 
     /**
-     * Build a {@link Stage.FromStageSimple} or {@link Stage.FromStageNested} for the primary table
-     * reference of the FROM clause root.
+     * Build a {@link Stage.FromStageSimple} or {@link Stage.FromStageNested} for the primary table reference of the
+     * FROM clause root.
      *
      * <ul>
      *   <li>No joins: {@code from $collName} — uses {@link Stage.FromStageSimple}.
-     *   <li>Has joins: {@code from alias=$collName} — uses {@link Stage.FromStageNested} so that
-     *       subsequent join stages can address fields by qualifier.
+     *   <li>Has joins: {@code from alias=$collName} — uses {@link Stage.FromStageNested} so that subsequent join stages
+     *       can address fields by qualifier.
      * </ul>
      *
      * @param ntr the primary {@link NamedTableReference} of the FROM root.
-     * @param hasJoins true iff the query has at least one non-unnest join (determines which from-stage
-     *     shape to emit).
+     * @param hasJoins true iff the query has at least one non-unnest join (determines which from-stage shape to emit).
      * @return the from {@link Stage} node.
      */
     public static Stage translateFromStage(NamedTableReference ntr, boolean hasJoins) {
@@ -543,8 +534,8 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Append a {@link Stage.MatchStage} if the {@code QuerySpec} has a WHERE clause; otherwise return
-     * {@code prev} unchanged.
+     * Append a {@link Stage.MatchStage} if the {@code QuerySpec} has a WHERE clause; otherwise return {@code prev}
+     * unchanged.
      *
      * @param prev the pipeline stage to wrap.
      * @param qs the query spec whose WHERE clause is consulted.
@@ -560,8 +551,8 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Append a {@link Stage.SortStage} if the {@code QuerySpec} has ORDER BY specifications; otherwise
-     * return {@code prev} unchanged.
+     * Append a {@link Stage.SortStage} if the {@code QuerySpec} has ORDER BY specifications; otherwise return
+     * {@code prev} unchanged.
      *
      * @param prev the pipeline stage to wrap.
      * @param qs the query spec whose sort specifications are consulted.
@@ -577,28 +568,27 @@ public final class Mqlv2IrEmitters {
         for (var spec : specs) {
             var expr = translateExpression(spec.getSortExpression(), ctx);
             var dir = spec.getSortOrder() == org.hibernate.query.SortDirection.DESCENDING
-                    ? SortDirection.DESC : SortDirection.ASC;
+                    ? SortDirection.DESC
+                    : SortDirection.ASC;
             sortSpecs.add(new SortSpec(expr, dir));
         }
         return new Stage.SortStage(prev, sortSpecs);
     }
 
     /**
-     * Append a {@link Stage.LimitStage} if the {@code QuerySpec} has a FETCH clause or the
-     * {@code QueryOptions} specify a max-rows limit; otherwise return {@code prev} unchanged.
+     * Append a {@link Stage.LimitStage} if the {@code QuerySpec} has a FETCH clause or the {@code QueryOptions} specify
+     * a max-rows limit; otherwise return {@code prev} unchanged.
      *
-     * <p>When a dynamic max-rows limit is active the caller-supplied {@code onSetMaxResults} callback
-     * is invoked so the translator can allocate the {@link org.hibernate.sql.ast.tree.expression.JdbcParameter}
-     * binder and record the {@code limitJdbcParameter} field before this method reads the resulting
-     * binder index from the context.
+     * <p>When a dynamic max-rows limit is active the caller-supplied {@code onSetMaxResults} callback is invoked so the
+     * translator can allocate the {@link org.hibernate.sql.ast.tree.expression.JdbcParameter} binder and record the
+     * {@code limitJdbcParameter} field before this method reads the resulting binder index from the context.
      *
      * @param prev the pipeline stage to wrap.
      * @param qs the query spec (consulted for the HQL FETCH clause).
      * @param queryOptions dynamic query options; may be {@code null} for sub-queries.
      * @param ctx translation context (parameter binders are appended via {@code allocateParameter}).
-     * @param onSetMaxResults callback invoked when {@code queryOptions.getLimit().getMaxRows()} is
-     *     non-null; the callback must push the limit binder to {@code ctx}'s parameter list before
-     *     returning.
+     * @param onSetMaxResults callback invoked when {@code queryOptions.getLimit().getMaxRows()} is non-null; the
+     *     callback must push the limit binder to {@code ctx}'s parameter list before returning.
      * @return the updated stage (either a new {@link Stage.LimitStage} or {@code prev} unchanged).
      */
     public static Stage translateLimit(
@@ -632,27 +622,34 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Build a {@link Stage.FormatStage} wrapping {@code prev} and return a {@link FormatTranslation}
-     * that also carries the ordered field-name list for the result-set mapping.
+     * Build a {@link Stage.FormatStage} wrapping {@code prev} and return a {@link FormatTranslation} that also carries
+     * the ordered field-name list for the result-set mapping.
      *
-     * <p>Scoped to simple query shapes (no joins, no group/agg): {@code aggNames} must be
-     * {@code null} and {@code unnestAliasToFieldPath} in {@code ctx} must be empty.
+     * <p>Field-name assignment mirrors
+     * {@link com.mongodb.hibernate.internal.translate.Mqlv2SelectTranslator#appendFormat}:
      *
-     * <p>Field-name assignment mirrors {@link
-     * com.mongodb.hibernate.internal.translate.Mqlv2SelectTranslator#appendFormat}:
      * <ul>
-     *   <li>{@link ColumnReference} / {@link BasicValuedPathInterpretation}: the column expression
-     *       becomes both the document key and the field name.
+     *   <li>Aggregate selection (aggName non-null): synthetic {@code _fN} key; value is a bare field reference to the
+     *       aggregate alias.
+     *   <li>{@link ColumnReference} / {@link BasicValuedPathInterpretation}: the column expression becomes both the
+     *       document key and the field name. After a group stage, the value is also a bare field reference to the group
+     *       key.
      *   <li>All other expressions: a synthetic {@code _fN} name is assigned.
      * </ul>
      *
      * @param prev the pipeline stage to wrap.
      * @param selectClause the SELECT clause whose non-virtual selections drive the projection.
+     * @param aggNames per-selection aggregate alias list, or {@code null} when no group/agg stage precedes the format
+     *     stage. When non-null, each entry is the assigned {@code _aggN} alias for aggregate selections and
+     *     {@code null} for non-aggregate selections.
      * @param ctx translation context.
      * @return a {@link FormatTranslation} containing the updated stage and the field names.
      */
     public static FormatTranslation translateFormat(
-            Stage prev, SelectClause selectClause, Mqlv2TranslationContext ctx) {
+            Stage prev,
+            SelectClause selectClause,
+            @Nullable List<@Nullable String> aggNames,
+            Mqlv2TranslationContext ctx) {
         var fieldNames = new ArrayList<String>();
         var fields = new ArrayList<Map.Entry<Expr, Expr>>();
         var syntheticIdx = 0;
@@ -666,21 +663,36 @@ public final class Mqlv2IrEmitters {
                 .filter(s -> !s.isVirtual())
                 .toList();
 
-        for (var sel : selections) {
-            var selExpr = sel.getExpression();
+        for (var i = 0; i < selections.size(); i++) {
+            var selExpr = selections.get(i).getExpression();
+            var aggName = aggNames != null ? aggNames.get(i) : null;
             String key;
-            if (selExpr instanceof ColumnReference cr) {
+            Expr valueExpr;
+            if (aggName != null) {
+                // Aggregate selection: synthetic key, bare alias reference as value.
+                key = "_f" + syntheticIdx++;
+                valueExpr = translateAggregateReference(aggName);
+            } else if (selExpr instanceof ColumnReference cr) {
                 key = cr.getColumnExpression();
+                // After a group stage the key field is addressed directly; otherwise translate normally.
+                var rawValue = aggNames != null
+                        ? (Expr) new Expr.FieldAccess(new Expr.CurrentValue(), key)
+                        : translateExpression(selExpr, ctx);
+                // Re-wrap unnest array fields.
+                valueExpr = (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key))
+                        ? new Expr.ArrayConstructor(List.of(rawValue))
+                        : rawValue;
             } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
                 key = bvpi.getColumnReference().getColumnExpression();
+                var rawValue = aggNames != null
+                        ? (Expr) new Expr.FieldAccess(new Expr.CurrentValue(), key)
+                        : translateExpression(selExpr, ctx);
+                valueExpr = (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key))
+                        ? new Expr.ArrayConstructor(List.of(rawValue))
+                        : rawValue;
             } else {
                 key = "_f" + syntheticIdx++;
-            }
-            Expr valueExpr = translateExpression(selExpr, ctx);
-            // Re-wrap unnest array fields: the unwind body emits the element as a struct;
-            // the format stage must wrap it in [rawValue] so getArray() sees an ARRAY.
-            if (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key)) {
-                valueExpr = new Expr.ArrayConstructor(List.of(valueExpr));
+                valueExpr = translateExpression(selExpr, ctx);
             }
             fieldNames.add(key);
             fields.add(Map.entry(new Expr.ValueLit(new Value.VString(key)), valueExpr));
@@ -688,5 +700,193 @@ public final class Mqlv2IrEmitters {
 
         var docConstructor = new Expr.DocumentConstructor(fields);
         return new FormatTranslation(new Stage.FormatStage(prev, docConstructor), fieldNames);
+    }
+
+    // ---- Group / Having / Scalar-agg stage translation helpers (Phase D4) ----
+
+    /**
+     * Build a {@link Stage.GroupStage} for a GROUP BY query. Mirrors the hand-rolled {@code appendGroup} method in
+     * {@code Mqlv2SelectTranslator}.
+     *
+     * <p>Group keys are named after the column expression (via {@link #simpleColumnName}). Aggregate keys come from (a)
+     * non-null entries in {@code aggNames} (SELECT-position aggregates) and (b) HAVING-only aggregates in
+     * {@code havingOnlyAggs}.
+     *
+     * @param prev the pipeline stage to wrap.
+     * @param groupByExprs the GROUP BY expressions.
+     * @param selectClause the SELECT clause.
+     * @param aggNames per-selection aggregate alias list (same contract as in {@link #translateFormat(Stage,
+     *     SelectClause, List, Mqlv2TranslationContext)}).
+     * @param havingOnlyAggs aggregates referenced only in HAVING (not in SELECT), keyed by their assigned alias.
+     * @param ctx translation context.
+     * @return a new {@link Stage.GroupStage}.
+     */
+    public static Stage translateGroup(
+            Stage prev,
+            List<Expression> groupByExprs,
+            SelectClause selectClause,
+            List<@Nullable String> aggNames,
+            Map<String, SelfRenderingFunctionSqlAstExpression<?>> havingOnlyAggs,
+            Mqlv2TranslationContext ctx) {
+        // Build groupKeys: one Assignment per group-by expression, named after the column.
+        var groupKeys = new ArrayList<Assignment>(groupByExprs.size());
+        for (var ge : groupByExprs) {
+            String name = simpleColumnName(ge);
+            groupKeys.add(new Assignment(List.of(name), translateExpression(ge, ctx)));
+        }
+
+        // Build aggKeys: one Assignment per aggregate function.
+        var aggKeys = new ArrayList<Assignment>();
+        var selections = selectClause.getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
+        for (var i = 0; i < selections.size(); i++) {
+            var aggName = aggNames.get(i);
+            if (aggName == null) continue;
+            var fn =
+                    (SelfRenderingFunctionSqlAstExpression<?>) selections.get(i).getExpression();
+            aggKeys.add(new Assignment(List.of(aggName), translateAggregateCall(fn, ctx)));
+        }
+        // HAVING-only aggregates also go into the group stage.
+        for (var entry : havingOnlyAggs.entrySet()) {
+            aggKeys.add(new Assignment(List.of(entry.getKey()), translateAggregateCall(entry.getValue(), ctx)));
+        }
+
+        return new Stage.GroupStage(prev, groupKeys, aggKeys);
+    }
+
+    /**
+     * Build a {@link Stage.AggStage} for a scalar-aggregate query (aggregates without GROUP BY). Mirrors the
+     * hand-rolled {@code appendScalarAgg} method in {@code Mqlv2SelectTranslator}.
+     *
+     * @param prev the pipeline stage to wrap.
+     * @param selectClause the SELECT clause.
+     * @param aggNames per-selection aggregate alias list.
+     * @param ctx translation context.
+     * @return a new {@link Stage.AggStage}.
+     */
+    public static Stage translateScalarAgg(
+            Stage prev, SelectClause selectClause, List<@Nullable String> aggNames, Mqlv2TranslationContext ctx) {
+        var fields = new ArrayList<Map.Entry<Expr, Expr>>();
+        var selections = selectClause.getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
+        for (var i = 0; i < selections.size(); i++) {
+            var aggName = aggNames.get(i);
+            if (aggName == null) continue;
+            var fn =
+                    (SelfRenderingFunctionSqlAstExpression<?>) selections.get(i).getExpression();
+            fields.add(
+                    Map.entry((Expr) new Expr.ValueLit(new Value.VString(aggName)), translateAggregateCall(fn, ctx)));
+        }
+        return new Stage.AggStage(prev, new Expr.DocumentConstructor(fields));
+    }
+
+    /**
+     * Append a {@link Stage.MatchStage} for the HAVING clause if it is non-empty; otherwise return {@code prev}
+     * unchanged. Mirrors the hand-rolled {@code appendHaving} method.
+     *
+     * <p>The HAVING predicate may reference aggregate aliases (e.g., {@code _agg0}) via the {@code aggSignatureToName}
+     * map in {@code ctx}; these are resolved by {@link #translateExpression} via {@link #translateAggregateReference}.
+     *
+     * @param prev the pipeline stage to wrap.
+     * @param qs the query spec whose HAVING clause is consulted.
+     * @param ctx translation context (must have {@code aggSignatureToName} populated).
+     * @return the updated stage.
+     */
+    public static Stage translateHaving(Stage prev, QuerySpec qs, Mqlv2TranslationContext ctx) {
+        var having = qs.getHavingClauseRestrictions();
+        if (having == null || having.isEmpty()) return prev;
+        return new Stage.MatchStage(prev, translatePredicate(having, ctx));
+    }
+
+    /**
+     * Translate an aggregate function call (not a reference to an already-assigned alias) into its driver-mqlv2
+     * {@link Expr.FunctionCall} form. Mirrors the hand-rolled {@code appendAggFunctionText}.
+     *
+     * <p>Argument mapping:
+     *
+     * <ul>
+     *   <li>{@code count(*)} / {@code count(entity)} / no argument → {@code count($)} (current value).
+     *   <li>Regular field argument → {@code fn($->field)} using {@link Expr.ArrowOp}.
+     * </ul>
+     *
+     * @param fn the aggregate function call AST node.
+     * @param ctx translation context (for qualifier resolution on the argument column).
+     * @return the equivalent driver-mqlv2 {@link Expr.FunctionCall} node.
+     */
+    private static Expr translateAggregateCall(
+            SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
+        var name = fn.getFunctionName();
+        var args = fn.getArguments();
+        Expr argExpr;
+        if (args.isEmpty() || args.get(0) instanceof Star || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
+            // count(*) / count(entity) → count($)
+            argExpr = new Expr.CurrentValue();
+        } else {
+            if (!(args.get(0) instanceof Expression firstArg)) {
+                throw new FeatureNotSupportedException(name + "() requires an expression argument in MQLv2");
+            }
+            argExpr = translateAggFieldRef(firstArg, ctx);
+        }
+        return new Expr.FunctionCall(name, List.of(argExpr));
+    }
+
+    /**
+     * Translate an aggregate function field argument into the {@code $->field} arrow-op form. Mirrors the hand-rolled
+     * {@code appendAggFieldRef} in {@code Mqlv2SelectTranslator}.
+     *
+     * <p>Rule: the arrow-op always starts from {@code $} (current value). In a join context the qualifier is preserved:
+     * {@code qualifier->column}. For unnest aliases the mapped field path is used: {@code arrayFieldPath->column}.
+     * Without joins: bare column.
+     *
+     * @param expr the aggregate argument expression (column reference or path interpretation).
+     * @param ctx translation context.
+     * @return an {@link Expr.ArrowOp} rooted at the current value, resolving the field.
+     */
+    private static Expr translateAggFieldRef(Expression expr, Mqlv2TranslationContext ctx) {
+        ColumnReference cr;
+        if (expr instanceof ColumnReference c) {
+            cr = c;
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            cr = bvpi.getColumnReference();
+        } else {
+            throw new FeatureNotSupportedException("Expected column reference in aggregate argument; got: "
+                    + expr.getClass().getSimpleName());
+        }
+        var qualifier = cr.getQualifier();
+        String field;
+        if (qualifier != null && ctx.unnestAliasToFieldPath().containsKey(qualifier)) {
+            field = ctx.unnestAliasToFieldPath().get(qualifier) + "->" + cr.getColumnExpression();
+        } else if (ctx.hasJoins() && qualifier != null && !qualifier.isEmpty()) {
+            field = qualifier + "->" + cr.getColumnExpression();
+        } else {
+            field = cr.getColumnExpression();
+        }
+        // Build the arrow-op chain: $->a->b for "a->b" paths (unnest), or plain $->column.
+        Expr target = new Expr.CurrentValue();
+        int arrowIdx;
+        int start = 0;
+        while ((arrowIdx = field.indexOf("->", start)) != -1) {
+            target = new Expr.ArrowOp(target, field.substring(start, arrowIdx));
+            start = arrowIdx + 2;
+        }
+        target = new Expr.ArrowOp(target, field.substring(start));
+        return target;
+    }
+
+    /**
+     * Extracts the simple column expression from a GROUP BY key expression, used to name the group key in the
+     * {@link Stage.GroupStage}. Mirrors the hand-rolled {@code simpleColumnName}.
+     */
+    private static String simpleColumnName(Expression expr) {
+        if (expr instanceof ColumnReference cr) {
+            return cr.getColumnExpression();
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            return bvpi.getColumnReference().getColumnExpression();
+        } else {
+            throw new FeatureNotSupportedException("Expected simple column reference for GROUP BY key; got: "
+                    + expr.getClass().getSimpleName());
+        }
     }
 }

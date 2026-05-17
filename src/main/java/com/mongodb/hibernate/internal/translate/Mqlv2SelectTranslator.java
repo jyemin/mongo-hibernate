@@ -300,13 +300,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         this.hasJoins = root.getTableGroupJoins().stream()
                 .anyMatch(tgj -> !isUnnestFunctionTable(tgj.getJoinedGroup().getPrimaryTableReference()));
 
-        // Phase D2/D3: route simple shapes through the full IR path.
+        // Phase D2/D3/D4: route query shapes through the full IR path.
         // Guard: the IR path handles only shapes that Mqlv2IrEmitters.translatePredicate and
         // translateExpression cover. Subquery-based predicates (EXISTS, IN subquery, ANY/ALL) and
         // scalar subqueries in SELECT still require the hand-rolled path.
-        boolean canUseIr = querySpec.getGroupByClauseExpressions().isEmpty()
-                && !selectHasAggregates(querySpec.getSelectClause())
-                && !whereHasSubqueryPredicates(querySpec.getWhereClauseRestrictions())
+        boolean canUseIr = !whereHasSubqueryPredicates(querySpec.getWhereClauseRestrictions())
                 && !selectHasSubqueryExpressions(querySpec.getSelectClause());
         if (canUseIr) {
             return buildQuerySpecTranslationViaIr(querySpec, queryOptions, root);
@@ -340,10 +338,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * IR-path implementation of {@link #buildQuerySpecTranslation} for simple query shapes (no
-     * joins, no GROUP BY, no scalar aggregates). Builds a full driver-mqlv2 {@link com.mongodb.mqlv2.ast.Stage}
-     * chain — FROM → optional MATCH → optional SORT → optional LIMIT → FORMAT → optional DISTINCT —
-     * and serializes it in one shot via the {@link com.mongodb.mqlv2.Serializer}.
+     * IR-path implementation of {@link #buildQuerySpecTranslation} for query shapes handled by the IR path (no subquery
+     * predicates, no scalar subqueries in SELECT). Builds a full driver-mqlv2 {@link com.mongodb.mqlv2.ast.Stage} chain
+     * — FROM → optional MATCH → optional GROUP/AGG → optional HAVING → optional SORT → optional LIMIT → FORMAT →
+     * optional DISTINCT — and serializes it in one shot via the {@link com.mongodb.mqlv2.Serializer}.
      */
     private SpecTranslation buildQuerySpecTranslationViaIr(
             QuerySpec querySpec, @Nullable QueryOptions queryOptions, TableGroup root) {
@@ -352,13 +350,31 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         var stage = Mqlv2IrEmitters.translateFromStage(ntr, hasJoins);
         stage = buildJoinsStage(stage, root, querySpec, ctx);
         stage = Mqlv2IrEmitters.translateMatch(stage, querySpec, ctx);
+
+        List<@Nullable String> aggNames = null;
+        if (!querySpec.getGroupByClauseExpressions().isEmpty()) {
+            aggNames = buildAggNames(querySpec.getSelectClause());
+            var havingOnlyAggs = collectHavingOnlyAggs(querySpec.getHavingClauseRestrictions());
+            stage = Mqlv2IrEmitters.translateGroup(
+                    stage,
+                    querySpec.getGroupByClauseExpressions(),
+                    querySpec.getSelectClause(),
+                    aggNames,
+                    havingOnlyAggs,
+                    ctx);
+            stage = Mqlv2IrEmitters.translateHaving(stage, querySpec, ctx);
+        } else if (selectHasAggregates(querySpec.getSelectClause())) {
+            aggNames = buildAggNames(querySpec.getSelectClause());
+            stage = Mqlv2IrEmitters.translateScalarAgg(stage, querySpec.getSelectClause(), aggNames, ctx);
+        }
+
         stage = Mqlv2IrEmitters.translateSort(stage, querySpec, ctx);
         stage = Mqlv2IrEmitters.translateLimit(stage, querySpec, queryOptions, ctx, () -> {
             var basicIntegerType = sessionFactory.getTypeConfiguration().getBasicTypeForJavaType(Integer.class);
             limitJdbcParameter = new LimitJdbcParameter(basicIntegerType);
             parameterBinders.add(limitJdbcParameter.getParameterBinder());
         });
-        var fmt = Mqlv2IrEmitters.translateFormat(stage, querySpec.getSelectClause(), ctx);
+        var fmt = Mqlv2IrEmitters.translateFormat(stage, querySpec.getSelectClause(), aggNames, ctx);
         stage = fmt.stage();
         if (querySpec.getSelectClause().isDistinct()) {
             stage = new Stage.DistinctStage(stage);
@@ -525,12 +541,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     // ---- IR-path join translation (Phase D3) ----
 
     /**
-     * IR-path counterpart of {@link #appendJoins}: traverses the table-group-join list and builds
-     * a chain of {@link Stage} nodes ({@link Stage.UnwindComplexStage} for unnest joins,
-     * {@link Stage.JoinStage} for regular joins).
+     * IR-path counterpart of {@link #appendJoins}: traverses the table-group-join list and builds a chain of
+     * {@link Stage} nodes ({@link Stage.UnwindComplexStage} for unnest joins, {@link Stage.JoinStage} for regular
+     * joins).
      *
-     * <p>Populates {@code unnestAliasToFieldPath} (via the shared map in {@code ctx}) so that
-     * subsequent column-reference rendering resolves unnest aliases correctly.
+     * <p>Populates {@code unnestAliasToFieldPath} (via the shared map in {@code ctx}) so that subsequent
+     * column-reference rendering resolves unnest aliases correctly.
      */
     private Stage buildJoinsStage(Stage prev, TableGroup root, QuerySpec querySpec, Mqlv2TranslationContext ctx) {
         var s = prev;
@@ -538,8 +554,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             var joinedGroup = tgj.getJoinedGroup();
             var primaryRef = joinedGroup.getPrimaryTableReference();
             if (isUnnestFunctionTable(primaryRef)) {
-                var rootAlias =
-                        ((NamedTableReference) root.getPrimaryTableReference()).getIdentificationVariable();
+                var rootAlias = ((NamedTableReference) root.getPrimaryTableReference()).getIdentificationVariable();
                 s = buildUnnestJoinStage(s, tgj, (FunctionTableReference) primaryRef, querySpec, rootAlias);
             } else {
                 var joinNtr = (NamedTableReference) primaryRef;
@@ -559,12 +574,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * IR-path counterpart of {@link #appendUnwindJoin}: builds a {@link Stage.UnwindComplexStage}
-     * that explodes the array field and preserves all parent-entity columns in the unwind body.
+     * IR-path counterpart of {@link #appendUnwindJoin}: builds a {@link Stage.UnwindComplexStage} that explodes the
+     * array field and preserves all parent-entity columns in the unwind body.
      *
-     * <p>Also records the alias→array-field-path mapping in {@link #unnestAliasToFieldPath} so that
-     * subsequent column-reference rendering resolves {@code alias.column} to
-     * {@code arrayFieldPath.column}.
+     * <p>Also records the alias→array-field-path mapping in {@link #unnestAliasToFieldPath} so that subsequent
+     * column-reference rendering resolves {@code alias.column} to {@code arrayFieldPath.column}.
      */
     private Stage buildUnnestJoinStage(
             Stage prev,
@@ -611,9 +625,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Maps a Hibernate {@link SqlAstJoinType} to the driver-mqlv2 {@link JoinType}.
-     * Returns {@code null} for INNER joins because {@link Stage.JoinStage} treats a
-     * {@code null} join type as an inner join (and the Serializer omits the keyword).
+     * Maps a Hibernate {@link SqlAstJoinType} to the driver-mqlv2 {@link JoinType}. Returns {@code null} for INNER
+     * joins because {@link Stage.JoinStage} treats a {@code null} join type as an inner join (and the Serializer omits
+     * the keyword).
      */
     private static @Nullable JoinType irJoinType(SqlAstJoinType joinType) {
         return switch (joinType) {
@@ -1144,8 +1158,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
     /**
      * Returns true if the predicate tree contains any subquery-based predicate ({@link ExistsPredicate},
-     * {@link InSubQueryPredicate}, or {@link ComparisonPredicate} with an {@link Any}/{@link Every} RHS) that
-     * requires the hand-rolled path. Called by the Phase D2 guard to fall back gracefully.
+     * {@link InSubQueryPredicate}, or {@link ComparisonPredicate} with an {@link Any}/{@link Every} RHS) that requires
+     * the hand-rolled path. Called by the Phase D2 guard to fall back gracefully.
      */
     private static boolean whereHasSubqueryPredicates(@Nullable Predicate predicate) {
         if (predicate == null || predicate.isEmpty()) {
@@ -1515,9 +1529,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * allocates any JDBC parameter binders as it walks the AST) and appends the serialized text to {@code sb}.
      */
     private void appendIrExprFunction(
-            StringBuilder sb,
-            SelfRenderingFunctionSqlAstExpression<?> fn,
-            IrFunctionTranslator translator) {
+            StringBuilder sb, SelfRenderingFunctionSqlAstExpression<?> fn, IrFunctionTranslator translator) {
         Expr ir = translator.translate(fn, newContext());
         sb.append(serializer.serialize(ir));
     }

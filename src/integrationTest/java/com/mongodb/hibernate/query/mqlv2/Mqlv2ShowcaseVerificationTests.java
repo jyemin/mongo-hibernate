@@ -167,10 +167,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(soft, "from Order o where o.status is null", "from $orders | match isNullish(status) | " + fmtO);
 
             // WHERE — IS NOT NULL
-            check(
-                    soft,
-                    "from Order o where o.status is not null",
-                    "from $orders | match notNullish(status) | " + fmtO);
+            check(soft, "from Order o where o.status is not null", "from $orders | match notNullish(status) | " + fmtO);
 
             // NULL semantics — equality with null parameter (MQLv2 is same regardless of value)
             check(
@@ -281,13 +278,13 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "select o.status, count(o.id) from Order o group by o.status",
-                    "from $orders | group (status=status) (_agg0=count($->_id)) | format {status: status, _f0: _agg0}");
+                    "from $orders | group (status = status) (_agg0 = count($->_id)) | format {status: status, _f0: _agg0}");
 
             // GROUP BY — sum
             check(
                     soft,
                     "select o.status, sum(o.total) from Order o group by o.status",
-                    "from $orders | group (status=status) (_agg0=sum($->total)) | format {status: status, _f0: _agg0}");
+                    "from $orders | group (status = status) (_agg0 = sum($->total)) | format {status: status, _f0: _agg0}");
 
             // GROUP BY — multiple aggregates
             check(
@@ -295,28 +292,28 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
                     "select o.status, count(o.id), sum(o.total), min(o.total), max(o.total)"
                             + " from Order o where o.status = 'shipped' group by o.status",
                     "from $orders | match (status == \"shipped\")"
-                            + " | group (status=status) (_agg0=count($->_id), _agg1=sum($->total), _agg2=min($->total), _agg3=max($->total))"
+                            + " | group (status = status) (_agg0 = count($->_id), _agg1 = sum($->total), _agg2 = min($->total), _agg3 = max($->total))"
                             + " | format {status: status, _f0: _agg0, _f1: _agg1, _f2: _agg2, _f3: _agg3}");
 
             // GROUP BY — multiple keys
             check(
                     soft,
                     "select o.customerId, o.status, count(o.id) from Order o group by o.customerId, o.status",
-                    "from $orders | group (customerId=customerId, status=status) (_agg0=count($->_id))"
+                    "from $orders | group (customerId = customerId, status = status) (_agg0 = count($->_id))"
                             + " | format {customerId: customerId, status: status, _f0: _agg0}");
 
             // HAVING — aggregate in SELECT
             check(
                     soft,
                     "select o.status, count(o.id) from Order o group by o.status having count(o.id) > 1",
-                    "from $orders | group (status=status) (_agg0=count($->_id)) | match (_agg0 > 1)"
+                    "from $orders | group (status = status) (_agg0 = count($->_id)) | match (_agg0 > 1)"
                             + " | format {status: status, _f0: _agg0}");
 
             // HAVING — aggregate not in SELECT
             check(
                     soft,
                     "select o.status from Order o group by o.status having count(o.id) > 1",
-                    "from $orders | group (status=status) (_agg0=count($->_id)) | match (_agg0 > 1)"
+                    "from $orders | group (status = status) (_agg0 = count($->_id)) | match (_agg0 > 1)"
                             + " | format {status: status}");
 
             // EXISTS
