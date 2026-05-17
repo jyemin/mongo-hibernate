@@ -20,6 +20,7 @@ import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.mqlv2.ast.BinaryOpType;
 import com.mongodb.mqlv2.ast.Expr;
 import com.mongodb.mqlv2.ast.Value;
+import java.util.ArrayList;
 import java.util.List;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
@@ -142,6 +143,27 @@ public final class Mqlv2IrEmitters {
                         BinaryOpType.SUB,
                         translateExpression(idx, parameterIndex),
                         new Expr.ValueLit(new Value.VInt(1))));
+    }
+
+    /**
+     * Translate {@code array(e1, …, en)} / {@code array_list(...)} → {@code [e1, …, en]}.
+     *
+     * @param fn the function call AST node.
+     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
+     *     {@link #translateExpression(Expression, int[])}.
+     */
+    public static Expr translateArrayConstructor(
+            SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+        var args = fn.getArguments();
+        List<Expr> elements = new ArrayList<>(args.size());
+        for (var arg : args) {
+            if (!(arg instanceof Expression elemExpr)) {
+                throw new FeatureNotSupportedException(
+                        "Non-expression argument in " + fn.getFunctionName() + "()");
+            }
+            elements.add(translateExpression(elemExpr, parameterIndex));
+        }
+        return new Expr.ArrayConstructor(elements);
     }
 
     /**
