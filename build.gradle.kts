@@ -186,7 +186,6 @@ buildConfig {
 dependencies {
     testImplementation(libs.bundles.test.common)
     testImplementation(libs.mockito.junit.jupiter)
-    testImplementation(libs.mongo.java.driver.mqlv2)
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testCompileOnly(libs.checker.qual)
 
@@ -203,6 +202,7 @@ dependencies {
 
     api(libs.hibernate.core)
     api(libs.mongo.java.driver.sync)
+    implementation(libs.mongo.java.driver.mqlv2)
     // We need the `libs.findbugs.jsr` dependency to stop `javadoc` from emitting
     // `warning: unknown enum constant When.MAYBE`
     //   `reason: class file for javax.annotation.meta.When not found`.
