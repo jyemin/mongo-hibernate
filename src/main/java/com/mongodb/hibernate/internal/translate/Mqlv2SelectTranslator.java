@@ -658,6 +658,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         void render(StringBuilder sb, ColumnReference cr);
     }
 
+    /** Translates a {@link SelfRenderingFunctionSqlAstExpression} to an IR {@link Expr} node. */
+    @FunctionalInterface
+    private interface IrFunctionTranslator {
+        Expr translate(SelfRenderingFunctionSqlAstExpression<?> fn, int[] idx);
+    }
+
     /**
      * Returns a {@link ColumnReferenceResolver} that implements the existing outer-correlated logic: references to
      * outer-query aliases are bound to {@code $__vN} variables; all others have their qualifier stripped (inner
@@ -1404,40 +1410,51 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             return false;
         }
         var name = fn.getFunctionName();
-        var args = fn.getArguments();
         if ("array_contains".equals(name) || "array_contains_nullable".equals(name)) {
-            // TODO(phase-b): replace this pre-collection dance with a proper translation context.
-            // We must push JdbcParameter binders onto parameterBinders BEFORE the IR helper runs,
-            // so that parameterIndex values line up with the binder list positions.
-            int starting = parameterBinders.size();
-            if (args.get(0) instanceof Expression haystack) collectJdbcParametersDfs(haystack, parameterBinders);
-            if (args.get(1) instanceof Expression needle) collectJdbcParametersDfs(needle, parameterBinders);
-            int[] idx = {starting};
-            Expr ir = Mqlv2IrEmitters.translateArrayContains(fn, idx);
-            // Wrap in parens so that NegatedPredicate's "(not <inner>)" wrapping produces valid MQLv2.
-            // The Serializer emits "arr any (($ op x))" without outer parens; without this wrapping,
-            // "(not arr any (...))" is invalid — MongoDB misparses the negation scope.
-            // D3a paren drift (outer match parens) is intentionally preserved here until Phase C
-            // folds the NegatedPredicate arm into IR.
-            sb.append("(").append(serializer.serialize(ir)).append(")");
-            return true;
+            // TODO(phase-b): replace the pre-collection dance in emitIrPredicateFunction with a proper
+            // translation context.
+            return emitIrPredicateFunction(sb, fn, Mqlv2IrEmitters::translateArrayContains);
         }
         if ("array_intersects".equals(name) || "array_intersects_nullable".equals(name)) {
-            // TODO(phase-b): replace this pre-collection dance with a proper translation context.
-            // We must push JdbcParameter binders onto parameterBinders BEFORE the IR helper runs,
-            // so that parameterIndex values line up with the binder list positions.
-            int starting = parameterBinders.size();
-            if (args.get(0) instanceof Expression aE2) collectJdbcParametersDfs(aE2, parameterBinders);
-            if (args.get(1) instanceof Expression bE2) collectJdbcParametersDfs(bE2, parameterBinders);
-            int[] idx = {starting};
-            Expr ir = Mqlv2IrEmitters.translateArrayIntersects(fn, idx);
-            // Wrap in parens so that NegatedPredicate's "(not <inner>)" wrapping produces valid MQLv2.
-            // D3a paren drift (outer match parens) is intentionally preserved here until Phase C
-            // folds the NegatedPredicate arm into IR.
-            sb.append("(").append(serializer.serialize(ir)).append(")");
-            return true;
+            // TODO(phase-b): replace the pre-collection dance in emitIrPredicateFunction with a proper
+            // translation context.
+            return emitIrPredicateFunction(sb, fn, Mqlv2IrEmitters::translateArrayIntersects);
         }
         return false;
+    }
+
+    /**
+     * Appends the serialized IR text for a no-parameter-consuming function expression. Constructs an IR node via
+     * {@code translator}, asserts that no new JDBC parameter binders were added (sanity check), and appends the
+     * serialized text to {@code sb}.
+     */
+    private void appendIrExprFunction(
+            StringBuilder sb,
+            SelfRenderingFunctionSqlAstExpression<?> fn,
+            IrFunctionTranslator translator) {
+        int[] idx = {parameterBinders.size()};
+        Expr ir = translator.translate(fn, idx);
+        assertParameterIndexUnchanged(idx[0]);
+        sb.append(serializer.serialize(ir));
+    }
+
+    /**
+     * Emits a boolean-valued IR predicate function, pre-collecting JDBC parameters from all arguments, wrapping the
+     * serialized result in outer parens (required for NegatedPredicate compatibility; see D3a), and returning
+     * {@code true}.
+     */
+    private boolean emitIrPredicateFunction(
+            StringBuilder sb,
+            SelfRenderingFunctionSqlAstExpression<?> fn,
+            IrFunctionTranslator translator) {
+        int starting = parameterBinders.size();
+        for (var arg : fn.getArguments()) {
+            if (arg instanceof Expression e) collectJdbcParametersDfs(e, parameterBinders);
+        }
+        int[] idx = {starting};
+        Expr ir = translator.translate(fn, idx);
+        sb.append("(").append(serializer.serialize(ir)).append(")");
+        return true;
     }
 
     private String appendExprTextToString(Expression expression) {
@@ -1493,20 +1510,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 appendExprText(sb, dateExpr);
                 sb.append(")");
             } else if ("array_length".equals(fn.getFunctionName())) {
-                int[] idx = {parameterBinders.size()};
-                Expr ir = Mqlv2IrEmitters.translateArrayLength(fn, idx);
-                assertParameterIndexUnchanged(idx[0]);
-                sb.append(serializer.serialize(ir));
+                appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateArrayLength);
             } else if ("array_get".equals(fn.getFunctionName())) {
-                int[] idx = {parameterBinders.size()};
-                Expr ir = Mqlv2IrEmitters.translateArrayGet(fn, idx);
-                assertParameterIndexUnchanged(idx[0]);
-                sb.append(serializer.serialize(ir));
+                appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateArrayGet);
             } else if ("array".equals(fn.getFunctionName()) || "array_list".equals(fn.getFunctionName())) {
-                int[] idx = {parameterBinders.size()};
-                Expr ir = Mqlv2IrEmitters.translateArrayConstructor(fn, idx);
-                assertParameterIndexUnchanged(idx[0]);
-                sb.append(serializer.serialize(ir));
+                appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateArrayConstructor);
             } else {
                 throw new FeatureNotSupportedException("Unsupported function: " + fn.getFunctionName() + "()");
             }

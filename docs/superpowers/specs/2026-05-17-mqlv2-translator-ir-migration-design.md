@@ -191,7 +191,28 @@ The existing `LimitJdbcParameter` inner class (line 2059) and the limit-paramete
 
 **Migration order** — leaf-first, working outward from the most isolated features:
 
-- **Phase A (warm-up)** — port the Group-A function intercepts (`array_length`, `array_get`, `array`, `array_contains`, `array_intersects`). Each is small, recently familiar, and self-contained. Net delta should be tiny — these are the cases where the IR pays off most obviously. Land each as one commit.
+- **Phase A (complete, 2026-05-17)** — Group-A function emissions ported to driver-mqlv2
+  AST + Serializer. Foundation `Mqlv2IrEmitters.translateExpression` covers literals,
+  column references, JDBC parameters, arithmetic, and recursive routing to migrated
+  function helpers. Five function emissions migrated:
+  - `array_length` / `cardinality`
+  - `array_get` (absorbed D2 paren drift: `[(a) OP b]` → `[(a OP b)]`)
+  - `array` / `array_list` constructor
+  - `array_contains` / `_nullable` (absorbed D3b inner-binop double parens)
+  - `array_intersects` / `_overlaps` / `_nullable` (same D3b absorption)
+
+  D3a (outer match parens) preserved through Phase A because the existing
+  `NegatedPredicate` arm in `appendPredicateText` concatenates `(not <inner>)` —
+  inner parens around the IR-emitted predicate are load-bearing. Phase C will
+  fold `NegatedPredicate` into IR and absorb D3a.
+
+  JdbcParameter indexing handled via a `collectJdbcParametersDfs` pre-walk plus
+  a mutable `int[]` cursor — explicit and obvious in code but awkward; Phase B's
+  translation context will replace it.
+
+  Also resolved during the probe: D1 (quoted document keys) via the upstream
+  `serDocKey` tweak in driver-mqlv2 `892852d6fa`. New upstream `Serializer.serialize(Expr)`
+  in driver-mqlv2 `79ce233bca` exposes the public method for standalone expression rendering.
 - **Phase B (core expressions)** — port `translateExpression`'s remaining arms: `ColumnReference` (with qualifier rules), `QueryLiteral`, `JdbcParameter`, `BinaryArithmeticExpression`, `SqmParameterInterpretation`, the `extract` and aggregate function arms. After this phase, `appendExprText` is fully replaced.
 - **Phase C (predicates)** — port `translatePredicate`: `ComparisonPredicate`, `Junction`, `GroupedPredicate`, `NegatedPredicate`, `NullnessPredicate`, `BooleanExpressionPredicate`, `InListPredicate`, `InSubQueryPredicate`, `ExistsPredicate`, `SelfRenderingPredicate`. The unnest-EXISTS and IN-subquery branches are the most intricate; do them last.
 - **Phase D (stages)** — port the `appendMatch` / `appendSort` / `appendLimit` / `appendGroup` / `appendHaving` / `appendFormat` / `appendJoin` / `appendUnnestJoin` methods. By this point, all sub-pieces (expressions, predicates) return AST nodes; stage methods are mostly assembly.
