@@ -1423,17 +1423,18 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             return true;
         }
         if ("array_intersects".equals(name) || "array_intersects_nullable".equals(name)) {
-            // _nullable uses `is` so a null element in either array can match;
-            // non-nullable uses `==` per Hibernate's null-propagation contract.
-            var eqOp = name.endsWith("_nullable") ? "is" : "==";
-            if (!(args.get(0) instanceof Expression a) || !(args.get(1) instanceof Expression b)) {
-                throw new FeatureNotSupportedException("Non-expression argument in " + name + "()");
-            }
-            sb.append("(");
-            appendExprText(sb, a);
-            sb.append(" any (let $__x = $ in ");
-            appendExprText(sb, b);
-            sb.append(" any ($ ").append(eqOp).append(" $__x)))");
+            // TODO(phase-b): replace this pre-collection dance with a proper translation context.
+            // We must push JdbcParameter binders onto parameterBinders BEFORE the IR helper runs,
+            // so that parameterIndex values line up with the binder list positions.
+            int starting = parameterBinders.size();
+            if (args.get(0) instanceof Expression aE2) collectJdbcParametersDfs(aE2, parameterBinders);
+            if (args.get(1) instanceof Expression bE2) collectJdbcParametersDfs(bE2, parameterBinders);
+            int[] idx = {starting};
+            Expr ir = Mqlv2IrEmitters.translateArrayIntersects(fn, idx);
+            // Wrap in parens so that NegatedPredicate's "(not <inner>)" wrapping produces valid MQLv2.
+            // D3a paren drift (outer match parens) is intentionally preserved here until Phase C
+            // folds the NegatedPredicate arm into IR.
+            sb.append("(").append(serializer.serialize(ir)).append(")");
             return true;
         }
         return false;

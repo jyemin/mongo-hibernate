@@ -931,13 +931,13 @@ The `_nullable` variant uses `is` (structural equality) instead of `==`, allowin
 ```
 HQL:   from Inventory i where array_intersects(i.scores, array(30, 99))
 
-MQLv2: from $inventory | match (scores any (let $__x = $ in [30, 99] any ($ == $__x))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+MQLv2: from $inventory | match (scores any (let $__x = $ in [30, 99] any (($ == $__x)))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
 ```
 
 ```
 HQL:   from Inventory i where array_overlaps(i.scores, array(10, 40))
 
-MQLv2: from $inventory | match (scores any (let $__x = $ in [10, 40] any ($ == $__x))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+MQLv2: from $inventory | match (scores any (let $__x = $ in [10, 40] any (($ == $__x)))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
 ```
 
 `array_overlaps` is an alias for `array_intersects`; both produce identical MQLv2 output. The translator binds
@@ -950,7 +950,7 @@ each outer element into `$__x` via `let` so the inner `any` can reference it wit
 ```
 HQL:   from Inventory i where array_intersects_nullable(i.boxedScores, :needles)   -- :needles bound to Integer[] {null}
 
-MQLv2: from $inventory | match (boxedScores any (let $__x = $ in $p0 any ($ is $__x))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+MQLv2: from $inventory | match (boxedScores any (let $__x = $ in $p0 any (($ is $__x)))) | format {_id: _id, boxedScores: boxedScores, scores: scores}
 ```
 
 The `_nullable` variant uses `is` for the inner comparison, enabling matching of `null` elements in either array.

@@ -144,7 +144,7 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs"
-                        + " | match (scores any (let $__x = $ in [30, 99] any ($ == $__x)))"
+                        + " | match (scores any (let $__x = $ in [30, 99] any (($ == $__x))))"
                         + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
         assertThat(rows).extracting(d -> d.id).containsExactlyInAnyOrder(1, 2);
     }
@@ -157,7 +157,7 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs"
-                        + " | match (scores any (let $__x = $ in [10, 40] any ($ == $__x)))"
+                        + " | match (scores any (let $__x = $ in [10, 40] any (($ == $__x))))"
                         + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
         assertThat(rows).extracting(d -> d.id).containsExactlyInAnyOrder(1, 2);
     }
@@ -170,7 +170,7 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
         var rows = sessionFactoryScope.fromSession(session -> session.createSelectionQuery(hql, ArrayDoc.class)
                 .setParameter("needles", new Integer[] {null})
                 .getResultList());
-        assertThat(capturedPipeline()).contains("any (let $__x = $ in $p0 any ($ is $__x))");
+        assertThat(capturedPipeline()).contains("any (let $__x = $ in $p0 any (($ is $__x)))");
         assertThat(rows).extracting(d -> d.id).containsExactly(5);
     }
 

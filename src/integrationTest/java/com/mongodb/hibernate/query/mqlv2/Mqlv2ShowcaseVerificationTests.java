@@ -505,18 +505,18 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "from Inventory i where array_intersects(i.scores, array(30, 99))",
-                    "from $inventory | match (scores any (let $__x = $ in [30, 99] any ($ == $__x))) | " + fmtInv);
+                    "from $inventory | match (scores any (let $__x = $ in [30, 99] any (($ == $__x)))) | " + fmtInv);
 
             check(
                     soft,
                     "from Inventory i where array_overlaps(i.scores, array(10, 40))",
-                    "from $inventory | match (scores any (let $__x = $ in [10, 40] any ($ == $__x))) | " + fmtInv);
+                    "from $inventory | match (scores any (let $__x = $ in [10, 40] any (($ == $__x)))) | " + fmtInv);
 
             check(
                     soft,
                     "from Inventory i where array_intersects_nullable(i.boxedScores, :needles)",
                     q -> q.setParameter("needles", new Integer[] {null}),
-                    "from $inventory | match (boxedScores any (let $__x = $ in $p0 any ($ is $__x))) | " + fmtInv);
+                    "from $inventory | match (boxedScores any (let $__x = $ in $p0 any (($ is $__x)))) | " + fmtInv);
         });
     }
 

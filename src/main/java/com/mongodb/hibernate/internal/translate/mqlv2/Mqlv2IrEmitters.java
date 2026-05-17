@@ -22,6 +22,7 @@ import com.mongodb.mqlv2.ast.Expr;
 import com.mongodb.mqlv2.ast.Value;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
@@ -85,6 +86,14 @@ public final class Mqlv2IrEmitters {
                     translateArithmeticOp(bae.getOperator()),
                     translateExpression(bae.getLeftHandOperand(), parameterIndex),
                     translateExpression(bae.getRightHandOperand(), parameterIndex));
+        }
+        if (e instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
+            var fnName = fn.getFunctionName();
+            if ("array".equals(fnName) || "array_list".equals(fnName)) {
+                return translateArrayConstructor(fn, parameterIndex);
+            }
+            throw new FeatureNotSupportedException(
+                    "Unsupported function in IR translation: " + fnName);
         }
         throw new FeatureNotSupportedException(
                 "Unsupported expression in IR translation: " + e.getClass().getSimpleName());
@@ -179,6 +188,40 @@ public final class Mqlv2IrEmitters {
                     "Non-expression argument in " + fn.getFunctionName() + "()");
         }
         return new Expr.FunctionCall("count", List.of(translateExpression(arg, parameterIndex)));
+    }
+
+    /**
+     * Translate {@code array_intersects(a, b)} family (including {@code array_overlaps} aliases collapsed to canonical
+     * name; {@code _nullable} variants too) to a nested MQLv2 {@code any} expression with a {@code let} binding.
+     *
+     * <ul>
+     *   <li>{@code array_intersects(a, b)} → {@code a any (let $__x = $ in b any ($ == $__x))} (non-nullable uses
+     *       {@code ==})
+     *   <li>{@code array_intersects_nullable(a, b)} → {@code a any (let $__x = $ in b any ($ is $__x))} (nullable uses
+     *       {@code is})
+     * </ul>
+     *
+     * <p>D3b paren drift: the Serializer double-wraps the inner {@code any} body binop, producing
+     * {@code any (($ op $__x))} vs. the old {@code any ($ op $__x)}.
+     *
+     * @param fn the function call AST node.
+     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
+     *     {@link #translateExpression(Expression, int[])}.
+     */
+    public static Expr translateArrayIntersects(SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+        var name = fn.getFunctionName();
+        var args = fn.getArguments();
+        if (!(args.get(0) instanceof Expression aE) || !(args.get(1) instanceof Expression bE)) {
+            throw new FeatureNotSupportedException("Non-expression argument in " + name + "()");
+        }
+        BinaryOpType eqOp = name.endsWith("_nullable") ? BinaryOpType.IS : BinaryOpType.EQ;
+        return new Expr.Any(
+                translateExpression(aE, parameterIndex),
+                new Expr.LetExpr(
+                        List.of(Map.entry("__x", (Expr) new Expr.CurrentValue())),
+                        new Expr.Any(
+                                translateExpression(bE, parameterIndex),
+                                new Expr.BinaryOp(eqOp, new Expr.CurrentValue(), new Expr.VarRef("__x")))));
     }
 
     /**
