@@ -19,6 +19,7 @@ package com.mongodb.hibernate.internal.translate.mqlv2;
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.mqlv2.ast.BinaryOpType;
 import com.mongodb.mqlv2.ast.Expr;
+import com.mongodb.mqlv2.ast.UnaryOpType;
 import com.mongodb.mqlv2.ast.Value;
 import java.util.ArrayList;
 import java.util.List;
@@ -43,8 +44,10 @@ import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
 import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
 import org.hibernate.sql.ast.tree.predicate.GroupedPredicate;
 import org.hibernate.sql.ast.tree.predicate.Junction;
+import org.hibernate.sql.ast.tree.predicate.NegatedPredicate;
 import org.hibernate.sql.ast.tree.predicate.NullnessPredicate;
 import org.hibernate.sql.ast.tree.predicate.Predicate;
+import org.hibernate.sql.ast.tree.predicate.SelfRenderingPredicate;
 
 /**
  * Translates Hibernate SQL AST {@link Expression} nodes into driver-mqlv2 {@link Expr} nodes. Currently scoped to the
@@ -397,13 +400,16 @@ public final class Mqlv2IrEmitters {
 
     /**
      * Convert a Hibernate {@link Predicate} to a driver-mqlv2 {@link Expr}. Phase C scope: leaf-shape predicates
-     * (Comparison, Nullness, BooleanExpression, Grouped) and conjunctions/disjunctions (Junction). Negated, InList,
-     * InSubQuery, Exists deferred to subsequent tasks.
+     * (Comparison, Nullness, BooleanExpression, Grouped, SelfRendering array functions), conjunctions/disjunctions
+     * (Junction), and negation (NegatedPredicate). InList, InSubQuery, Exists deferred to subsequent tasks.
      *
      * <p>Junction with N predicates builds a left-associative {@link Expr.BinaryOp} chain: {@code (p1 op p2 op p3)}
      * becomes {@code ((p1 op p2) op p3)}. The Serializer adds inner parentheses around each binary sub-expression,
      * producing {@code ((p1 op p2) op p3)} — identical output to the old hand-rolled emission for 2-predicate cases;
      * 3+ predicate cases get extra nesting (D6 drift).
+     *
+     * <p>NegatedPredicate emits {@code UnaryOp(NOT, inner)}. The Serializer's UnaryOp branch wraps an {@code Any}
+     * argument in extra parens, preserving correct precedence for negated array-function predicates.
      *
      * @param p the Hibernate predicate to translate.
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
@@ -426,6 +432,9 @@ public final class Mqlv2IrEmitters {
             }
             return acc;
         }
+        if (p instanceof NegatedPredicate np) {
+            return new Expr.UnaryOp(UnaryOpType.NOT, translatePredicate(np.getPredicate(), ctx));
+        }
         if (p instanceof ComparisonPredicate cp) {
             return new Expr.BinaryOp(
                     translateComparisonOp(cp.getOperator()),
@@ -441,12 +450,20 @@ public final class Mqlv2IrEmitters {
             return new Expr.FunctionCall(fn, List.of(inner));
         }
         if (p instanceof BooleanExpressionPredicate bp) {
-            // Reaches here only when the wrapped expression is NOT an array-function predicate
-            // (that case is handled by tryAppendArrayPredicateFunction before this point).
             return new Expr.BinaryOp(
                     BinaryOpType.EQ,
                     translateExpression(bp.getExpression(), ctx),
                     new Expr.ValueLit(new Value.VBool(!bp.isNegated())));
+        }
+        if (p instanceof SelfRenderingPredicate srp
+                && srp.getSelfRenderingExpression() instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
+            var name = fn.getFunctionName();
+            if ("array_contains".equals(name) || "array_contains_nullable".equals(name)) {
+                return translateArrayContains(fn, ctx);
+            }
+            if ("array_intersects".equals(name) || "array_intersects_nullable".equals(name)) {
+                return translateArrayIntersects(fn, ctx);
+            }
         }
         throw new FeatureNotSupportedException(
                 "Unsupported predicate in IR translation: " + p.getClass().getSimpleName());
