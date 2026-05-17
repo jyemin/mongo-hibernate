@@ -18,19 +18,11 @@ package com.mongodb.hibernate.internal.dialect.function.array;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import java.util.List;
-import org.hibernate.dialect.function.array.ArrayArgumentValidator;
-import org.hibernate.dialect.function.array.ElementViaArrayArgumentReturnTypeResolver;
+import org.hibernate.dialect.function.array.ArrayGetUnnestFunction;
 import org.hibernate.metamodel.model.domain.ReturnableType;
-import org.hibernate.query.sqm.function.AbstractSqmSelfRenderingFunctionDescriptor;
-import org.hibernate.query.sqm.produce.function.ArgumentTypesValidator;
-import org.hibernate.query.sqm.produce.function.StandardArgumentsValidators;
-import org.hibernate.query.sqm.produce.function.StandardFunctionArgumentTypeResolvers;
 import org.hibernate.sql.ast.SqlAstTranslator;
 import org.hibernate.sql.ast.spi.SqlAppender;
 import org.hibernate.sql.ast.tree.SqlAstNode;
-
-import static org.hibernate.query.sqm.produce.function.FunctionParameterType.ANY;
-import static org.hibernate.query.sqm.produce.function.FunctionParameterType.INTEGER;
 
 /**
  * MQLv2-only descriptor for {@code array_get(arr, i)}. Intercepted by the v2 translator
@@ -38,19 +30,13 @@ import static org.hibernate.query.sqm.produce.function.FunctionParameterType.INT
  * {@code render()} is ever invoked (it is not under v2 because the translator intercepts
  * the function by name), it throws.
  *
+ * <p>Extends Hibernate's {@link ArrayGetUnnestFunction} solely to inherit its
+ * argument-validator and return-type-resolver wiring; the parent's SQL-text-emitting
+ * {@code render()} is not reachable under v2.
+ *
  * @hidden
  */
-public final class Mqlv2OnlyArrayGetFunction extends AbstractSqmSelfRenderingFunctionDescriptor {
-    public Mqlv2OnlyArrayGetFunction() {
-        super(
-                "array_get",
-                StandardArgumentsValidators.composite(
-                        ArrayArgumentValidator.DEFAULT_INSTANCE,
-                        new ArgumentTypesValidator(null, ANY, INTEGER)),
-                ElementViaArrayArgumentReturnTypeResolver.DEFAULT_INSTANCE,
-                StandardFunctionArgumentTypeResolvers.invariant(ANY, INTEGER));
-    }
-
+public final class Mqlv2OnlyArrayGetFunction extends ArrayGetUnnestFunction {
     @Override
     public void render(
             SqlAppender sqlAppender,
