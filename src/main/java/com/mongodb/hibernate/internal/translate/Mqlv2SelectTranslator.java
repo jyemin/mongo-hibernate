@@ -1415,14 +1415,18 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         return sb.toString();
     }
 
-    private void appendExprText(StringBuilder sb, Expression expression) {
-        if (expression instanceof BasicValuedPathInterpretation<?>
+    private static boolean isFoundationExpression(Expression expression) {
+        return expression instanceof BasicValuedPathInterpretation<?>
                 || expression instanceof ColumnReference
                 || expression instanceof QueryLiteral<?>
                 || expression instanceof UnparsedNumericLiteral<?>
                 || expression instanceof SqmParameterInterpretation
                 || expression instanceof JdbcParameter
-                || expression instanceof BinaryArithmeticExpression) {
+                || expression instanceof BinaryArithmeticExpression;
+    }
+
+    private void appendExprText(StringBuilder sb, Expression expression) {
+        if (isFoundationExpression(expression)) {
             Expr ir = Mqlv2IrEmitters.translateExpression(expression, newContext());
             sb.append(serializer.serialize(ir));
         } else if (expression instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {

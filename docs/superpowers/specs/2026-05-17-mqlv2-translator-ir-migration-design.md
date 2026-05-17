@@ -213,7 +213,18 @@ The existing `LimitJdbcParameter` inner class (line 2059) and the limit-paramete
   Also resolved during the probe: D1 (quoted document keys) via the upstream
   `serDocKey` tweak in driver-mqlv2 `892852d6fa`. New upstream `Serializer.serialize(Expr)`
   in driver-mqlv2 `79ce233bca` exposes the public method for standalone expression rendering.
-- **Phase B (core expressions)** — port `translateExpression`'s remaining arms: `ColumnReference` (with qualifier rules), `QueryLiteral`, `JdbcParameter`, `BinaryArithmeticExpression`, `SqmParameterInterpretation`, the `extract` and aggregate function arms. After this phase, `appendExprText` is fully replaced.
+- **Phase B (complete, 2026-05-17)** — `Mqlv2TranslationContext` introduced (holds
+  parameterBinders + qualifier rules); replaces Phase A's `int[] parameterIndex` cursor.
+  All leaf cases in `appendExprText` (BasicValuedPathInterpretation, ColumnReference with
+  qualifier rules, QueryLiteral, UnparsedNumericLiteral, SqmParameterInterpretation,
+  JdbcParameter, BinaryArithmeticExpression) now route through
+  `Mqlv2IrEmitters.translateExpression`. `extract()` and aggregate-function references
+  migrated. Dead helpers removed: `appendLiteralText`, `arithmeticOpText`,
+  `collectJdbcParametersDfs`, `assertParameterIndexUnchanged`. `appendExprText` reduced
+  to a thin dispatcher: leaf cases delegate to IR via `isFoundationExpression` predicate;
+  only the function-name arm and SelectStatement arm remain hand-rolled. SelectStatement
+  (scalar subquery) deferred to Phase D — its translation cross-cuts the
+  pipeline-translation machinery.
 - **Phase C (predicates)** — port `translatePredicate`: `ComparisonPredicate`, `Junction`, `GroupedPredicate`, `NegatedPredicate`, `NullnessPredicate`, `BooleanExpressionPredicate`, `InListPredicate`, `InSubQueryPredicate`, `ExistsPredicate`, `SelfRenderingPredicate`. The unnest-EXISTS and IN-subquery branches are the most intricate; do them last.
 - **Phase D (stages)** — port the `appendMatch` / `appendSort` / `appendLimit` / `appendGroup` / `appendHaving` / `appendFormat` / `appendJoin` / `appendUnnestJoin` methods. By this point, all sub-pieces (expressions, predicates) return AST nodes; stage methods are mostly assembly.
 - **Phase E (cleanup)** — delete the `StringBuilder sb` parameter from any helpers that still have it; remove the old `appendX` methods; collapse to the new top-level `translateQuerySpec` flow.
