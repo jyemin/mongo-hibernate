@@ -22,6 +22,7 @@ import static org.hibernate.sql.exec.spi.JdbcLockStrategy.NONE;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters;
+import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2TranslationContext;
 import com.mongodb.mqlv2.Serializer;
 import com.mongodb.mqlv2.ast.Expr;
 import java.sql.PreparedStatement;
@@ -661,7 +662,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     /** Translates a {@link SelfRenderingFunctionSqlAstExpression} to an IR {@link Expr} node. */
     @FunctionalInterface
     private interface IrFunctionTranslator {
-        Expr translate(SelfRenderingFunctionSqlAstExpression<?> fn, int[] idx);
+        Expr translate(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx);
     }
 
     /**
@@ -835,43 +836,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         return dotIdx >= 0 ? qualifiedKey.substring(dotIdx + 1) : qualifiedKey;
     }
 
-    /**
-     * Phase A invariant: when an IR translation finishes, its {@code parameterIndex} cursor should match
-     * {@link #parameterBinders} {@code size()} — i.e., no parameters were consumed by the IR helper that
-     * weren't also pushed onto the binder list. Group-A function arguments rarely contain JDBC parameters
-     * at this position; predicates with parameter needles are handled via {@code tryAppendArrayPredicateFunction}
-     * which does its own parameter-binder pre-collection (Tasks 6/7).
-     */
-    private void assertParameterIndexUnchanged(int newIdx) {
-        if (newIdx != parameterBinders.size()) {
-            throw new IllegalStateException(
-                    "IR translation consumed parameters not yet appended to parameterBinders: "
-                            + "expected size=" + parameterBinders.size() + ", got idx=" + newIdx);
-        }
-    }
-
-    /**
-     * DFS-collect {@link JdbcParameter} instances under {@code e} into {@code out}, in left-to-right order.
-     * Used by IR-emitting predicate arms (Tasks 6/7) to pre-allocate parameter binder indices before the
-     * IR helper runs. Phase B will replace this with a proper translation context that allocates indices
-     * as it walks.
-     */
-    private static void collectJdbcParametersDfs(Expression e, List<JdbcParameterBinder> out) {
-        if (e instanceof JdbcParameter jp) {
-            out.add(jp.getParameterBinder());
-        } else if (e instanceof BasicValuedPathInterpretation<?> bvpi) {
-            collectJdbcParametersDfs(bvpi.getColumnReference(), out);
-        } else if (e instanceof SqmParameterInterpretation spi) {
-            collectJdbcParametersDfs(spi.getResolvedExpression(), out);
-        } else if (e instanceof BinaryArithmeticExpression bae) {
-            collectJdbcParametersDfs(bae.getLeftHandOperand(), out);
-            collectJdbcParametersDfs(bae.getRightHandOperand(), out);
-        } else if (e instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
-            for (var arg : fn.getArguments()) {
-                if (arg instanceof Expression sub) collectJdbcParametersDfs(sub, out);
-            }
-        }
-        // Other expression types (literals, column refs, …): no nested parameters to collect.
+    private Mqlv2TranslationContext newContext() {
+        return new Mqlv2TranslationContext(parameterBinders, unnestAliasToFieldPath, hasJoins);
     }
 
     private static Set<String> collectOuterQualifiers(QuerySpec outerSpec) {
@@ -1411,48 +1377,36 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         }
         var name = fn.getFunctionName();
         if ("array_contains".equals(name) || "array_contains_nullable".equals(name)) {
-            // TODO(phase-b): replace the pre-collection dance in emitIrPredicateFunction with a proper
-            // translation context.
             return emitIrPredicateFunction(sb, fn, Mqlv2IrEmitters::translateArrayContains);
         }
         if ("array_intersects".equals(name) || "array_intersects_nullable".equals(name)) {
-            // TODO(phase-b): replace the pre-collection dance in emitIrPredicateFunction with a proper
-            // translation context.
             return emitIrPredicateFunction(sb, fn, Mqlv2IrEmitters::translateArrayIntersects);
         }
         return false;
     }
 
     /**
-     * Appends the serialized IR text for a no-parameter-consuming function expression. Constructs an IR node via
-     * {@code translator}, asserts that no new JDBC parameter binders were added (sanity check), and appends the
-     * serialized text to {@code sb}.
+     * Appends the serialized IR text for a function expression. Constructs an IR node via {@code translator} (which
+     * allocates any JDBC parameter binders as it walks the AST) and appends the serialized text to {@code sb}.
      */
     private void appendIrExprFunction(
             StringBuilder sb,
             SelfRenderingFunctionSqlAstExpression<?> fn,
             IrFunctionTranslator translator) {
-        int[] idx = {parameterBinders.size()};
-        Expr ir = translator.translate(fn, idx);
-        assertParameterIndexUnchanged(idx[0]);
+        Expr ir = translator.translate(fn, newContext());
         sb.append(serializer.serialize(ir));
     }
 
     /**
-     * Emits a boolean-valued IR predicate function, pre-collecting JDBC parameters from all arguments, wrapping the
-     * serialized result in outer parens (required for NegatedPredicate compatibility; see D3a), and returning
-     * {@code true}.
+     * Emits a boolean-valued IR predicate function, wrapping the serialized result in outer parens (required for
+     * NegatedPredicate compatibility; see D3a), and returning {@code true}. Parameter binders are allocated
+     * in DFS order naturally as the IR helper walks the AST.
      */
     private boolean emitIrPredicateFunction(
             StringBuilder sb,
             SelfRenderingFunctionSqlAstExpression<?> fn,
             IrFunctionTranslator translator) {
-        int starting = parameterBinders.size();
-        for (var arg : fn.getArguments()) {
-            if (arg instanceof Expression e) collectJdbcParametersDfs(e, parameterBinders);
-        }
-        int[] idx = {starting};
-        Expr ir = translator.translate(fn, idx);
+        Expr ir = translator.translate(fn, newContext());
         sb.append("(").append(serializer.serialize(ir)).append(")");
         return true;
     }

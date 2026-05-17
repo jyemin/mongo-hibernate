@@ -39,9 +39,8 @@ import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
  * cases used by Group-A array function arguments (literals, column references, JDBC parameters, arithmetic). Extended
  * in subsequent migration phases.
  *
- * <p>Stateless on purpose: when the translator's qualifier rules (joins, unnest aliases) need to participate in
- * column-reference rendering, they will arrive as method parameters or via a small context object — never as instance
- * state on this class.
+ * <p>Stateless on purpose: qualifier rules (joins, unnest aliases) are carried by the {@link Mqlv2TranslationContext}
+ * passed to each method.
  *
  * @hidden
  */
@@ -55,14 +54,13 @@ public final class Mqlv2IrEmitters {
      * descriptors validate argument types).
      *
      * @param e the Hibernate expression to translate.
-     * @param parameterIndex single-element mutable array carrying the next {@code $pN} index for {@link JdbcParameter}
-     *     encounters. Caller initializes to the count of already-bound parameters; the helper advances it by one per
-     *     parameter seen.
+     * @param ctx translation context carrying the parameter binder list and qualifier rules; {@link JdbcParameter}
+     *     nodes allocate an index via {@link Mqlv2TranslationContext#allocateParameter}.
      * @return the equivalent driver-mqlv2 {@link Expr} subtree.
      */
-    public static Expr translateExpression(Expression e, int[] parameterIndex) {
+    public static Expr translateExpression(Expression e, Mqlv2TranslationContext ctx) {
         if (e instanceof BasicValuedPathInterpretation<?> bvpi) {
-            return translateExpression(bvpi.getColumnReference(), parameterIndex);
+            return translateExpression(bvpi.getColumnReference(), ctx);
         }
         if (e instanceof ColumnReference cr) {
             // Phase A scope: simple column references (no joins, no unnest aliases). Qualifier
@@ -76,21 +74,21 @@ public final class Mqlv2IrEmitters {
             return new Expr.ValueLit(translateLiteralValue(unl.getLiteralValue()));
         }
         if (e instanceof SqmParameterInterpretation spi) {
-            return translateExpression(spi.getResolvedExpression(), parameterIndex);
+            return translateExpression(spi.getResolvedExpression(), ctx);
         }
-        if (e instanceof JdbcParameter) {
-            return new Expr.VarRef("p" + parameterIndex[0]++);
+        if (e instanceof JdbcParameter jp) {
+            return new Expr.VarRef("p" + ctx.allocateParameter(jp.getParameterBinder()));
         }
         if (e instanceof BinaryArithmeticExpression bae) {
             return new Expr.BinaryOp(
                     translateArithmeticOp(bae.getOperator()),
-                    translateExpression(bae.getLeftHandOperand(), parameterIndex),
-                    translateExpression(bae.getRightHandOperand(), parameterIndex));
+                    translateExpression(bae.getLeftHandOperand(), ctx),
+                    translateExpression(bae.getRightHandOperand(), ctx));
         }
         if (e instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
             var fnName = fn.getFunctionName();
             if ("array".equals(fnName) || "array_list".equals(fnName)) {
-                return translateArrayConstructor(fn, parameterIndex);
+                return translateArrayConstructor(fn, ctx);
             }
             throw new FeatureNotSupportedException(
                     "Unsupported function in IR translation: " + fnName);
@@ -137,20 +135,19 @@ public final class Mqlv2IrEmitters {
      * {@code arr[(i - 1)]} form (D2 paren drift vs. the legacy hand-rolled {@code arr[(i) - 1]}).
      *
      * @param fn the function call AST node.
-     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
-     *     {@link #translateExpression(Expression, int[])}.
+     * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateArrayGet(SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+    public static Expr translateArrayGet(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var args = fn.getArguments();
         if (!(args.get(0) instanceof Expression arr) || !(args.get(1) instanceof Expression idx)) {
             throw new FeatureNotSupportedException(
                     "Non-expression argument in " + fn.getFunctionName() + "()");
         }
         return new Expr.ArrayIndex(
-                translateExpression(arr, parameterIndex),
+                translateExpression(arr, ctx),
                 new Expr.BinaryOp(
                         BinaryOpType.SUB,
-                        translateExpression(idx, parameterIndex),
+                        translateExpression(idx, ctx),
                         new Expr.ValueLit(new Value.VInt(1))));
     }
 
@@ -158,11 +155,10 @@ public final class Mqlv2IrEmitters {
      * Translate {@code array(e1, …, en)} / {@code array_list(...)} → {@code [e1, …, en]}.
      *
      * @param fn the function call AST node.
-     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
-     *     {@link #translateExpression(Expression, int[])}.
+     * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
     public static Expr translateArrayConstructor(
-            SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+            SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var args = fn.getArguments();
         List<Expr> elements = new ArrayList<>(args.size());
         for (var arg : args) {
@@ -170,7 +166,7 @@ public final class Mqlv2IrEmitters {
                 throw new FeatureNotSupportedException(
                         "Non-expression argument in " + fn.getFunctionName() + "()");
             }
-            elements.add(translateExpression(elemExpr, parameterIndex));
+            elements.add(translateExpression(elemExpr, ctx));
         }
         return new Expr.ArrayConstructor(elements);
     }
@@ -179,15 +175,14 @@ public final class Mqlv2IrEmitters {
      * Translate {@code array_length(arr)} / {@code cardinality(arr)} → {@code count(arr)}.
      *
      * @param fn the function call AST node.
-     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
-     *     {@link #translateExpression(Expression, int[])}.
+     * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateArrayLength(SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+    public static Expr translateArrayLength(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         if (!(fn.getArguments().get(0) instanceof Expression arg)) {
             throw new FeatureNotSupportedException(
                     "Non-expression argument in " + fn.getFunctionName() + "()");
         }
-        return new Expr.FunctionCall("count", List.of(translateExpression(arg, parameterIndex)));
+        return new Expr.FunctionCall("count", List.of(translateExpression(arg, ctx)));
     }
 
     /**
@@ -205,10 +200,10 @@ public final class Mqlv2IrEmitters {
      * {@code any (($ op $__x))} vs. the old {@code any ($ op $__x)}.
      *
      * @param fn the function call AST node.
-     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
-     *     {@link #translateExpression(Expression, int[])}.
+     * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateArrayIntersects(SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+    public static Expr translateArrayIntersects(
+            SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var name = fn.getFunctionName();
         var args = fn.getArguments();
         if (!(args.get(0) instanceof Expression aE) || !(args.get(1) instanceof Expression bE)) {
@@ -216,11 +211,11 @@ public final class Mqlv2IrEmitters {
         }
         BinaryOpType eqOp = name.endsWith("_nullable") ? BinaryOpType.IS : BinaryOpType.EQ;
         return new Expr.Any(
-                translateExpression(aE, parameterIndex),
+                translateExpression(aE, ctx),
                 new Expr.LetExpr(
                         List.of(Map.entry("__x", (Expr) new Expr.CurrentValue())),
                         new Expr.Any(
-                                translateExpression(bE, parameterIndex),
+                                translateExpression(bE, ctx),
                                 new Expr.BinaryOp(eqOp, new Expr.CurrentValue(), new Expr.VarRef("__x")))));
     }
 
@@ -238,10 +233,10 @@ public final class Mqlv2IrEmitters {
      * the old {@code (arr any ($ op x))}).
      *
      * @param fn the function call AST node.
-     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
-     *     {@link #translateExpression(Expression, int[])}.
+     * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateArrayContains(SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+    public static Expr translateArrayContains(
+            SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var name = fn.getFunctionName();
         var args = fn.getArguments();
         if (!(args.get(0) instanceof Expression haystack) || !(args.get(1) instanceof Expression needle)) {
@@ -249,7 +244,7 @@ public final class Mqlv2IrEmitters {
         }
         BinaryOpType eqOp = name.endsWith("_nullable") ? BinaryOpType.IS : BinaryOpType.EQ;
         return new Expr.Any(
-                translateExpression(haystack, parameterIndex),
-                new Expr.BinaryOp(eqOp, new Expr.CurrentValue(), translateExpression(needle, parameterIndex)));
+                translateExpression(haystack, ctx),
+                new Expr.BinaryOp(eqOp, new Expr.CurrentValue(), translateExpression(needle, ctx)));
     }
 }
