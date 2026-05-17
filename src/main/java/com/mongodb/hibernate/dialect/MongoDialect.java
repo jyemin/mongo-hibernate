@@ -25,6 +25,7 @@ import com.mongodb.hibernate.internal.dialect.TestMongoDialect;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayConstructorFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayContainsFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayIncludesFunction;
+import com.mongodb.hibernate.internal.dialect.function.array.Mqlv2OnlyArrayLengthFunction;
 import com.mongodb.hibernate.internal.translate.MongoTranslatorFactory;
 import com.mongodb.hibernate.internal.translate.Mqlv2TranslatorFactory;
 import com.mongodb.hibernate.internal.type.MongoArrayJdbcType;
@@ -356,6 +357,11 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
         functionRegistry.register("array_contains_nullable", new MongoArrayContainsFunction(true, typeConfiguration));
         functionRegistry.register("array_includes", new MongoArrayIncludesFunction(false, typeConfiguration));
         functionRegistry.register("array_includes_nullable", new MongoArrayIncludesFunction(true, typeConfiguration));
+        if (mqlv2Enabled) {
+            functionRegistry.register(
+                    "array_length", new Mqlv2OnlyArrayLengthFunction(typeConfiguration));
+            functionRegistry.registerAlternateKey("cardinality", "array_length");
+        }
         // Register Hibernate's standard `unnest` set-returning function so HQL like
         // `from O o join lateral unnest(o.array) a on 1=1` is parseable. The v2 translator
         // does not yet handle the resulting FunctionTableReference; Phase 3 of the elemMatch
