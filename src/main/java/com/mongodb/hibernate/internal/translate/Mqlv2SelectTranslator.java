@@ -835,7 +835,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     private Mqlv2TranslationContext newContext() {
-        return new Mqlv2TranslationContext(parameterBinders, unnestAliasToFieldPath, hasJoins);
+        return new Mqlv2TranslationContext(parameterBinders, unnestAliasToFieldPath, hasJoins, aggSignatureToName);
     }
 
     private static Set<String> collectOuterQualifiers(QuerySpec outerSpec) {
@@ -1255,12 +1255,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         } else if (predicate instanceof ComparisonPredicate cp
                 && cp.getRightHandExpression() instanceof Every everyExpr) {
             appendAnyAllPredicate(sb, cp, everyExpr.getSubquery(), true);
-        } else if (predicate instanceof ComparisonPredicate cp) {
-            sb.append("(");
-            appendExprText(sb, cp.getLeftHandExpression());
-            sb.append(" ").append(comparisonOpSurface(cp.getOperator())).append(" ");
-            appendExprText(sb, cp.getRightHandExpression());
-            sb.append(")");
+        } else if (predicate instanceof ComparisonPredicate) {
+            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
         } else if (predicate instanceof Junction junction) {
             var preds = junction.getPredicates();
             var op = junction.getNature() == Junction.Nature.CONJUNCTION ? "and" : "or";
@@ -1276,20 +1272,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             sb.append("(not ");
             appendPredicateText(sb, np.getPredicate());
             sb.append(")");
-        } else if (predicate instanceof NullnessPredicate np) {
-            if (np.isNegated()) {
-                sb.append("(not isNullish(");
-                appendExprText(sb, np.getExpression());
-                sb.append("))");
-            } else {
-                sb.append("isNullish(");
-                appendExprText(sb, np.getExpression());
-                sb.append(")");
-            }
-        } else if (predicate instanceof BooleanExpressionPredicate bp) {
-            sb.append("(");
-            appendExprText(sb, bp.getExpression());
-            sb.append(bp.isNegated() ? " == false)" : " == true)");
+        } else if (predicate instanceof NullnessPredicate) {
+            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
+        } else if (predicate instanceof BooleanExpressionPredicate) {
+            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
         } else if (predicate instanceof InListPredicate ilp) {
             var exprs = ilp.getListExpressions();
             var negated = ilp.isNegated();

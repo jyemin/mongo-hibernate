@@ -170,7 +170,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "from Order o where o.status is not null",
-                    "from $orders | match (not isNullish(status)) | " + fmtO);
+                    "from $orders | match notNullish(status) | " + fmtO);
 
             // NULL semantics — equality with null parameter (MQLv2 is same regardless of value)
             check(

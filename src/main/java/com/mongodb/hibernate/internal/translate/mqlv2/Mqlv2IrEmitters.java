@@ -23,10 +23,13 @@ import com.mongodb.mqlv2.ast.Value;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.hibernate.query.common.TemporalUnit;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
+import org.hibernate.query.sqm.ComparisonOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
+import org.hibernate.query.sqm.sql.internal.EntityValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.sql.ast.tree.expression.BinaryArithmeticExpression;
 import org.hibernate.sql.ast.tree.expression.ColumnReference;
@@ -34,7 +37,12 @@ import org.hibernate.sql.ast.tree.expression.Expression;
 import org.hibernate.sql.ast.tree.expression.ExtractUnit;
 import org.hibernate.sql.ast.tree.expression.JdbcParameter;
 import org.hibernate.sql.ast.tree.expression.QueryLiteral;
+import org.hibernate.sql.ast.tree.expression.Star;
 import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
+import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
+import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
+import org.hibernate.sql.ast.tree.predicate.NullnessPredicate;
+import org.hibernate.sql.ast.tree.predicate.Predicate;
 
 /**
  * Translates Hibernate SQL AST {@link Expression} nodes into driver-mqlv2 {@link Expr} nodes. Currently scoped to the
@@ -87,14 +95,65 @@ public final class Mqlv2IrEmitters {
         }
         if (e instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
             var fnName = fn.getFunctionName();
+            if (AGGREGATE_FUNCTION_NAMES.contains(fnName)) {
+                var sig = aggSignature(fn, ctx.hasJoins());
+                var alias = ctx.aggSignatureToName().get(sig);
+                if (alias == null) {
+                    throw new FeatureNotSupportedException(
+                            "Aggregate function in expression not found in SELECT: " + fnName + "()");
+                }
+                return translateAggregateReference(alias);
+            }
             if ("array".equals(fnName) || "array_list".equals(fnName)) {
                 return translateArrayConstructor(fn, ctx);
+            }
+            if ("array_length".equals(fnName)) {
+                return translateArrayLength(fn, ctx);
+            }
+            if ("array_get".equals(fnName)) {
+                return translateArrayGet(fn, ctx);
+            }
+            if ("extract".equals(fnName)) {
+                return translateExtract(fn, ctx);
             }
             throw new FeatureNotSupportedException(
                     "Unsupported function in IR translation: " + fnName);
         }
         throw new FeatureNotSupportedException(
                 "Unsupported expression in IR translation: " + e.getClass().getSimpleName());
+    }
+
+    private static final Set<String> AGGREGATE_FUNCTION_NAMES = Set.of("count", "sum", "avg", "min", "max");
+
+    /**
+     * Compute the aggregate signature key used to look up the assigned {@code _aggN} alias. Mirrors the logic in
+     * {@code Mqlv2SelectTranslator.aggSignature}.
+     */
+    private static String aggSignature(SelfRenderingFunctionSqlAstExpression<?> fn, boolean hasJoins) {
+        var args = fn.getArguments();
+        if (args.isEmpty()
+                || args.get(0) instanceof Star
+                || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
+            return fn.getFunctionName() + ":*";
+        }
+        if (args.get(0) instanceof Expression argExpr) {
+            return fn.getFunctionName() + ":" + aggColumnSignature(argExpr, hasJoins);
+        }
+        return fn.getFunctionName() + ":?";
+    }
+
+    private static String aggColumnSignature(Expression expr, boolean hasJoins) {
+        if (expr instanceof ColumnReference cr) {
+            if (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty()) {
+                return cr.getQualifier() + "." + cr.getColumnExpression();
+            }
+            return cr.getColumnExpression();
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            return aggColumnSignature(bvpi.getColumnReference(), hasJoins);
+        } else {
+            throw new FeatureNotSupportedException("Expected simple column reference in aggregate; got: "
+                    + expr.getClass().getSimpleName());
+        }
     }
 
     private static Value translateLiteralValue(Object v) {
@@ -331,6 +390,52 @@ public final class Mqlv2IrEmitters {
             case MINUTE -> "minute";
             case SECOND -> "second";
             default -> throw new FeatureNotSupportedException("Unsupported extract() unit: " + unit);
+        };
+    }
+
+    /**
+     * Convert a Hibernate {@link Predicate} to a driver-mqlv2 {@link Expr}. Phase C scope: leaf-shape predicates
+     * (Comparison, Nullness, BooleanExpression). Junction, Grouped, Negated, InList, InSubQuery, Exists deferred to
+     * subsequent tasks.
+     *
+     * @param p the Hibernate predicate to translate.
+     * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
+     * @return the equivalent driver-mqlv2 {@link Expr} subtree.
+     */
+    public static Expr translatePredicate(Predicate p, Mqlv2TranslationContext ctx) {
+        if (p instanceof ComparisonPredicate cp) {
+            return new Expr.BinaryOp(
+                    translateComparisonOp(cp.getOperator()),
+                    translateExpression(cp.getLeftHandExpression(), ctx),
+                    translateExpression(cp.getRightHandExpression(), ctx));
+        }
+        if (p instanceof NullnessPredicate np) {
+            var inner = translateExpression(np.getExpression(), ctx);
+            String fn = np.isNegated() ? "notNullish" : "isNullish";
+            return new Expr.FunctionCall(fn, List.of(inner));
+        }
+        if (p instanceof BooleanExpressionPredicate bp) {
+            // Reaches here only when the wrapped expression is NOT an array-function predicate
+            // (that case is handled by tryAppendArrayPredicateFunction before this point).
+            return new Expr.BinaryOp(
+                    BinaryOpType.EQ,
+                    translateExpression(bp.getExpression(), ctx),
+                    new Expr.ValueLit(new Value.VBool(!bp.isNegated())));
+        }
+        throw new FeatureNotSupportedException(
+                "Unsupported predicate in IR translation: " + p.getClass().getSimpleName());
+    }
+
+    private static BinaryOpType translateComparisonOp(ComparisonOperator op) {
+        return switch (op) {
+            case EQUAL -> BinaryOpType.EQ;
+            case NOT_EQUAL -> BinaryOpType.NE;
+            case LESS_THAN -> BinaryOpType.LT;
+            case LESS_THAN_OR_EQUAL -> BinaryOpType.LE;
+            case GREATER_THAN -> BinaryOpType.GT;
+            case GREATER_THAN_OR_EQUAL -> BinaryOpType.GE;
+            default ->
+                throw new FeatureNotSupportedException("Unsupported comparison operator in IR translation: " + op);
         };
     }
 }

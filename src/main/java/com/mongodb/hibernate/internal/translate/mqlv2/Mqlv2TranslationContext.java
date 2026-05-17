@@ -16,6 +16,7 @@
 
 package com.mongodb.hibernate.internal.translate.mqlv2;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
@@ -35,14 +36,29 @@ public final class Mqlv2TranslationContext {
     private final List<JdbcParameterBinder> parameterBinders;
     private final Map<String, String> unnestAliasToFieldPath;
     private final boolean hasJoins;
+    /**
+     * Maps aggregate signature (e.g., {@code "count:id"}) to the assigned alias name (e.g., {@code "_agg0"}).
+     * Used by {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters#translateExpression} to resolve
+     * aggregate function references in HAVING clauses. Empty when not translating a HAVING predicate.
+     */
+    private final Map<String, String> aggSignatureToName;
 
     public Mqlv2TranslationContext(
             List<JdbcParameterBinder> parameterBinders,
             Map<String, String> unnestAliasToFieldPath,
             boolean hasJoins) {
+        this(parameterBinders, unnestAliasToFieldPath, hasJoins, Collections.emptyMap());
+    }
+
+    public Mqlv2TranslationContext(
+            List<JdbcParameterBinder> parameterBinders,
+            Map<String, String> unnestAliasToFieldPath,
+            boolean hasJoins,
+            Map<String, String> aggSignatureToName) {
         this.parameterBinders = parameterBinders;
         this.unnestAliasToFieldPath = unnestAliasToFieldPath;
         this.hasJoins = hasJoins;
+        this.aggSignatureToName = aggSignatureToName;
     }
 
     /**
@@ -60,5 +76,9 @@ public final class Mqlv2TranslationContext {
 
     public boolean hasJoins() {
         return hasJoins;
+    }
+
+    public Map<String, String> aggSignatureToName() {
+        return aggSignatureToName;
     }
 }

@@ -222,7 +222,7 @@ MQLv2: from $orders
 HQL:   from Order o where o.status is not null
 
 MQLv2: from $orders
-       | match (not isNullish(status))
+       | match notNullish(status)
        | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}
 ```
 
