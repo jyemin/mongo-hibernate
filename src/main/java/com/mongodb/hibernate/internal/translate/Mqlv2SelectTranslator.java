@@ -25,6 +25,7 @@ import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters;
 import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2TranslationContext;
 import com.mongodb.mqlv2.Serializer;
 import com.mongodb.mqlv2.ast.Expr;
+import com.mongodb.mqlv2.ast.Stage;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -283,6 +284,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * Builds the MQLv2 pipeline text and field-name list for a single QuerySpec. Pass non-null {@code queryOptions} at
      * the top level to honour dynamic first/max rows; pass {@code null} for sub-queries (UNION members, correlated
      * sub-queries) where only the HQL literal LIMIT clause applies.
+     *
+     * <p>Phase D2: simple query shapes (no joins, no GROUP BY, no scalar aggregates) are routed through
+     * {@link #buildQuerySpecTranslationViaIr} which builds a full driver-mqlv2 {@link com.mongodb.mqlv2.ast.Stage}
+     * chain and serializes it in one shot. All other shapes fall through to the original hand-rolled path.
      */
     private SpecTranslation buildQuerySpecTranslation(QuerySpec querySpec, @Nullable QueryOptions queryOptions) {
         var sb = new StringBuilder();
@@ -291,6 +296,20 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         // a new MQLv2 alias, so they must not trigger the qualifier-prefix path in appendExprText.
         this.hasJoins = root.getTableGroupJoins().stream()
                 .anyMatch(tgj -> !isUnnestFunctionTable(tgj.getJoinedGroup().getPrimaryTableReference()));
+
+        // Phase D2: route simple shapes through the full IR path.
+        // Guard: the IR path handles only shapes that Mqlv2IrEmitters.translatePredicate and
+        // translateExpression cover. Subquery-based predicates (EXISTS, IN subquery, ANY/ALL) and
+        // scalar subqueries in SELECT still require the hand-rolled path.
+        boolean canUseIr = root.getTableGroupJoins().isEmpty()
+                && querySpec.getGroupByClauseExpressions().isEmpty()
+                && !selectHasAggregates(querySpec.getSelectClause())
+                && !whereHasSubqueryPredicates(querySpec.getWhereClauseRestrictions())
+                && !selectHasSubqueryExpressions(querySpec.getSelectClause());
+        if (canUseIr) {
+            return buildQuerySpecTranslationViaIr(querySpec, queryOptions, root);
+        }
+
         appendFrom(sb, root);
         appendJoins(sb, root, querySpec);
         appendMatch(sb, querySpec);
@@ -316,6 +335,32 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             sb.append(" | distinct");
         }
         return new SpecTranslation(sb.toString(), fieldNames);
+    }
+
+    /**
+     * IR-path implementation of {@link #buildQuerySpecTranslation} for simple query shapes (no
+     * joins, no GROUP BY, no scalar aggregates). Builds a full driver-mqlv2 {@link com.mongodb.mqlv2.ast.Stage}
+     * chain — FROM → optional MATCH → optional SORT → optional LIMIT → FORMAT → optional DISTINCT —
+     * and serializes it in one shot via the {@link com.mongodb.mqlv2.Serializer}.
+     */
+    private SpecTranslation buildQuerySpecTranslationViaIr(
+            QuerySpec querySpec, @Nullable QueryOptions queryOptions, TableGroup root) {
+        var ntr = (NamedTableReference) root.getPrimaryTableReference();
+        var stage = Mqlv2IrEmitters.translateFromStage(ntr, hasJoins);
+        var ctx = newContext();
+        stage = Mqlv2IrEmitters.translateMatch(stage, querySpec, ctx);
+        stage = Mqlv2IrEmitters.translateSort(stage, querySpec, ctx);
+        stage = Mqlv2IrEmitters.translateLimit(stage, querySpec, queryOptions, ctx, () -> {
+            var basicIntegerType = sessionFactory.getTypeConfiguration().getBasicTypeForJavaType(Integer.class);
+            limitJdbcParameter = new LimitJdbcParameter(basicIntegerType);
+            parameterBinders.add(limitJdbcParameter.getParameterBinder());
+        });
+        var fmt = Mqlv2IrEmitters.translateFormat(stage, querySpec.getSelectClause(), ctx);
+        stage = fmt.stage();
+        if (querySpec.getSelectClause().isDistinct()) {
+            stage = new Stage.DistinctStage(stage);
+        }
+        return new SpecTranslation(serializer.serialize(stage), fmt.fieldNames());
     }
 
     private SpecTranslation translateQueryGroupToMqlv2(QueryGroup queryGroup) {
@@ -989,6 +1034,47 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         return selectClause.getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
                 .anyMatch(s -> isAggregateFunction(s.getExpression()));
+    }
+
+    /**
+     * Returns true if the predicate tree contains any subquery-based predicate ({@link ExistsPredicate},
+     * {@link InSubQueryPredicate}, or {@link ComparisonPredicate} with an {@link Any}/{@link Every} RHS) that
+     * requires the hand-rolled path. Called by the Phase D2 guard to fall back gracefully.
+     */
+    private static boolean whereHasSubqueryPredicates(@Nullable Predicate predicate) {
+        if (predicate == null || predicate.isEmpty()) {
+            return false;
+        }
+        if (predicate instanceof ExistsPredicate) {
+            return true;
+        }
+        if (predicate instanceof InSubQueryPredicate) {
+            return true;
+        }
+        if (predicate instanceof ComparisonPredicate cp
+                && (cp.getRightHandExpression() instanceof Any || cp.getRightHandExpression() instanceof Every)) {
+            return true;
+        }
+        if (predicate instanceof Junction j) {
+            return j.getPredicates().stream().anyMatch(Mqlv2SelectTranslator::whereHasSubqueryPredicates);
+        }
+        if (predicate instanceof NegatedPredicate np) {
+            return whereHasSubqueryPredicates(np.getPredicate());
+        }
+        if (predicate instanceof GroupedPredicate gp) {
+            return whereHasSubqueryPredicates(gp.getSubPredicate());
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if any non-virtual selection in the SELECT clause contains a scalar subquery
+     * ({@link SelectStatement} in expression position), which requires the hand-rolled path.
+     */
+    private static boolean selectHasSubqueryExpressions(SelectClause selectClause) {
+        return selectClause.getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .anyMatch(s -> s.getExpression() instanceof SelectStatement);
     }
 
     private void appendScalarAgg(StringBuilder sb, SelectClause selectClause, List<@Nullable String> aggNames) {

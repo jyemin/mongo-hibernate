@@ -19,6 +19,9 @@ package com.mongodb.hibernate.internal.translate.mqlv2;
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.mqlv2.ast.BinaryOpType;
 import com.mongodb.mqlv2.ast.Expr;
+import com.mongodb.mqlv2.ast.SortDirection;
+import com.mongodb.mqlv2.ast.SortSpec;
+import com.mongodb.mqlv2.ast.Stage;
 import com.mongodb.mqlv2.ast.UnaryOpType;
 import com.mongodb.mqlv2.ast.Value;
 import java.util.ArrayList;
@@ -26,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.hibernate.query.common.TemporalUnit;
+import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.ComparisonOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
@@ -40,6 +44,7 @@ import org.hibernate.sql.ast.tree.expression.JdbcParameter;
 import org.hibernate.sql.ast.tree.expression.QueryLiteral;
 import org.hibernate.sql.ast.tree.expression.Star;
 import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
+import org.hibernate.sql.ast.tree.from.NamedTableReference;
 import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
 import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
 import org.hibernate.sql.ast.tree.predicate.GroupedPredicate;
@@ -49,6 +54,9 @@ import org.hibernate.sql.ast.tree.predicate.NegatedPredicate;
 import org.hibernate.sql.ast.tree.predicate.NullnessPredicate;
 import org.hibernate.sql.ast.tree.predicate.Predicate;
 import org.hibernate.sql.ast.tree.predicate.SelfRenderingPredicate;
+import org.hibernate.sql.ast.tree.select.QuerySpec;
+import org.hibernate.sql.ast.tree.select.SelectClause;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Translates Hibernate SQL AST {@link Expression} nodes into driver-mqlv2 {@link Expr} nodes. Currently scoped to the
@@ -497,5 +505,177 @@ public final class Mqlv2IrEmitters {
             default ->
                 throw new FeatureNotSupportedException("Unsupported comparison operator in IR translation: " + op);
         };
+    }
+
+    // ---- Stage-level translation helpers (Phase D2) ----
+
+    /**
+     * Return value of {@link #translateFormat}: the updated pipeline {@link Stage} and the ordered
+     * list of field names for the JdbcOperationQuerySelect result-set mapping.
+     *
+     * @hidden
+     */
+    public record FormatTranslation(Stage stage, List<String> fieldNames) {}
+
+    /**
+     * Build a {@link Stage.FromStageSimple} or {@link Stage.FromStageNested} for the primary table
+     * reference of the FROM clause root.
+     *
+     * <ul>
+     *   <li>No joins: {@code from $collName} — uses {@link Stage.FromStageSimple}.
+     *   <li>Has joins: {@code from alias=$collName} — uses {@link Stage.FromStageNested} so that
+     *       subsequent join stages can address fields by qualifier.
+     * </ul>
+     *
+     * @param ntr the primary {@link NamedTableReference} of the FROM root.
+     * @param hasJoins true iff the query has at least one non-unnest join (determines which from-stage
+     *     shape to emit).
+     * @return the from {@link Stage} node.
+     */
+    public static Stage translateFromStage(NamedTableReference ntr, boolean hasJoins) {
+        var collName = ntr.getTableExpression();
+        if (!hasJoins) {
+            return new Stage.FromStageSimple(new Expr.VarRef(collName));
+        }
+        var alias = ntr.getIdentificationVariable();
+        return new Stage.FromStageNested(List.of(Map.entry(alias, (Expr) new Expr.VarRef(collName))));
+    }
+
+    /**
+     * Append a {@link Stage.MatchStage} if the {@code QuerySpec} has a WHERE clause; otherwise return
+     * {@code prev} unchanged.
+     *
+     * @param prev the pipeline stage to wrap.
+     * @param qs the query spec whose WHERE clause is consulted.
+     * @param ctx translation context for column-reference qualifier rules.
+     * @return the updated stage (either a new {@link Stage.MatchStage} or {@code prev} unchanged).
+     */
+    public static Stage translateMatch(Stage prev, QuerySpec qs, Mqlv2TranslationContext ctx) {
+        var pred = qs.getWhereClauseRestrictions();
+        if (pred == null || pred.isEmpty()) {
+            return prev;
+        }
+        return new Stage.MatchStage(prev, translatePredicate(pred, ctx));
+    }
+
+    /**
+     * Append a {@link Stage.SortStage} if the {@code QuerySpec} has ORDER BY specifications; otherwise
+     * return {@code prev} unchanged.
+     *
+     * @param prev the pipeline stage to wrap.
+     * @param qs the query spec whose sort specifications are consulted.
+     * @param ctx translation context for column-reference qualifier rules.
+     * @return the updated stage (either a new {@link Stage.SortStage} or {@code prev} unchanged).
+     */
+    public static Stage translateSort(Stage prev, QuerySpec qs, Mqlv2TranslationContext ctx) {
+        if (!qs.hasSortSpecifications()) {
+            return prev;
+        }
+        var specs = qs.getSortSpecifications();
+        var sortSpecs = new ArrayList<SortSpec>(specs.size());
+        for (var spec : specs) {
+            var expr = translateExpression(spec.getSortExpression(), ctx);
+            var dir = spec.getSortOrder() == org.hibernate.query.SortDirection.DESCENDING
+                    ? SortDirection.DESC : SortDirection.ASC;
+            sortSpecs.add(new SortSpec(expr, dir));
+        }
+        return new Stage.SortStage(prev, sortSpecs);
+    }
+
+    /**
+     * Append a {@link Stage.LimitStage} if the {@code QuerySpec} has a FETCH clause or the
+     * {@code QueryOptions} specify a max-rows limit; otherwise return {@code prev} unchanged.
+     *
+     * <p>When a dynamic max-rows limit is active the caller-supplied {@code onSetMaxResults} callback
+     * is invoked so the translator can allocate the {@link org.hibernate.sql.ast.tree.expression.JdbcParameter}
+     * binder and record the {@code limitJdbcParameter} field before this method reads the resulting
+     * binder index from the context.
+     *
+     * @param prev the pipeline stage to wrap.
+     * @param qs the query spec (consulted for the HQL FETCH clause).
+     * @param queryOptions dynamic query options; may be {@code null} for sub-queries.
+     * @param ctx translation context (parameter binders are appended via {@code allocateParameter}).
+     * @param onSetMaxResults callback invoked when {@code queryOptions.getLimit().getMaxRows()} is
+     *     non-null; the callback must push the limit binder to {@code ctx}'s parameter list before
+     *     returning.
+     * @return the updated stage (either a new {@link Stage.LimitStage} or {@code prev} unchanged).
+     */
+    public static Stage translateLimit(
+            Stage prev,
+            QuerySpec qs,
+            @Nullable QueryOptions queryOptions,
+            Mqlv2TranslationContext ctx,
+            Runnable onSetMaxResults) {
+        if (queryOptions != null) {
+            var limit = queryOptions.getLimit();
+            if (limit != null && limit.getFirstRow() != null) {
+                throw new FeatureNotSupportedException("OFFSET is not supported in MQLv2");
+            }
+            if (limit != null && limit.getMaxRows() != null) {
+                onSetMaxResults.run();
+                // The callback pushed the LimitJdbcParameter binder as the last entry; its index
+                // is therefore (size - 1).
+                int idx = ctx.parameterBinders().size() - 1;
+                return new Stage.LimitStage(prev, new Expr.VarRef("p" + idx));
+            }
+        }
+        // Fall through to the HQL FETCH clause.
+        var fetchExpr = qs.getFetchClauseExpression();
+        if (fetchExpr == null) {
+            return prev;
+        }
+        if (qs.getOffsetClauseExpression() != null) {
+            throw new FeatureNotSupportedException("OFFSET is not supported in MQLv2");
+        }
+        return new Stage.LimitStage(prev, translateExpression(fetchExpr, ctx));
+    }
+
+    /**
+     * Build a {@link Stage.FormatStage} wrapping {@code prev} and return a {@link FormatTranslation}
+     * that also carries the ordered field-name list for the result-set mapping.
+     *
+     * <p>Scoped to simple query shapes (no joins, no group/agg): {@code aggNames} must be
+     * {@code null} and {@code unnestAliasToFieldPath} in {@code ctx} must be empty.
+     *
+     * <p>Field-name assignment mirrors {@link
+     * com.mongodb.hibernate.internal.translate.Mqlv2SelectTranslator#appendFormat}:
+     * <ul>
+     *   <li>{@link ColumnReference} / {@link BasicValuedPathInterpretation}: the column expression
+     *       becomes both the document key and the field name.
+     *   <li>All other expressions: a synthetic {@code _fN} name is assigned.
+     * </ul>
+     *
+     * @param prev the pipeline stage to wrap.
+     * @param selectClause the SELECT clause whose non-virtual selections drive the projection.
+     * @param ctx translation context.
+     * @return a {@link FormatTranslation} containing the updated stage and the field names.
+     */
+    public static FormatTranslation translateFormat(
+            Stage prev, SelectClause selectClause, Mqlv2TranslationContext ctx) {
+        var fieldNames = new ArrayList<String>();
+        var fields = new ArrayList<Map.Entry<Expr, Expr>>();
+        var syntheticIdx = 0;
+
+        var selections = selectClause.getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
+
+        for (var sel : selections) {
+            var selExpr = sel.getExpression();
+            String key;
+            if (selExpr instanceof ColumnReference cr) {
+                key = cr.getColumnExpression();
+            } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
+                key = bvpi.getColumnReference().getColumnExpression();
+            } else {
+                key = "_f" + syntheticIdx++;
+            }
+            Expr valueExpr = translateExpression(selExpr, ctx);
+            fieldNames.add(key);
+            fields.add(Map.entry(new Expr.ValueLit(new Value.VString(key)), valueExpr));
+        }
+
+        var docConstructor = new Expr.DocumentConstructor(fields);
+        return new FormatTranslation(new Stage.FormatStage(prev, docConstructor), fieldNames);
     }
 }

@@ -391,7 +391,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThatThrownBy(() -> session.createSelectionQuery("select upper(c.name) from Customer c", String.class)
                             .getResultList())
                     .isInstanceOf(FeatureNotSupportedException.class)
-                    .hasMessageContaining("Unsupported function: upper()");
+                    .hasMessageContaining("upper");
         });
     }
 

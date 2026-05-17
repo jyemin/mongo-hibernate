@@ -70,6 +70,15 @@ public final class Mqlv2TranslationContext {
         return idx;
     }
 
+    /**
+     * Returns the live parameter-binder list. Used by stage-level helpers (e.g.,
+     * {@link Mqlv2IrEmitters#translateLimit}) to read the current list size after a callback has
+     * pushed a binder externally.
+     */
+    public List<JdbcParameterBinder> parameterBinders() {
+        return parameterBinders;
+    }
+
     public Map<String, String> unnestAliasToFieldPath() {
         return unnestAliasToFieldPath;
     }
