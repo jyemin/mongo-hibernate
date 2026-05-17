@@ -90,8 +90,9 @@ class Mqlv2IrRoundTripProbeTest {
 
         assertThat(serializer.serialize(ast))
                 .isEqualTo("from $inventory | match (count(scores) > 2)"
-                        + " | format {\"_id\": _id, \"boxedScores\": boxedScores, \"scores\": scores}");
-        // Diff: format-stage document keys are quoted ("_id": vs _id:). MQLv2 spec: identical semantics.
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
+        // Byte-equivalent for this shape — was previously a quoted-keys diff; resolved by the
+        // driver-mqlv2 bareword-keys tweak (commit 892852d6fa).
     }
 
     @Test
@@ -107,7 +108,7 @@ class Mqlv2IrRoundTripProbeTest {
 
         assertThat(serializer.serialize(ast))
                 .isEqualTo("from $inventory | match (scores[(1 - 1)] == 10)"
-                        + " | format {\"_id\": _id, \"boxedScores\": boxedScores, \"scores\": scores}");
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
         // Diff: array-index argument parens move outside the binop: `(1) - 1` → `(1 - 1)`.
         // The old shape is a hand-rolled artifact; the new shape is the Serializer's
         // canonical paren-the-whole-binop rule. Same precedence, same eval.
@@ -123,7 +124,7 @@ class Mqlv2IrRoundTripProbeTest {
 
         assertThat(serializer.serialize(ast))
                 .isEqualTo("from $inventory | match scores any (($ == 30))"
-                        + " | format {\"_id\": _id, \"boxedScores\": boxedScores, \"scores\": scores}");
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
         // Two paren diffs:
         // 1. `match` stage drops the hand-rolled outer parens around the predicate.
         // 2. `any` body has DOUBLE parens — one from `any (…)` syntax, one from BinaryOp's
@@ -147,7 +148,7 @@ class Mqlv2IrRoundTripProbeTest {
 
         assertThat(serializer.serialize(ast))
                 .isEqualTo("from $inventory | match scores any (let $__x = $ in [30, 99] any (($ == $__x)))"
-                        + " | format {\"_id\": _id, \"boxedScores\": boxedScores, \"scores\": scores}");
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
         // Same paren diffs as arrayContains, applied to the inner any. Otherwise identical.
     }
 
@@ -167,9 +168,10 @@ class Mqlv2IrRoundTripProbeTest {
     /*
      * Drift summary (for the migration plan):
      *
-     * D1. format-stage document keys are quoted. Mitigation: Serializer-side tweak to omit quotes when
-     *     the key is a valid identifier — or accept the drift and update showcase strings. Either is fine
-     *     (MQLv2 spec: identical semantics).
+     * D1. ~~format-stage document keys are quoted.~~ Resolved upstream in driver-mqlv2 commit
+     *     892852d6fa: DocumentConstructor now emits bareword keys when the key matches the MQLv2
+     *     identifier shape ([A-Za-z_][A-Za-z0-9_]*), falling back to the quoted form for keys
+     *     with special characters.
      *
      * D2. binop expressions inside ArrayIndex are paren-wrapped as `[(a OP b)]` not `[(a) OP b]`.
      *     Trivially the cleaner rule. Update showcase strings.
