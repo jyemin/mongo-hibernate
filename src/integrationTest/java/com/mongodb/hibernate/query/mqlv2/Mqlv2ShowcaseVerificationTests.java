@@ -221,11 +221,12 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
                     "select year(o.orderDate) from Order o where o.id = 10",
                     "from $orders | match (_id == 10) | format {_f0: year(orderDate)}");
 
-            // INNER JOIN — join condition gets double parens from the translator
+            // INNER JOIN — IR path: join condition gets an extra layer of parens from JoinStage's
+            // serializer wrapping ser(condition), which for a BinaryOp already adds outer parens.
             check(
                     soft,
                     "select distinct c from Customer c join Order o on c.id = o.customerId",
-                    "from c1_0=$customers | join o1_0=$orders (c1_0._id == o1_0.customerId)"
+                    "from c1_0=$customers | join o1_0=$orders ((c1_0._id == o1_0.customerId))"
                             + " | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}"
                             + " | distinct");
 
@@ -233,7 +234,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "select distinct c from Customer c join Order o on c.id = o.customerId where o.total > 100",
-                    "from c1_0=$customers | join o1_0=$orders (c1_0._id == o1_0.customerId)"
+                    "from c1_0=$customers | join o1_0=$orders ((c1_0._id == o1_0.customerId))"
                             + " | match (o1_0.total > 100)"
                             + " | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}"
                             + " | distinct");
@@ -242,7 +243,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "select distinct c from Customer c left join Order o on c.id = o.customerId",
-                    "from c1_0=$customers | join leftOuter o1_0=$orders (c1_0._id == o1_0.customerId)"
+                    "from c1_0=$customers | join leftOuter o1_0=$orders ((c1_0._id == o1_0.customerId))"
                             + " | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}"
                             + " | distinct");
 
@@ -250,7 +251,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "select distinct o from Customer c right join Order o on c.id = o.customerId",
-                    "from c1_0=$customers | join rightOuter o1_0=$orders (c1_0._id == o1_0.customerId)"
+                    "from c1_0=$customers | join rightOuter o1_0=$orders ((c1_0._id == o1_0.customerId))"
                             + " | format {_id: o1_0._id, customerId: o1_0.customerId, orderDate: o1_0.orderDate, status: o1_0.status, total: o1_0.total}"
                             + " | distinct");
 
@@ -258,7 +259,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "select distinct c from Customer c full join Order o on c.id = o.customerId",
-                    "from c1_0=$customers | join fullOuter o1_0=$orders (c1_0._id == o1_0.customerId)"
+                    "from c1_0=$customers | join fullOuter o1_0=$orders ((c1_0._id == o1_0.customerId))"
                             + " | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name}"
                             + " | distinct");
 
@@ -445,11 +446,12 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
                     "from $carts | match let $__v0 = minQty in (lineItems any ($.qty > $__v0)) | " + fmtCart);
 
             // JOIN — single predicate (row-multiplying; re-wraps matched element)
+            // IR path: unwind uses $__elem=lineItems (no spaces around = from JoinStage serializer)
             check(
                     soft,
                     "select c from Cart c join c.lineItems li where li.sku = 'WIDGET-1'",
                     "from $carts"
-                            + " | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem, minQty: minQty}"
+                            + " | unwind $__elem=lineItems in {_id: _id, lineItems: $__elem, minQty: minQty}"
                             + " | match (lineItems.sku == \"WIDGET-1\")"
                             + " | format {_id: _id, lineItems: [lineItems], minQty: minQty}");
 
@@ -458,7 +460,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
                     soft,
                     "select c.id, li.sku from Cart c join c.lineItems li where li.sku = 'WIDGET-1'",
                     "from $carts"
-                            + " | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem}"
+                            + " | unwind $__elem=lineItems in {_id: _id, lineItems: $__elem}"
                             + " | match (lineItems.sku == \"WIDGET-1\")"
                             + " | format {_id: _id, sku: lineItems.sku}");
 

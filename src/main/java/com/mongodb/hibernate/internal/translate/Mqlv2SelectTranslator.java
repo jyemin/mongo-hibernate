@@ -25,7 +25,9 @@ import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters;
 import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2TranslationContext;
 import com.mongodb.mqlv2.Serializer;
 import com.mongodb.mqlv2.ast.Expr;
+import com.mongodb.mqlv2.ast.JoinType;
 import com.mongodb.mqlv2.ast.Stage;
+import com.mongodb.mqlv2.ast.Value;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -49,6 +51,7 @@ import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.EntityValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.sql.ast.Clause;
+import org.hibernate.sql.ast.SqlAstJoinType;
 import org.hibernate.sql.ast.SqlAstNodeRenderingMode;
 import org.hibernate.sql.ast.SqlAstTranslator;
 import org.hibernate.sql.ast.tree.SqlAstNode;
@@ -297,12 +300,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         this.hasJoins = root.getTableGroupJoins().stream()
                 .anyMatch(tgj -> !isUnnestFunctionTable(tgj.getJoinedGroup().getPrimaryTableReference()));
 
-        // Phase D2: route simple shapes through the full IR path.
+        // Phase D2/D3: route simple shapes through the full IR path.
         // Guard: the IR path handles only shapes that Mqlv2IrEmitters.translatePredicate and
         // translateExpression cover. Subquery-based predicates (EXISTS, IN subquery, ANY/ALL) and
         // scalar subqueries in SELECT still require the hand-rolled path.
-        boolean canUseIr = root.getTableGroupJoins().isEmpty()
-                && querySpec.getGroupByClauseExpressions().isEmpty()
+        boolean canUseIr = querySpec.getGroupByClauseExpressions().isEmpty()
                 && !selectHasAggregates(querySpec.getSelectClause())
                 && !whereHasSubqueryPredicates(querySpec.getWhereClauseRestrictions())
                 && !selectHasSubqueryExpressions(querySpec.getSelectClause());
@@ -346,8 +348,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private SpecTranslation buildQuerySpecTranslationViaIr(
             QuerySpec querySpec, @Nullable QueryOptions queryOptions, TableGroup root) {
         var ntr = (NamedTableReference) root.getPrimaryTableReference();
-        var stage = Mqlv2IrEmitters.translateFromStage(ntr, hasJoins);
         var ctx = newContext();
+        var stage = Mqlv2IrEmitters.translateFromStage(ntr, hasJoins);
+        stage = buildJoinsStage(stage, root, querySpec, ctx);
         stage = Mqlv2IrEmitters.translateMatch(stage, querySpec, ctx);
         stage = Mqlv2IrEmitters.translateSort(stage, querySpec, ctx);
         stage = Mqlv2IrEmitters.translateLimit(stage, querySpec, queryOptions, ctx, () -> {
@@ -517,6 +520,109 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         sb.append("}");
 
         unnestAliasToFieldPath.put(alias, arrayFieldPath);
+    }
+
+    // ---- IR-path join translation (Phase D3) ----
+
+    /**
+     * IR-path counterpart of {@link #appendJoins}: traverses the table-group-join list and builds
+     * a chain of {@link Stage} nodes ({@link Stage.UnwindComplexStage} for unnest joins,
+     * {@link Stage.JoinStage} for regular joins).
+     *
+     * <p>Populates {@code unnestAliasToFieldPath} (via the shared map in {@code ctx}) so that
+     * subsequent column-reference rendering resolves unnest aliases correctly.
+     */
+    private Stage buildJoinsStage(Stage prev, TableGroup root, QuerySpec querySpec, Mqlv2TranslationContext ctx) {
+        var s = prev;
+        for (var tgj : root.getTableGroupJoins()) {
+            var joinedGroup = tgj.getJoinedGroup();
+            var primaryRef = joinedGroup.getPrimaryTableReference();
+            if (isUnnestFunctionTable(primaryRef)) {
+                var rootAlias =
+                        ((NamedTableReference) root.getPrimaryTableReference()).getIdentificationVariable();
+                s = buildUnnestJoinStage(s, tgj, (FunctionTableReference) primaryRef, querySpec, rootAlias);
+            } else {
+                var joinNtr = (NamedTableReference) primaryRef;
+                var joinCollName = joinNtr.getTableExpression();
+                var joinAlias = joinNtr.getIdentificationVariable();
+                var joinPredicate = tgj.getPredicate();
+                if (joinPredicate == null) {
+                    throw new FeatureNotSupportedException("Join without ON condition is not supported in MQLv2");
+                }
+                var condExpr = Mqlv2IrEmitters.translatePredicate(joinPredicate, ctx);
+                s = new Stage.JoinStage(
+                        s, irJoinType(tgj.getJoinType()), joinAlias, new Expr.VarRef(joinCollName), condExpr);
+                s = buildJoinsStage(s, joinedGroup, querySpec, ctx);
+            }
+        }
+        return s;
+    }
+
+    /**
+     * IR-path counterpart of {@link #appendUnwindJoin}: builds a {@link Stage.UnwindComplexStage}
+     * that explodes the array field and preserves all parent-entity columns in the unwind body.
+     *
+     * <p>Also records the alias→array-field-path mapping in {@link #unnestAliasToFieldPath} so that
+     * subsequent column-reference rendering resolves {@code alias.column} to
+     * {@code arrayFieldPath.column}.
+     */
+    private Stage buildUnnestJoinStage(
+            Stage prev,
+            TableGroupJoin tgj,
+            FunctionTableReference ftr,
+            QuerySpec querySpec,
+            @Nullable String rootAlias) {
+        var arrayPath = extractUnnestArrayPath(ftr);
+        var alias = extractUnnestAlias(tgj.getJoinedGroup());
+        // Unwind targets the field on the current (outer) document without qualifier prefix.
+        var arrayFieldPath = columnExpressionOf(arrayPath);
+        var internalVarName = "__elem";
+
+        // Collect all parent-entity column names referenced anywhere in the QuerySpec.
+        // These must be enumerated in the unwind body to be preserved across the stage.
+        var parentCols = new LinkedHashSet<String>();
+        collectParentColumnNames(querySpec, rootAlias, parentCols);
+        // Always include the array field itself: subsequent pipeline stages reference it as
+        // arrayField.subField (e.g., lineItems.sku), so the unwind body must carry it forward.
+        parentCols.add(arrayFieldPath);
+
+        // Build the body document: {col1: col1, ..., arrayField: $__elem}
+        var fields = new ArrayList<Map.Entry<Expr, Expr>>();
+        for (var col : parentCols) {
+            Expr keyExpr = new Expr.ValueLit(new Value.VString(col));
+            Expr valExpr;
+            if (col.equals(arrayFieldPath)) {
+                // Map the array field to the element variable so subsequent match stages work.
+                valExpr = new Expr.VarRef(internalVarName);
+            } else {
+                valExpr = new Expr.FieldAccess(new Expr.CurrentValue(), col);
+            }
+            fields.add(Map.entry(keyExpr, valExpr));
+        }
+        var bodyExpr = new Expr.DocumentConstructor(fields);
+
+        // Source expression: the array field on the current document.
+        var sourceExpr = new Expr.FieldAccess(new Expr.CurrentValue(), arrayFieldPath);
+
+        // Register the alias so downstream column-reference rendering resolves it correctly.
+        unnestAliasToFieldPath.put(alias, arrayFieldPath);
+
+        return new Stage.UnwindComplexStage(prev, internalVarName, sourceExpr, bodyExpr);
+    }
+
+    /**
+     * Maps a Hibernate {@link SqlAstJoinType} to the driver-mqlv2 {@link JoinType}.
+     * Returns {@code null} for INNER joins because {@link Stage.JoinStage} treats a
+     * {@code null} join type as an inner join (and the Serializer omits the keyword).
+     */
+    private static @Nullable JoinType irJoinType(SqlAstJoinType joinType) {
+        return switch (joinType) {
+            case INNER -> null;
+            case LEFT -> JoinType.LEFT_OUTER;
+            case RIGHT -> JoinType.RIGHT_OUTER;
+            case FULL -> JoinType.FULL_OUTER;
+            default -> throw new FeatureNotSupportedException("Unsupported join type: " + joinType);
+        };
     }
 
     /**

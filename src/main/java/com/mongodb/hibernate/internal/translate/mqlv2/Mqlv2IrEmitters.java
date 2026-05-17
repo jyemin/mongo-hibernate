@@ -25,6 +25,7 @@ import com.mongodb.mqlv2.ast.Stage;
 import com.mongodb.mqlv2.ast.UnaryOpType;
 import com.mongodb.mqlv2.ast.Value;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -655,6 +656,11 @@ public final class Mqlv2IrEmitters {
         var fieldNames = new ArrayList<String>();
         var fields = new ArrayList<Map.Entry<Expr, Expr>>();
         var syntheticIdx = 0;
+        // Collect the set of array field paths from unnest joins. These columns require re-wrapping
+        // in a single-element array in the format stage so Hibernate's getArray() call succeeds.
+        // (The | unwind body maps the array field to the element document for match purposes;
+        // the format stage then wraps it back so the result set delivers an ARRAY.)
+        var unnestArrayFields = new LinkedHashSet<>(ctx.unnestAliasToFieldPath().values());
 
         var selections = selectClause.getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
@@ -671,6 +677,11 @@ public final class Mqlv2IrEmitters {
                 key = "_f" + syntheticIdx++;
             }
             Expr valueExpr = translateExpression(selExpr, ctx);
+            // Re-wrap unnest array fields: the unwind body emits the element as a struct;
+            // the format stage must wrap it in [rawValue] so getArray() sees an ARRAY.
+            if (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key)) {
+                valueExpr = new Expr.ArrayConstructor(List.of(valueExpr));
+            }
             fieldNames.add(key);
             fields.add(Map.entry(new Expr.ValueLit(new Value.VString(key)), valueExpr));
         }

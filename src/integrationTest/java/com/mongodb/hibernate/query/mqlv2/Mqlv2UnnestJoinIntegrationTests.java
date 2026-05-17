@@ -80,7 +80,7 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem, scores: scores}"
+                .isEqualTo("from $orders | unwind $__elem=lineItems in {_id: _id, lineItems: $__elem, scores: scores}"
                         + " | match (lineItems.sku == \"WIDGET-1\")"
                         + " | format {_id: _id, lineItems: [lineItems], scores: scores}");
         // Order 1 has WIDGET-1 (one match) → 1 row; order 3 has WIDGET-1 (one match) → 1 row; order 2 → 0 rows.
@@ -95,7 +95,7 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, Object[].class).getResultList());
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | unwind $__elem = lineItems in {_id: _id, lineItems: $__elem}"
+                .isEqualTo("from $orders | unwind $__elem=lineItems in {_id: _id, lineItems: $__elem}"
                         + " | match (lineItems.sku == \"WIDGET-1\") | format {_id: _id, sku: lineItems.sku}");
         assertThat(results).hasSize(2);
         assertThat(results).extracting(r -> r[1]).containsOnly("WIDGET-1");
