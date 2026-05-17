@@ -73,8 +73,8 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
     @Test
     void arrayLength() {
         var hql = "from ArrayDoc d where array_length(d.scores) > 2";
-        var rows = sessionFactoryScope.fromSession(session ->
-                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        var rows = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs | match (count(scores) > 2)"
                         + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
@@ -84,8 +84,8 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
     @Test
     void cardinalityAlias() {
         var hql = "from ArrayDoc d where cardinality(d.scores) = 0";
-        var rows = sessionFactoryScope.fromSession(session ->
-                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        var rows = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs | match (count(scores) == 0)"
                         + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
@@ -95,10 +95,10 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
     @Test
     void arrayGet() {
         var hql = "from ArrayDoc d where array_get(d.scores, 1) = 10";
-        var rows = sessionFactoryScope.fromSession(session ->
-                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        var rows = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
-                .isEqualTo("from $array_docs | match (scores[(1) - 1] == 10)"
+                .isEqualTo("from $array_docs | match (scores[(1 - 1)] == 10)"
                         + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
         assertThat(rows).extracting(d -> d.id).containsExactly(1);
     }
@@ -106,8 +106,8 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
     @Test
     void arrayContains() {
         var hql = "from ArrayDoc d where array_contains(d.scores, 30)";
-        var rows = sessionFactoryScope.fromSession(session ->
-                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        var rows = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs | match (scores any ($ == 30))"
                         + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
@@ -117,8 +117,8 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
     @Test
     void arrayContainsNegated() {
         var hql = "from ArrayDoc d where not array_contains(d.scores, 30)";
-        var rows = sessionFactoryScope.fromSession(session ->
-                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        var rows = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs | match (not (scores any ($ == 30)))"
                         + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
@@ -127,8 +127,8 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
 
     @Test
     void arrayContainsNullableWithNullParameter() {
-        sessionFactoryScope.inTransaction(session ->
-                session.persist(new ArrayDoc(4, new int[] {0}, new Integer[] {null, 50})));
+        sessionFactoryScope.inTransaction(
+                session -> session.persist(new ArrayDoc(4, new int[] {0}, new Integer[] {null, 50})));
         var hql = "from ArrayDoc d where array_contains_nullable(d.boxedScores, :needle)";
         var rows = sessionFactoryScope.fromSession(session -> session.createSelectionQuery(hql, ArrayDoc.class)
                 .setParameter("needle", (Integer) null)
@@ -140,8 +140,8 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
     @Test
     void arrayIntersects() {
         var hql = "from ArrayDoc d where array_intersects(d.scores, array(30, 99))";
-        var rows = sessionFactoryScope.fromSession(session ->
-                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        var rows = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs"
                         + " | match (scores any (let $__x = $ in [30, 99] any ($ == $__x)))"
@@ -153,8 +153,8 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
     void arrayOverlapsAlias() {
         // Asserts that array_overlaps canonicalizes to the same intercept as array_intersects.
         var hql = "from ArrayDoc d where array_overlaps(d.scores, array(10, 40))";
-        var rows = sessionFactoryScope.fromSession(session ->
-                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        var rows = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
         assertThat(capturedPipeline())
                 .isEqualTo("from $array_docs"
                         + " | match (scores any (let $__x = $ in [10, 40] any ($ == $__x)))"
@@ -164,8 +164,8 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
 
     @Test
     void arrayIntersectsNullableWithNullElement() {
-        sessionFactoryScope.inTransaction(session ->
-                session.persist(new ArrayDoc(5, new int[] {0}, new Integer[] {null, 50})));
+        sessionFactoryScope.inTransaction(
+                session -> session.persist(new ArrayDoc(5, new int[] {0}, new Integer[] {null, 50})));
         var hql = "from ArrayDoc d where array_intersects_nullable(d.boxedScores, :needles)";
         var rows = sessionFactoryScope.fromSession(session -> session.createSelectionQuery(hql, ArrayDoc.class)
                 .setParameter("needles", new Integer[] {null})

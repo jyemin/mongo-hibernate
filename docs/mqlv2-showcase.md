@@ -889,7 +889,7 @@ Both `array_length` and `cardinality` are aliases; both translate to MQLv2 `coun
 ```
 HQL:   from Inventory i where array_get(i.scores, 1) = 10
 
-MQLv2: from $inventory | match (scores[(1) - 1] == 10) | format {_id: _id, boxedScores: boxedScores, scores: scores}
+MQLv2: from $inventory | match (scores[(1 - 1)] == 10) | format {_id: _id, boxedScores: boxedScores, scores: scores}
 ```
 
 HQL uses 1-based indexing; the translator subtracts 1 to convert to MQLv2's 0-based positional access.

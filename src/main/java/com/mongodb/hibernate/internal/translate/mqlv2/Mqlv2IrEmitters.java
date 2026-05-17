@@ -30,6 +30,7 @@ import org.hibernate.sql.ast.tree.expression.ColumnReference;
 import org.hibernate.sql.ast.tree.expression.Expression;
 import org.hibernate.sql.ast.tree.expression.JdbcParameter;
 import org.hibernate.sql.ast.tree.expression.QueryLiteral;
+import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 
 /**
  * Translates Hibernate SQL AST {@link Expression} nodes into driver-mqlv2 {@link Expr} nodes. Currently scoped to the
@@ -68,6 +69,9 @@ public final class Mqlv2IrEmitters {
         }
         if (e instanceof QueryLiteral<?> ql) {
             return new Expr.ValueLit(translateLiteralValue(ql.getLiteralValue()));
+        }
+        if (e instanceof UnparsedNumericLiteral<?> unl) {
+            return new Expr.ValueLit(translateLiteralValue(unl.getLiteralValue()));
         }
         if (e instanceof SqmParameterInterpretation spi) {
             return translateExpression(spi.getResolvedExpression(), parameterIndex);
@@ -114,6 +118,30 @@ public final class Mqlv2IrEmitters {
             default ->
                 throw new FeatureNotSupportedException("Unsupported arithmetic operator in IR translation: " + op);
         };
+    }
+
+    /**
+     * Translate {@code array_get(arr, i)} → {@code arr[(i - 1)]}.
+     *
+     * <p>HQL is 1-based; MQLv2 is 0-based. The subtraction is placed inside the index brackets, producing the canonical
+     * {@code arr[(i - 1)]} form (D2 paren drift vs. the legacy hand-rolled {@code arr[(i) - 1]}).
+     *
+     * @param fn the function call AST node.
+     * @param parameterIndex single-element mutable array for {@code $pN} indexing — see
+     *     {@link #translateExpression(Expression, int[])}.
+     */
+    public static Expr translateArrayGet(SelfRenderingFunctionSqlAstExpression<?> fn, int[] parameterIndex) {
+        var args = fn.getArguments();
+        if (!(args.get(0) instanceof Expression arr) || !(args.get(1) instanceof Expression idx)) {
+            throw new FeatureNotSupportedException(
+                    "Non-expression argument in " + fn.getFunctionName() + "()");
+        }
+        return new Expr.ArrayIndex(
+                translateExpression(arr, parameterIndex),
+                new Expr.BinaryOp(
+                        BinaryOpType.SUB,
+                        translateExpression(idx, parameterIndex),
+                        new Expr.ValueLit(new Value.VInt(1))));
     }
 
     /**

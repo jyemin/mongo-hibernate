@@ -417,15 +417,13 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             // EXISTS — AND conjunction in body
             check(
                     soft,
-                    "from Cart c where exists ("
-                            + "from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)",
+                    "from Cart c where exists (" + "from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)",
                     "from $carts | match (lineItems any (($.sku == \"WIDGET-1\") and ($.qty > 0))) | " + fmtCart);
 
             // EXISTS — OR disjunction in body
             check(
                     soft,
-                    "from Cart c where exists ("
-                            + "from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)",
+                    "from Cart c where exists (" + "from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)",
                     "from $carts | match (lineItems any (($.sku == \"WIDGET-1\") or ($.qty > 5))) | " + fmtCart);
 
             // EXISTS — NOT in body
@@ -473,32 +471,50 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             // Array functions
             var fmtInv = "format {_id: _id, boxedScores: boxedScores, scores: scores}";
 
-            check(soft, "from Inventory i where array_length(i.scores) > 2",
+            check(
+                    soft,
+                    "from Inventory i where array_length(i.scores) > 2",
                     "from $inventory | match (count(scores) > 2) | " + fmtInv);
 
-            check(soft, "from Inventory i where cardinality(i.scores) = 0",
+            check(
+                    soft,
+                    "from Inventory i where cardinality(i.scores) = 0",
                     "from $inventory | match (count(scores) == 0) | " + fmtInv);
 
-            check(soft, "from Inventory i where array_get(i.scores, 1) = 10",
-                    "from $inventory | match (scores[(1) - 1] == 10) | " + fmtInv);
+            check(
+                    soft,
+                    "from Inventory i where array_get(i.scores, 1) = 10",
+                    "from $inventory | match (scores[(1 - 1)] == 10) | " + fmtInv);
 
-            check(soft, "from Inventory i where array_contains(i.scores, 30)",
+            check(
+                    soft,
+                    "from Inventory i where array_contains(i.scores, 30)",
                     "from $inventory | match (scores any ($ == 30)) | " + fmtInv);
 
-            check(soft, "from Inventory i where not array_contains(i.scores, 30)",
+            check(
+                    soft,
+                    "from Inventory i where not array_contains(i.scores, 30)",
                     "from $inventory | match (not (scores any ($ == 30))) | " + fmtInv);
 
-            check(soft, "from Inventory i where array_contains_nullable(i.boxedScores, :needle)",
+            check(
+                    soft,
+                    "from Inventory i where array_contains_nullable(i.boxedScores, :needle)",
                     q -> q.setParameter("needle", (Integer) null),
                     "from $inventory | match (boxedScores any ($ is $p0)) | " + fmtInv);
 
-            check(soft, "from Inventory i where array_intersects(i.scores, array(30, 99))",
+            check(
+                    soft,
+                    "from Inventory i where array_intersects(i.scores, array(30, 99))",
                     "from $inventory | match (scores any (let $__x = $ in [30, 99] any ($ == $__x))) | " + fmtInv);
 
-            check(soft, "from Inventory i where array_overlaps(i.scores, array(10, 40))",
+            check(
+                    soft,
+                    "from Inventory i where array_overlaps(i.scores, array(10, 40))",
                     "from $inventory | match (scores any (let $__x = $ in [10, 40] any ($ == $__x))) | " + fmtInv);
 
-            check(soft, "from Inventory i where array_intersects_nullable(i.boxedScores, :needles)",
+            check(
+                    soft,
+                    "from Inventory i where array_intersects_nullable(i.boxedScores, :needles)",
                     q -> q.setParameter("needles", new Integer[] {null}),
                     "from $inventory | match (boxedScores any (let $__x = $ in $p0 any ($ is $__x))) | " + fmtInv);
         });

@@ -1470,14 +1470,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 assertParameterIndexUnchanged(idx[0]);
                 sb.append(serializer.serialize(ir));
             } else if ("array_get".equals(fn.getFunctionName())) {
-                var args = fn.getArguments();
-                if (!(args.get(0) instanceof Expression haystack) || !(args.get(1) instanceof Expression index)) {
-                    throw new FeatureNotSupportedException("Non-expression argument in array_get()");
-                }
-                appendExprText(sb, haystack);
-                sb.append("[(");
-                appendExprText(sb, index);
-                sb.append(") - 1]");
+                int[] idx = {parameterBinders.size()};
+                Expr ir = Mqlv2IrEmitters.translateArrayGet(fn, idx);
+                assertParameterIndexUnchanged(idx[0]);
+                sb.append(serializer.serialize(ir));
             } else if ("array".equals(fn.getFunctionName()) || "array_list".equals(fn.getFunctionName())) {
                 var args = fn.getArguments();
                 sb.append("[");
