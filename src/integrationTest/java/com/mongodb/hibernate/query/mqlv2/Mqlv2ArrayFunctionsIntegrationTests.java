@@ -137,6 +137,43 @@ class Mqlv2ArrayFunctionsIntegrationTests implements SessionFactoryScopeAware {
         assertThat(rows).extracting(d -> d.id).containsExactly(4);
     }
 
+    @Test
+    void arrayIntersects() {
+        var hql = "from ArrayDoc d where array_intersects(d.scores, array(30, 99))";
+        var rows = sessionFactoryScope.fromSession(session ->
+                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        assertThat(capturedPipeline())
+                .isEqualTo("from $array_docs"
+                        + " | match (scores any (let $__x = $ in [30, 99] any ($ == $__x)))"
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
+        assertThat(rows).extracting(d -> d.id).containsExactlyInAnyOrder(1, 2);
+    }
+
+    @Test
+    void arrayOverlapsAlias() {
+        // Asserts that array_overlaps canonicalizes to the same intercept as array_intersects.
+        var hql = "from ArrayDoc d where array_overlaps(d.scores, array(10, 40))";
+        var rows = sessionFactoryScope.fromSession(session ->
+                session.createSelectionQuery(hql, ArrayDoc.class).getResultList());
+        assertThat(capturedPipeline())
+                .isEqualTo("from $array_docs"
+                        + " | match (scores any (let $__x = $ in [10, 40] any ($ == $__x)))"
+                        + " | format {_id: _id, boxedScores: boxedScores, scores: scores}");
+        assertThat(rows).extracting(d -> d.id).containsExactlyInAnyOrder(1, 2);
+    }
+
+    @Test
+    void arrayIntersectsNullableWithNullElement() {
+        sessionFactoryScope.inTransaction(session ->
+                session.persist(new ArrayDoc(5, new int[] {0}, new Integer[] {null, 50})));
+        var hql = "from ArrayDoc d where array_intersects_nullable(d.boxedScores, :needles)";
+        var rows = sessionFactoryScope.fromSession(session -> session.createSelectionQuery(hql, ArrayDoc.class)
+                .setParameter("needles", new Integer[] {null})
+                .getResultList());
+        assertThat(capturedPipeline()).contains("any (let $__x = $ in $p0 any ($ is $__x))");
+        assertThat(rows).extracting(d -> d.id).containsExactly(5);
+    }
+
     @Entity(name = "ArrayDoc")
     @Table(name = "array_docs")
     static class ArrayDoc {

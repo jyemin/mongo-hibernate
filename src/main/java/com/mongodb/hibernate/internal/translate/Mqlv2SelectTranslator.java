@@ -1365,7 +1365,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         if ("array_contains".equals(name) || "array_contains_nullable".equals(name)) {
             // _nullable uses `is` so a null-valued JdbcParameter matches null elements;
             // non-nullable uses `==` per Hibernate's null-propagation contract.
-            var eqOp = "array_contains_nullable".equals(name) ? "is" : "==";
+            var eqOp = name.endsWith("_nullable") ? "is" : "==";
             if (!(args.get(0) instanceof Expression haystack)
                     || !(args.get(1) instanceof Expression needle)) {
                 throw new FeatureNotSupportedException("Non-expression argument in " + name + "()");
@@ -1375,6 +1375,20 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             sb.append(" any ($ ").append(eqOp).append(" ");
             appendExprText(sb, needle);
             sb.append("))");
+            return true;
+        }
+        if ("array_intersects".equals(name) || "array_intersects_nullable".equals(name)) {
+            // _nullable uses `is` so a null element in either array can match;
+            // non-nullable uses `==` per Hibernate's null-propagation contract.
+            var eqOp = name.endsWith("_nullable") ? "is" : "==";
+            if (!(args.get(0) instanceof Expression a) || !(args.get(1) instanceof Expression b)) {
+                throw new FeatureNotSupportedException("Non-expression argument in " + name + "()");
+            }
+            sb.append("(");
+            appendExprText(sb, a);
+            sb.append(" any (let $__x = $ in ");
+            appendExprText(sb, b);
+            sb.append(" any ($ ").append(eqOp).append(" $__x)))");
             return true;
         }
         return false;
@@ -1449,6 +1463,18 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 sb.append("[(");
                 appendExprText(sb, index);
                 sb.append(") - 1]");
+            } else if ("array".equals(fn.getFunctionName()) || "array_list".equals(fn.getFunctionName())) {
+                var args = fn.getArguments();
+                sb.append("[");
+                for (var i = 0; i < args.size(); i++) {
+                    if (i > 0) sb.append(", ");
+                    if (!(args.get(i) instanceof Expression elem)) {
+                        throw new FeatureNotSupportedException(
+                                "Non-expression argument in " + fn.getFunctionName() + "()");
+                    }
+                    appendExprText(sb, elem);
+                }
+                sb.append("]");
             } else {
                 throw new FeatureNotSupportedException("Unsupported function: " + fn.getFunctionName() + "()");
             }

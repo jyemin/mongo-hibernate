@@ -26,6 +26,7 @@ import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayConstruct
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayContainsFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayIncludesFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.Mqlv2OnlyArrayGetFunction;
+import com.mongodb.hibernate.internal.dialect.function.array.Mqlv2OnlyArrayIntersectsFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.Mqlv2OnlyArrayLengthFunction;
 import com.mongodb.hibernate.internal.translate.MongoTranslatorFactory;
 import com.mongodb.hibernate.internal.translate.Mqlv2TranslatorFactory;
@@ -363,6 +364,12 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
                     "array_length", new Mqlv2OnlyArrayLengthFunction(typeConfiguration));
             functionRegistry.registerAlternateKey("cardinality", "array_length");
             functionRegistry.register("array_get", new Mqlv2OnlyArrayGetFunction());
+            functionRegistry.register(
+                    "array_intersects", new Mqlv2OnlyArrayIntersectsFunction(false, typeConfiguration));
+            functionRegistry.register(
+                    "array_intersects_nullable", new Mqlv2OnlyArrayIntersectsFunction(true, typeConfiguration));
+            functionRegistry.registerAlternateKey("array_overlaps", "array_intersects");
+            functionRegistry.registerAlternateKey("array_overlaps_nullable", "array_intersects_nullable");
         }
         // Register Hibernate's standard `unnest` set-returning function so HQL like
         // `from O o join lateral unnest(o.array) a on 1=1` is parseable. The v2 translator
