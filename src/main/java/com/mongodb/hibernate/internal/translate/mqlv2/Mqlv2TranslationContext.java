@@ -30,7 +30,7 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 import org.jspecify.annotations.Nullable;
 
 /**
- * Immutable (copy-on-write) translation state threaded through {@link Mqlv2IrEmitters} during IR construction.
+ * Immutable (copy-on-write) translation state threaded through {@link Mqlv2ExpressionEmitter} and {@link Mqlv2StageEmitter} during IR construction.
  *
  * <p>Design note — single outer-scope: there is one {@code outerQualifiers} field and one {@code nextCorrelatedVar}
  * supplier, serving two roles that were previously split across {@code subqueryOuterQualifiers}/
@@ -50,7 +50,7 @@ public final class Mqlv2TranslationContext {
     private final boolean hasJoins;
     /**
      * Maps aggregate AST node (by identity) to the assigned alias name (e.g., {@code "_agg0"}). Used by
-     * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters#translateExpression} to resolve aggregate
+     * {@link Mqlv2ExpressionEmitter#translateExpression} to resolve aggregate
      * function references in HAVING clauses. Empty when not translating a HAVING predicate.
      */
     private final Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases;
@@ -67,7 +67,7 @@ public final class Mqlv2TranslationContext {
      *
      * <ul>
      *   <li>In an outer-query context: this is the set of aliases belonging to the outer query; its presence enables
-     *       subquery-predicate dispatch in {@link Mqlv2IrEmitters#translatePredicate}.
+     *       subquery-predicate dispatch in {@link Mqlv2ExpressionEmitter#translatePredicate}.
      *   <li>In an inner-subquery context: column references whose qualifier is in this set are translated as
      *       {@code $__vN} variable references rather than field accesses.
      * </ul>
@@ -222,7 +222,7 @@ public final class Mqlv2TranslationContext {
      * Return a copy of this context augmented with outer-scope information. The returned context:
      *
      * <ul>
-     *   <li>enables subquery-predicate dispatch in {@link Mqlv2IrEmitters#translatePredicate} ({@link #hasOuterScope()}
+     *   <li>enables subquery-predicate dispatch in {@link Mqlv2ExpressionEmitter#translatePredicate} ({@link #hasOuterScope()}
      *       returns {@code true}),
      *   <li>makes {@link #outerQualifiers()} and {@link #nextCorrelatedVar()} available for building inner-subquery
      *       contexts via {@link #forInnerSubquery}.
@@ -287,7 +287,7 @@ public final class Mqlv2TranslationContext {
 
     /**
      * Returns the live parameter-binder list. Used by stage-level helpers (e.g.,
-     * {@link Mqlv2IrEmitters#translateLimit}) to read the current list size after a callback has pushed a binder
+     * {@link Mqlv2StageEmitter#translateLimit}) to read the current list size after a callback has pushed a binder
      * externally.
      */
     public List<JdbcParameterBinder> parameterBinders() {
@@ -312,7 +312,7 @@ public final class Mqlv2TranslationContext {
 
     /**
      * Returns {@code true} if this context has outer-scope information set (i.e., was created via
-     * {@link #withOuterScope}). When {@code true}, {@link Mqlv2IrEmitters#translatePredicate} can dispatch
+     * {@link #withOuterScope}). When {@code true}, {@link Mqlv2ExpressionEmitter#translatePredicate} can dispatch
      * {@code ExistsPredicate}, {@code InSubQueryPredicate}, and {@code ComparisonPredicate} with {@code Any}/{@code
      * Every} RHS to the appropriate emitters, and {@link #forInnerSubquery} may be called to derive an inner context.
      */
