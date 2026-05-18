@@ -213,6 +213,10 @@ public final class Mqlv2IrEmitters {
     private static Expr translateColumnRef(ColumnReference cr, Mqlv2TranslationContext ctx) {
         String qualifier = cr.getQualifier();
         String column = cr.getColumnExpression();
+        // Outer-correlated reference inside an inner subquery: bind to a $__vN variable.
+        if (qualifier != null && ctx.isOuterCorrelated(qualifier)) {
+            return new Expr.VarRef(ctx.allocateCorrelatedVar(qualifier, column));
+        }
         if (qualifier != null && ctx.unnestAliasToFieldPath().containsKey(qualifier)) {
             return buildFieldChain(ctx.unnestAliasToFieldPath().get(qualifier) + "." + column);
         }
@@ -888,5 +892,136 @@ public final class Mqlv2IrEmitters {
             throw new FeatureNotSupportedException("Expected simple column reference for GROUP BY key; got: "
                     + expr.getClass().getSimpleName());
         }
+    }
+
+    // ---- Inner-subquery IR translation helpers (Phase D5) ----
+
+    /**
+     * Translate a simple inner-subquery {@link QuerySpec} into a {@link Stage} pipeline. The inner spec must have
+     * exactly one FROM root with no joins (the same constraint enforced by the hand-rolled
+     * {@code appendQuerySpecPipeline}).
+     *
+     * <p>Outer-correlated column references (i.e., column references whose qualifier is in the outer-query scope) are
+     * translated as {@code VarRef("__vN")} rather than field accesses. The allocated bindings are recorded in the
+     * {@link Mqlv2TranslationContext} (via {@link Mqlv2TranslationContext#allocateCorrelatedVar}) and can be retrieved
+     * by the caller via {@link Mqlv2TranslationContext#getCorrelatedBindings()} to build the {@code LetExpr} wrapper
+     * using {@link #wrapAsSubPipeline}.
+     *
+     * <p>The {@code innerCtx} must have been created with
+     * {@link Mqlv2TranslationContext#forInnerSubquery(Set, Map, java.util.function.IntSupplier)}.
+     *
+     * @param innerSpec the inner query spec to translate (FROM + optional WHERE).
+     * @param innerCtx translation context for the inner scope, carrying the outer-qualifier set and the mutable
+     *     correlated-bindings map.
+     * @return the translated {@link Stage} for the inner pipeline.
+     */
+    public static Stage translateInnerQuerySpec(QuerySpec innerSpec, Mqlv2TranslationContext innerCtx) {
+        var roots = innerSpec.getFromClause().getRoots();
+        if (roots.size() != 1 || !roots.get(0).getTableGroupJoins().isEmpty()) {
+            throw new FeatureNotSupportedException(
+                    "Subquery with joins or multiple FROM roots is not supported in MQLv2");
+        }
+        var ntr = (NamedTableReference) roots.get(0).getPrimaryTableReference();
+        Stage s = new Stage.FromStageSimple(new Expr.VarRef(ntr.getTableExpression()));
+        var where = innerSpec.getWhereClauseRestrictions();
+        if (where != null && !where.isEmpty()) {
+            s = new Stage.MatchStage(s, translatePredicate(where, innerCtx));
+        }
+        return s;
+    }
+
+    /**
+     * Wrap a translated inner-subquery {@link Stage} as a {@link Expr.SubPipelineExpr}, optionally enclosed in a
+     * {@link Expr.LetExpr} when there are correlated outer-query bindings.
+     *
+     * <p>Mirrors {@code wrapWithLet(String innerPipeline, Map<String,String> correlatedBindings)} in
+     * {@code Mqlv2SelectTranslator}:
+     *
+     * <ul>
+     *   <li>No bindings → {@code (innerPipeline)} (a bare {@link Expr.SubPipelineExpr}).
+     *   <li>With bindings → {@code let $__v0 = field0[, $__v1 = field1, ...] in (innerPipeline)}.
+     * </ul>
+     *
+     * <p>The binding <em>values</em> (the field expressions for outer-correlated columns) are built using
+     * {@link #outerCorrelatedFieldExpr(String, boolean)}, which mirrors the logic in the hand-rolled
+     * {@code correlatedFieldExpr}: unqualified column name in simple scans, full {@code qualifier.column} in join
+     * contexts.
+     *
+     * @param stage the inner pipeline stage (produced by {@link #translateInnerQuerySpec}).
+     * @param correlatedBindings map of {@code "qualifier.column" → "__vN"} collected during inner-spec translation
+     *     (from {@link Mqlv2TranslationContext#getCorrelatedBindings()}). May be empty.
+     * @param outerHasJoins whether the outer query has joins; determines whether field references in let bindings are
+     *     qualified ({@code qualifier.column}) or unqualified ({@code column}).
+     * @return the wrapped {@link Expr}: either a bare {@link Expr.SubPipelineExpr} or a {@link Expr.LetExpr}.
+     */
+    public static Expr wrapAsSubPipeline(
+            Stage stage, Map<String, String> correlatedBindings, boolean outerHasJoins) {
+        Expr pipelineExpr = new Expr.SubPipelineExpr(stage);
+        if (correlatedBindings.isEmpty()) {
+            return pipelineExpr;
+        }
+        var bindings = new ArrayList<Map.Entry<String, Expr>>(correlatedBindings.size());
+        for (var entry : correlatedBindings.entrySet()) {
+            // entry.getKey() is "qualifier.column"; entry.getValue() is "__vN" (without $).
+            // The binding name in LetExpr is "__vN" (without $); the Serializer adds the "$" prefix.
+            var fieldExpr = outerCorrelatedFieldExpr(entry.getKey(), outerHasJoins);
+            bindings.add(Map.entry(entry.getValue(), fieldExpr));
+        }
+        return new Expr.LetExpr(bindings, pipelineExpr);
+    }
+
+    /**
+     * Overload for the IN/ANY/ALL pattern that prepends a head binding (the test expression variable) before the
+     * correlated outer-column bindings.
+     *
+     * <p>Mirrors {@code wrapWithLet(String innerPipeline, String headVarName, String headValueText, Map)} in
+     * {@code Mqlv2SelectTranslator}. Produces:
+     * {@code let $headVarName = headValueExpr[, $__vN = field, ...] in (innerPipeline)}.
+     *
+     * @param stage the inner pipeline stage.
+     * @param headVarName the {@code __vN} name (without {@code $}) for the head binding.
+     * @param headValueExpr the expression that the head variable is bound to (the test expression from the outer
+     *     query).
+     * @param correlatedBindings additional outer-correlated bindings, as in
+     *     {@link #wrapAsSubPipeline(Stage, Map, boolean)}.
+     * @param outerHasJoins whether the outer query has joins.
+     * @return the wrapped {@link Expr.LetExpr}.
+     */
+    public static Expr wrapAsSubPipelineWithHead(
+            Stage stage,
+            String headVarName,
+            Expr headValueExpr,
+            Map<String, String> correlatedBindings,
+            boolean outerHasJoins) {
+        Expr pipelineExpr = new Expr.SubPipelineExpr(stage);
+        var bindings = new ArrayList<Map.Entry<String, Expr>>(1 + correlatedBindings.size());
+        bindings.add(Map.entry(headVarName, headValueExpr));
+        for (var entry : correlatedBindings.entrySet()) {
+            var fieldExpr = outerCorrelatedFieldExpr(entry.getKey(), outerHasJoins);
+            bindings.add(Map.entry(entry.getValue(), fieldExpr));
+        }
+        return new Expr.LetExpr(bindings, pipelineExpr);
+    }
+
+    /**
+     * Build the field-access {@link Expr} for an outer correlated column binding value. Mirrors the hand-rolled
+     * {@code correlatedFieldExpr(String qualifiedKey)} in {@code Mqlv2SelectTranslator}.
+     *
+     * <ul>
+     *   <li>No joins: unqualified column name — {@code FieldAccess($, "column")}.
+     *   <li>Has joins: qualified path — {@code FieldAccess(FieldAccess($, "qualifier"), "column")}.
+     * </ul>
+     *
+     * @param qualifiedKey {@code "qualifier.column"} key from the correlated-bindings map.
+     * @param outerHasJoins whether the outer query has joins.
+     * @return the field-access expression for the binding value.
+     */
+    private static Expr outerCorrelatedFieldExpr(String qualifiedKey, boolean outerHasJoins) {
+        if (outerHasJoins) {
+            return buildFieldChain(qualifiedKey);
+        }
+        var dotIdx = qualifiedKey.indexOf('.');
+        var column = dotIdx >= 0 ? qualifiedKey.substring(dotIdx + 1) : qualifiedKey;
+        return new Expr.FieldAccess(new Expr.CurrentValue(), column);
     }
 }
