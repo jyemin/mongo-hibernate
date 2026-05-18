@@ -136,6 +136,10 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, String.class).getResultList());
         // Orders 1 and 2 match; order 1 has WIDGET-1 + WIDGET-2, order 2 has GADGET-1.
         assertThat(results).containsExactlyInAnyOrder("WIDGET-1", "WIDGET-2", "GADGET-1");
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | unwind $__elem=lineItems in {_id: _id, lineItems: $__elem}"
+                        + " | match (count(let $__v0 = _id in (from $orders | match ((_id == 1) or (_id == 2)) | match (_id == $__v0))) > 0)"
+                        + " | format {sku: lineItems.sku}");
     }
 
     @Test
@@ -148,6 +152,10 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
                 .getResultList());
         // Only order 1 has score 10; its line items are WIDGET-1 and WIDGET-2.
         assertThat(results).containsExactlyInAnyOrder("WIDGET-1", "WIDGET-2");
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | unwind $__elem=lineItems in {scores: scores, lineItems: $__elem}"
+                        + " | match scores any (($ == $p0))"
+                        + " | format {sku: lineItems.sku}");
     }
 
     @Test

@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.groups.Tuple.tuple;
 import static org.hibernate.cfg.AvailableSettings.DIALECT;
+import static org.hibernate.cfg.AvailableSettings.STATEMENT_INSPECTOR;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.junit.MongoExtension;
@@ -28,6 +29,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.List;
+import org.bson.BsonDocument;
 import org.hibernate.testing.orm.junit.DomainModel;
 import org.hibernate.testing.orm.junit.ServiceRegistry;
 import org.hibernate.testing.orm.junit.ServiceRegistryScope;
@@ -48,7 +50,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
             Mqlv2SelectIntegrationTests.LineItem.class
         })
 @SessionFactory(exportSchema = false)
-@ServiceRegistry(settings = @Setting(name = DIALECT, value = "com.mongodb.hibernate.query.mqlv2.TestMqlv2Dialect"))
+@ServiceRegistry(
+        settings = {
+            @Setting(name = DIALECT, value = "com.mongodb.hibernate.query.mqlv2.TestMqlv2Dialect"),
+            @Setting(name = STATEMENT_INSPECTOR, value = "com.mongodb.hibernate.query.mqlv2.MqlCapture")
+        })
 @ExtendWith(MongoExtension.class)
 class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRegistryScopeAware {
 
@@ -150,6 +156,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @BeforeEach
     void setUp() {
+        MqlCapture.LAST.remove();
         sessionFactoryScope.inTransaction(session -> {
             CUSTOMERS.forEach(session::persist);
             ORDERS.forEach(session::persist);
@@ -167,6 +174,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(3);
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | format {_id: _id, active: active, age: age, name: name}");
     }
 
     // ---- Task 7: WHERE, sort, limit, parameterized ----
@@ -178,6 +187,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (age > 25) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -189,6 +200,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(1);
             assertThat(result.get(0).name).isEqualTo("Alice");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (name == $p0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -198,6 +211,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match ((age > 20) and (age < 32)) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -207,6 +222,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).hasSize(2); // pending + cancelled
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (status != \"shipped\") | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}");
     }
 
     @Test
@@ -218,6 +235,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             // top 2 by age desc: Carol (35), Alice (30)
             assertThat(result.stream().map(c -> c.name)).containsExactly("Carol", "Alice");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | sort age desc | limit 2 | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -228,6 +247,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(3);
             assertThat(result.stream().map(c -> c.name)).containsExactly("Bob", "Alice", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | sort age | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -240,6 +261,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             // top 2 by age desc: Carol (35), Alice (30)
             assertThat(result.stream().map(c -> c.name)).containsExactly("Carol", "Alice");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | sort age desc | limit $p0 | format {_id: _id, active: active, age: age, name: name}");
     }
 
     // ---- Task 9: IS NULL / IS NOT NULL ----
@@ -251,6 +274,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).isEmpty();
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match isNullish(status) | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}");
     }
 
     @Test
@@ -260,6 +285,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).hasSize(4);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match notNullish(status) | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}");
     }
 
     @Test
@@ -271,6 +298,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).isEmpty();
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (status == $p0) | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}");
     }
 
     @Test
@@ -282,6 +311,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).isEmpty();
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (status != $p0) | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}");
     }
 
     // ---- Arithmetic and date-part expressions in SELECT ----
@@ -293,6 +324,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(60); // Alice age 30 * 2
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (_id == 1) | format {_f0: (age * 2)}");
     }
 
     @Test
@@ -304,6 +337,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(30); // Bob age 25 + 5
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (_id == 2) | format {_f0: (age + $p0)}");
     }
 
     @Test
@@ -314,6 +349,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(2023);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (_id == 10) | format {_f0: year(orderDate)}");
     }
 
     @Test
@@ -324,6 +361,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(7); // July
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (_id == 11) | format {_f0: month(orderDate)}");
     }
 
     @Test
@@ -334,6 +373,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(15);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (_id == 10) | format {_f0: dayOfMonth(orderDate)}");
     }
 
     @Test
@@ -344,6 +385,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(10); // 10:00:00Z
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (_id == 10) | format {_f0: hour(orderDate)}");
     }
 
     @Test
@@ -354,6 +397,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(30); // 14:30:00Z
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (_id == 11) | format {_f0: minute(orderDate)}");
     }
 
     @Test
@@ -364,6 +409,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(45.0f); // 09:15:45Z
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (_id == 12) | format {_f0: second(orderDate)}");
     }
 
     @Test
@@ -374,6 +421,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match ((age * 2) > 55) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -383,6 +432,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(o -> o.id)).containsExactlyInAnyOrder(10, 12);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (year(orderDate) == 2023) | format {_id: _id, customerId: customerId, orderDate: orderDate, status: status, total: total}");
     }
 
     @Test
@@ -413,6 +464,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     // ---- Task 8: JOIN queries ----
@@ -426,6 +479,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(3);
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from c1_0=$customers | join o1_0=$orders ((c1_0._id == o1_0.customerId)) | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name} | distinct");
     }
 
     @Test
@@ -437,6 +492,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from c1_0=$customers | join o1_0=$orders ((c1_0._id == o1_0.customerId)) | match (o1_0.total > 100) | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name} | distinct");
     }
 
     @Test
@@ -449,6 +506,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(3);
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from c1_0=$customers | join leftOuter o1_0=$orders ((c1_0._id == o1_0.customerId)) | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name} | distinct");
     }
 
     @Test
@@ -461,6 +520,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(4);
             assertThat(result.stream().map(o -> o.id)).containsExactlyInAnyOrder(10, 11, 12, 13);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from c1_0=$customers | join rightOuter o1_0=$orders ((c1_0._id == o1_0.customerId)) | format {_id: o1_0._id, customerId: o1_0.customerId, orderDate: o1_0.orderDate, status: o1_0.status, total: o1_0.total} | distinct");
     }
 
     @Test
@@ -478,6 +539,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from c1_0=$customers | join o1_0=$orders ((c1_0._id == o1_0.customerId)) | join li1_0=$lineitems ((o1_0._id == li1_0.orderId)) | match ((o1_0.status == \"shipped\") and (li1_0.shipMode == \"AIR\")) | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name} | distinct");
     }
 
     // ---- Task: GROUP BY ----
@@ -493,6 +556,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .extracting(r -> r[0], r -> r[1])
                     .containsExactlyInAnyOrder(tuple("shipped", 2L), tuple("pending", 1L), tuple("cancelled", 1L));
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = count($->_id)) | format {status: status, _f0: _agg0}");
     }
 
     @Test
@@ -507,6 +572,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .containsExactlyInAnyOrder(
                             tuple("shipped", 350.0), tuple("pending", 80.0), tuple("cancelled", 50.0));
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = sum($->total)) | format {status: status, _f0: _agg0}");
     }
 
     @Test
@@ -524,6 +591,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result[3]).isEqualTo(150.0);
             assertThat(result[4]).isEqualTo(200.0);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | match (status == \"shipped\") | group (status = status) (_agg0 = count($->_id), _agg1 = sum($->total), _agg2 = min($->total), _agg3 = max($->total)) | format {status: status, _f0: _agg0, _f1: _agg1, _f2: _agg2, _f3: _agg3}");
     }
 
     @Test
@@ -544,6 +613,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                             tuple(2, "shipped", 1L),
                             tuple(3, "cancelled", 1L));
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (customerId = customerId, status = status) (_agg0 = count($->_id)) | format {customerId: customerId, status: status, _f0: _agg0}");
     }
 
     @Test
@@ -558,6 +629,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result.get(0)[0]).isEqualTo("shipped");
             assertThat(result.get(0)[1]).isEqualTo(2L);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = count($->_id)) | match (_agg0 > 1) | format {status: status, _f0: _agg0}");
     }
 
     @Test
@@ -573,6 +646,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result.get(0)[0]).isEqualTo("shipped");
             assertThat(result.get(0)[1]).isEqualTo(350.0);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = sum($->total)) | match (_agg0 > 100) | format {status: status, _f0: _agg0}");
     }
 
     @Test
@@ -584,6 +659,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).containsExactly("shipped");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = count($->_id)) | match (_agg0 > 1) | format {status: status}");
     }
 
     @Test
@@ -595,6 +672,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).containsExactly("shipped");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = sum($->total)) | match (_agg0 > 100) | format {status: status}");
     }
 
     @Test
@@ -611,6 +690,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result.get(0)[0]).isEqualTo("shipped");
             assertThat(result.get(0)[1]).isEqualTo(2L);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = count($->_id), _agg1 = sum($->total)) | match (_agg1 > 100) | format {status: status, _f0: _agg0}");
     }
 
     @Test
@@ -624,6 +705,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).containsExactly("shipped");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = count($->_id), _agg1 = sum($->total)) | match ((_agg0 > 1) and (_agg1 > 100)) | format {status: status}");
     }
 
     @Test
@@ -637,6 +720,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).containsExactlyInAnyOrder("shipped", "pending");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = count($->_id), _agg1 = sum($->total)) | match ((_agg0 > 1) or (_agg1 > 70)) | format {status: status}");
     }
 
     @Test
@@ -649,6 +734,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).containsExactlyInAnyOrder("pending", "cancelled");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = count($->_id)) | match (not (_agg0 > 1)) | format {status: status}");
     }
 
     @Test
@@ -661,6 +748,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).containsExactly("shipped");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = count($->_id)) | match ((_agg0 * 2) > 3) | format {status: status}");
     }
 
     @Test
@@ -673,6 +762,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).containsExactlyInAnyOrder("pending", "cancelled");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $orders | group (status = status) (_agg0 = count($->_id)) | match (_agg0 == 1) | format {status: status}");
     }
 
     // ---- Scalar aggregates (no GROUP BY) ----
@@ -684,6 +775,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(3L);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | agg {_agg0: count($)} | format {_f0: _agg0}");
     }
 
     @Test
@@ -693,6 +786,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(3L);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | agg {_agg0: count($)} | format {_f0: _agg0}");
     }
 
     @Test
@@ -703,6 +798,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getSingleResult();
             assertThat(result).isEqualTo(2L);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (active == true) | agg {_agg0: count($)} | format {_f0: _agg0}");
     }
 
     @Test
@@ -719,6 +816,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result[3]).isEqualTo(25);
             assertThat(result[4]).isEqualTo(35);
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | agg {_agg0: count($), _agg1: sum($->age), _agg2: avg($->age), _agg3: min($->age), _agg4: max($->age)} | format {_f0: _agg0, _f1: _agg1, _f2: _agg2, _f3: _agg3, _f4: _agg4}");
     }
 
     @Test
@@ -732,6 +831,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(3);
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from c1_0=$customers | join fullOuter o1_0=$orders ((c1_0._id == o1_0.customerId)) | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name} | distinct");
     }
 
     // ---- Subquery and set operation tests ----
@@ -744,6 +845,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match ((age == 25) or (age == 30)) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -755,6 +858,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(1);
             assertThat(result.get(0).name).isEqualTo("Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match ((age != 25) and (age != 30)) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -768,6 +873,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (count(let $__v0 = _id in (from $orders | match ((customerId == $__v0) and (total > 100)))) > 0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -781,6 +888,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(1);
             assertThat(result.get(0).name).isEqualTo("Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (count(let $__v0 = _id in (from $orders | match ((customerId == $__v0) and (total > 100)))) == 0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -792,6 +901,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).isEmpty();
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (count((from $orders | match (total > 1000))) > 0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -805,6 +916,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (count(let $__v0 = _id in (from $orders | match (total > 100) | match (customerId == $__v0))) > 0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -816,6 +929,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result).isEmpty();
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (count(let $__v0 = _id in (from $orders | match (customerId == $__v0))) == 0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -830,6 +945,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Bob", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (count(let $__v0 = _id in (from $orders | match (total > 100) | match (customerId < $__v0))) > 0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -845,6 +962,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(1);
             assertThat(result.get(0).name).isEqualTo("Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (count(let $__v0 = _id in (from $orders | match (total > 100) | match (customerId >= $__v0))) == 0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -858,6 +977,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Bob", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (count(let $__v0 = _id in (from $orders | match (total > 100) | match (customerId < $__v0))) > 0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Test
@@ -874,6 +995,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .extracting(r -> r[0], r -> r[1])
                     .containsExactlyInAnyOrder(tuple("Alice", 2L), tuple("Bob", 1L), tuple("Carol", 1L));
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | format {name: name, _f0: count(let $__v0 = _id in (from $orders | match (customerId == $__v0)))}");
     }
 
     // ---- Task 6: Set operations ----
@@ -891,6 +1014,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(3);
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Carol", "Alice", "Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from <<(from $customers | match (age > 30) | format {_id: _id, active: active, age: age, name: name}), (from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name})>> | unwind $*");
     }
 
     @Test
@@ -904,6 +1029,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(2);
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Carol", "Alice");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from <<(from $customers | match (age > 30) | format {_id: _id, active: active, age: age, name: name}), (from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name})>> | unwind $* | distinct");
     }
 
     @Test
@@ -917,6 +1044,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(1);
             assertThat(result.get(0).name).isEqualTo("Carol");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (age > 30) | format {_id: _id, active: active, age: age, name: name} | match (count(let $__v0 = $ in (from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name} | match ($ == $__v0))) > 0)");
     }
 
     @Test
@@ -930,6 +1059,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
             assertThat(result).hasSize(1);
             assertThat(result.get(0).name).isEqualTo("Alice");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (active == true) | format {_id: _id, active: active, age: age, name: name} | match (count(let $__v0 = $ in (from $customers | match (age > 30) | format {_id: _id, active: active, age: age, name: name} | match ($ == $__v0))) == 0)");
     }
 
     @Test
@@ -978,6 +1109,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .extracting(r -> r[0], r -> r[1])
                     .containsExactlyInAnyOrder(tuple(1, 2L), tuple(2, 1L), tuple(3, 1L));
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from c1_0=$customers | join o1_0=$orders ((c1_0._id == o1_0.customerId)) | group (_id = c1_0._id) (_agg0 = count($->o1_0->_id)) | format {_id: _id, _f0: _agg0}");
     }
 
     @Test
@@ -994,6 +1127,8 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from $customers | match (count(let $__v0 = _id in (from $orders | match ((customerId == $__v0) and (total > 100)))) > 0) | format {_id: _id, active: active, age: age, name: name}");
     }
 
     @Disabled("Haskell parseString in Lexer.hs has no escape handling: \\\" terminates the string early")
@@ -1034,5 +1169,7 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
                     .getResultList();
             assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob");
         });
+        assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
+                .isEqualTo("from c1_0=$customers | join o1_0=$orders ((c1_0._id == o1_0.customerId)) | match (count(let $__v0 = c1_0._id in (from $orders | match ((customerId == $__v0) and (total > 100)))) > 0) | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name} | distinct");
     }
 }
