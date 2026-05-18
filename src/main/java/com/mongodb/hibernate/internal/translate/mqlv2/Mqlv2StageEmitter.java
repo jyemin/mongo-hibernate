@@ -59,6 +59,8 @@ import org.hibernate.sql.ast.tree.select.QuerySpec;
 import org.hibernate.sql.ast.tree.select.SelectClause;
 import org.jspecify.annotations.Nullable;
 
+import static java.util.Objects.requireNonNull;
+
 /**
  * Translates Hibernate SQL AST stage-level constructs into driver-mqlv2 {@link Stage} nodes. Covers the full pipeline
  * construction sequence: FROM ({@link #translateFromStage}), JOIN/UNWIND ({@link #translateJoins}), WHERE
@@ -297,7 +299,7 @@ public final class Mqlv2StageEmitter {
                         ? new Expr.ArrayConstructor(List.of(rawValue))
                         : rawValue;
             } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
-                key = bvpi.getColumnReference().getColumnExpression();
+                key = requireNonNull(bvpi.getColumnReference()).getColumnExpression();
                 var rawValue = aggNames != null
                         ? new Expr.FieldAccess(new Expr.CurrentValue(), key)
                         : Mqlv2ExpressionEmitter.translateExpression(selExpr, ctx);
@@ -697,7 +699,7 @@ public final class Mqlv2StageEmitter {
         if (expr instanceof ColumnReference cr) {
             return cr.getColumnExpression();
         } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
-            return bvpi.getColumnReference().getColumnExpression();
+            return requireNonNull(bvpi.getColumnReference()).getColumnExpression();
         }
         throw new FeatureNotSupportedException("Expected simple column reference for unwind path; got: "
                 + expr.getClass().getSimpleName());

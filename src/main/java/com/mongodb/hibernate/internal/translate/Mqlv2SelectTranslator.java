@@ -18,6 +18,7 @@ package com.mongodb.hibernate.internal.translate;
 
 import static java.lang.Integer.MAX_VALUE;
 import static java.util.Collections.emptyMap;
+import static java.util.Objects.requireNonNull;
 import static org.hibernate.sql.exec.spi.JdbcLockStrategy.NONE;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
@@ -298,7 +299,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect>, Throw
         stage = Mqlv2StageEmitter.translateSort(stage, querySpec, ctx);
         stage = Mqlv2StageEmitter.translateLimit(stage, querySpec, queryOptions, ctx, () -> {
             var basicIntegerType = sessionFactory.getTypeConfiguration().getBasicTypeForJavaType(Integer.class);
-            limitJdbcParameter = new LimitJdbcParameter(basicIntegerType);
+            limitJdbcParameter = new LimitJdbcParameter(requireNonNull(basicIntegerType));
             parameterBinders.add(limitJdbcParameter.getParameterBinder());
         });
         var fmt = Mqlv2StageEmitter.translateFormat(stage, querySpec.getSelectClause(), aggNames, ctx);
@@ -462,7 +463,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect>, Throw
             }
             return cr.getColumnExpression();
         } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
-            return aggColumnSignature(bvpi.getColumnReference(), hasJoins);
+            return aggColumnSignature(requireNonNull(bvpi.getColumnReference()), hasJoins);
         } else {
             throw new FeatureNotSupportedException("Expected simple column reference in aggregate; got: "
                     + expr.getClass().getSimpleName());

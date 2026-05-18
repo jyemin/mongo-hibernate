@@ -58,6 +58,8 @@ import org.hibernate.sql.ast.tree.predicate.SelfRenderingPredicate;
 import org.hibernate.sql.ast.tree.select.QuerySpec;
 import org.hibernate.sql.ast.tree.select.SelectStatement;
 
+import static java.util.Objects.requireNonNull;
+
 /**
  * Translates Hibernate SQL AST {@link Expression} and {@link Predicate} nodes into driver-mqlv2 {@link Expr} nodes.
  * Covers literals, column references, JDBC parameters, arithmetic, all function-call arms, all predicate shapes
@@ -596,7 +598,7 @@ public final class Mqlv2ExpressionEmitter {
         if (expr instanceof ColumnReference cr) {
             return cr.getColumnExpression();
         } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
-            return bvpi.getColumnReference().getColumnExpression();
+            return requireNonNull(bvpi.getColumnReference()).getColumnExpression();
         } else {
             throw new FeatureNotSupportedException("Expected simple column reference for GROUP BY key; got: "
                     + expr.getClass().getSimpleName());
