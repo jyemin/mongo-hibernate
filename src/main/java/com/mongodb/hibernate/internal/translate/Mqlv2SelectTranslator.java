@@ -318,7 +318,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
         var ntr = (NamedTableReference) root.getPrimaryTableReference();
         var outerQualifiers = collectOuterQualifiers(querySpec);
-        var ctx = newContext().withSubquerySupport(outerQualifiers, () -> correlatedVarCounter++);
+        var ctx = newContext().withOuterScope(outerQualifiers, () -> correlatedVarCounter++);
         var stage = Mqlv2IrEmitters.translateFromStage(ntr, hasJoins);
         stage = Mqlv2IrEmitters.translateJoins(stage, root, querySpec, ctx);
         stage = Mqlv2IrEmitters.translateMatch(stage, querySpec, ctx);

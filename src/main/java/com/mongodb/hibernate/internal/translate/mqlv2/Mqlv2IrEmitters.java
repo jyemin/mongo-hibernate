@@ -148,16 +148,15 @@ public final class Mqlv2IrEmitters {
             throw new FeatureNotSupportedException("Unsupported function in IR translation: " + fnName);
         }
         if (e instanceof SelectStatement ss) {
-            if (!ctx.hasSubquerySupport()) {
+            if (!ctx.hasOuterScope()) {
                 throw new FeatureNotSupportedException("SelectStatement in expression requires subquery-aware context");
             }
             var innerSpec = ss.getQueryPart().getFirstQuerySpec();
             var innerRoot = innerSpec.getFromClause().getRoots().get(0);
             if (innerRoot.getPrimaryTableReference() instanceof FunctionTableReference) {
-                return translateUnnestScalarSubquery(
-                        ss, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+                return translateUnnestScalarSubquery(ss, ctx);
             }
-            return translateScalarSubquery(ss, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+            return translateScalarSubquery(ss, ctx);
         }
         throw new FeatureNotSupportedException(
                 "Unsupported expression in IR translation: " + e.getClass().getSimpleName());
@@ -448,16 +447,12 @@ public final class Mqlv2IrEmitters {
         // Check for ANY/ALL subquery before the generic ComparisonPredicate arm, since Any/Every
         // are not translatable as plain expressions.
         if (p instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr
-                && ctx.hasSubquerySupport()) {
-            return translateAnyAllSubquery(
-                    cp, anyExpr.getSubquery(), false, ctx,
-                    ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+                && ctx.hasOuterScope()) {
+            return translateAnyAllSubquery(cp, anyExpr.getSubquery(), false, ctx);
         }
         if (p instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Every everyExpr
-                && ctx.hasSubquerySupport()) {
-            return translateAnyAllSubquery(
-                    cp, everyExpr.getSubquery(), true, ctx,
-                    ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+                && ctx.hasOuterScope()) {
+            return translateAnyAllSubquery(cp, everyExpr.getSubquery(), true, ctx);
         }
         if (p instanceof ComparisonPredicate cp) {
             return new Expr.BinaryOp(
@@ -507,20 +502,17 @@ public final class Mqlv2IrEmitters {
         }
         // Remaining subquery-based predicates (InSubQueryPredicate, non-unnest ExistsPredicate):
         // require subquery support to be enabled in the context.
-        if (ctx.hasSubquerySupport()) {
+        if (ctx.hasOuterScope()) {
             if (p instanceof InSubQueryPredicate isp) {
-                return translateInSubQuery(
-                        isp, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+                return translateInSubQuery(isp, ctx);
             }
             if (p instanceof ExistsPredicate ep) {
                 var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
                 var innerRoot = innerSpec.getFromClause().getRoots().get(0);
                 if (innerRoot.getPrimaryTableReference() instanceof FunctionTableReference) {
-                    return translateUnnestExists(
-                            ep, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+                    return translateUnnestExists(ep, ctx);
                 }
-                return translateExists(
-                        ep, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+                return translateExists(ep, ctx);
             }
         }
         throw new FeatureNotSupportedException(
@@ -938,8 +930,7 @@ public final class Mqlv2IrEmitters {
      * by the caller via {@link Mqlv2TranslationContext#getCorrelatedBindings()} to build the {@code LetExpr} wrapper
      * using {@link #wrapAsSubPipeline}.
      *
-     * <p>The {@code innerCtx} must have been created with
-     * {@link Mqlv2TranslationContext#forInnerSubquery(Set, Map, java.util.function.IntSupplier)}.
+     * <p>The {@code innerCtx} must have been created with {@link Mqlv2TranslationContext#forInnerSubquery}.
      *
      * @param innerSpec the inner query spec to translate (FROM + optional WHERE).
      * @param innerCtx translation context for the inner scope, carrying the outer-qualifier set and the mutable
@@ -1062,20 +1053,13 @@ public final class Mqlv2IrEmitters {
      * wrapped via {@link #wrapAsSubPipeline}.
      *
      * @param ep the EXISTS predicate.
-     * @param outerCtx the outer translation context (provides parameter binders and hasJoins state).
-     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
-     * @param nextCorrelatedVar supplier of the next globally-unique integer index for {@code $__vN} names; shared with
-     *     the outer translator to avoid collisions.
+     * @param outerCtx the outer translation context (provides parameter binders, hasJoins state, and outer qualifiers).
      * @return the translated {@link Expr}.
      */
-    private static Expr translateExists(
-            ExistsPredicate ep,
-            Mqlv2TranslationContext outerCtx,
-            Set<String> outerQualifiers,
-            IntSupplier nextCorrelatedVar) {
+    private static Expr translateExists(ExistsPredicate ep, Mqlv2TranslationContext outerCtx) {
         var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
         var correlatedBindings = new LinkedHashMap<String, String>();
-        var innerCtx = outerCtx.forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar);
+        var innerCtx = outerCtx.forInnerSubquery(correlatedBindings);
         Stage innerStage = translateInnerQuerySpec(innerSpec, innerCtx);
         Expr wrapped = wrapAsSubPipeline(innerStage, correlatedBindings, outerCtx.hasJoins());
         Expr countExpr = new Expr.FunctionCall("count", List.of(wrapped));
@@ -1098,16 +1082,10 @@ public final class Mqlv2IrEmitters {
      * binding) are captured as further {@code $__vN} let bindings.
      *
      * @param isp the IN-subquery predicate.
-     * @param outerCtx the outer translation context.
-     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
-     * @param nextCorrelatedVar supplier of the next globally-unique integer index; shared with the outer translator.
+     * @param outerCtx the outer translation context (provides parameter binders, hasJoins state, and outer qualifiers).
      * @return the translated {@link Expr}.
      */
-    private static Expr translateInSubQuery(
-            InSubQueryPredicate isp,
-            Mqlv2TranslationContext outerCtx,
-            Set<String> outerQualifiers,
-            IntSupplier nextCorrelatedVar) {
+    private static Expr translateInSubQuery(InSubQueryPredicate isp, Mqlv2TranslationContext outerCtx) {
         var innerSpec = isp.getSubQuery().getQueryPart().getFirstQuerySpec();
         var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
@@ -1118,10 +1096,10 @@ public final class Mqlv2IrEmitters {
 
         // Allocate the head variable BEFORE creating the inner context so that variable ordering
         // matches the hand-rolled path ($__v0 for the head, then higher indices for outer refs).
-        String headVarName = "__v" + nextCorrelatedVar.getAsInt();
+        String headVarName = "__v" + outerCtx.nextCorrelatedVar().getAsInt();
 
         var correlatedBindings = new LinkedHashMap<String, String>();
-        var innerCtx = outerCtx.forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar);
+        var innerCtx = outerCtx.forInnerSubquery(correlatedBindings);
         Stage innerStage = translateInnerQuerySpec(innerSpec, innerCtx);
 
         // Append match stage: projectedCol == $headVar
@@ -1158,18 +1136,14 @@ public final class Mqlv2IrEmitters {
      *     org.hibernate.sql.ast.tree.expression.Every} expression.
      * @param subquery the subquery carried by the ANY/ALL expression.
      * @param isAll {@code true} for ALL, {@code false} for ANY.
-     * @param outerCtx the outer translation context.
-     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
-     * @param nextCorrelatedVar supplier of the next globally-unique integer index; shared with the outer translator.
+     * @param outerCtx the outer translation context (provides parameter binders, hasJoins state, and outer qualifiers).
      * @return the translated {@link Expr}.
      */
     private static Expr translateAnyAllSubquery(
             ComparisonPredicate cp,
             SelectStatement subquery,
             boolean isAll,
-            Mqlv2TranslationContext outerCtx,
-            Set<String> outerQualifiers,
-            IntSupplier nextCorrelatedVar) {
+            Mqlv2TranslationContext outerCtx) {
         var innerSpec = subquery.getQueryPart().getFirstQuerySpec();
         var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
@@ -1180,10 +1154,10 @@ public final class Mqlv2IrEmitters {
         var projectedColName = simpleColumnName(projectedExpr);
 
         // Allocate head variable BEFORE creating the inner context to preserve ordering.
-        String headVarName = "__v" + nextCorrelatedVar.getAsInt();
+        String headVarName = "__v" + outerCtx.nextCorrelatedVar().getAsInt();
 
         var correlatedBindings = new LinkedHashMap<String, String>();
-        var innerCtx = outerCtx.forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar);
+        var innerCtx = outerCtx.forInnerSubquery(correlatedBindings);
         Stage innerStage = translateInnerQuerySpec(innerSpec, innerCtx);
 
         // Append match stage: projectedCol matchOp $headVar (with swapped/inverted operator).
@@ -1255,17 +1229,10 @@ public final class Mqlv2IrEmitters {
      * outer-correlated column references.
      *
      * @param ss the scalar subquery statement.
-     * @param outerCtx the outer translation context (provides parameter binders and hasJoins state).
-     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
-     * @param nextCorrelatedVar supplier of the next globally-unique integer index for {@code __vN} names; shared with
-     *     the outer translator to avoid collisions.
+     * @param outerCtx the outer translation context (provides parameter binders, hasJoins state, and outer qualifiers).
      * @return the translated {@link Expr}.
      */
-    private static Expr translateScalarSubquery(
-            SelectStatement ss,
-            Mqlv2TranslationContext outerCtx,
-            Set<String> outerQualifiers,
-            IntSupplier nextCorrelatedVar) {
+    private static Expr translateScalarSubquery(SelectStatement ss, Mqlv2TranslationContext outerCtx) {
         var innerSpec = ss.getQueryPart().getFirstQuerySpec();
         var selections = innerSpec.getSelectClause().getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
@@ -1280,7 +1247,7 @@ public final class Mqlv2IrEmitters {
                     "Scalar subquery in SELECT must use count(); other aggregates are not supported");
         }
         var correlatedBindings = new LinkedHashMap<String, String>();
-        var innerCtx = outerCtx.forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar);
+        var innerCtx = outerCtx.forInnerSubquery(correlatedBindings);
         Stage innerStage = translateInnerQuerySpec(innerSpec, innerCtx);
         Expr wrapped = wrapAsSubPipeline(innerStage, correlatedBindings, outerCtx.hasJoins());
         return new Expr.FunctionCall("count", List.of(wrapped));
@@ -1298,17 +1265,10 @@ public final class Mqlv2IrEmitters {
      * value is the array element.
      *
      * @param ep the unnest-EXISTS predicate (caller must verify the inner FROM root is a {@link FunctionTableReference}).
-     * @param outerCtx the outer translation context.
-     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
-     * @param nextCorrelatedVar supplier of the next globally-unique integer index for {@code __vN} names; shared with
-     *     the outer translator to avoid collisions.
+     * @param outerCtx the outer translation context (provides parameter binders, hasJoins state, and outer qualifiers).
      * @return the translated {@link Expr}.
      */
-    private static Expr translateUnnestExists(
-            ExistsPredicate ep,
-            Mqlv2TranslationContext outerCtx,
-            Set<String> outerQualifiers,
-            IntSupplier nextCorrelatedVar) {
+    private static Expr translateUnnestExists(ExistsPredicate ep, Mqlv2TranslationContext outerCtx) {
         var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
         var innerRoot = innerSpec.getFromClause().getRoots().get(0);
         var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
@@ -1323,7 +1283,7 @@ public final class Mqlv2IrEmitters {
         //   - outer qualifiers resolve to $__vN variables (correlated bindings).
         var correlatedBindings = new LinkedHashMap<String, String>();
         var bodyCtx = outerCtx
-                .forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar)
+                .forInnerSubquery(correlatedBindings)
                 .forArrayElement(Set.of(unnestAlias));
         Expr bodyExpr = translatePredicate(innerSpec.getWhereClauseRestrictions(), bodyCtx);
 
@@ -1343,17 +1303,10 @@ public final class Mqlv2IrEmitters {
      * <p>Only {@code count()} is supported. Other aggregates throw {@link FeatureNotSupportedException}.
      *
      * @param ss the scalar SELECT (caller must verify the inner FROM root is a {@link FunctionTableReference}).
-     * @param outerCtx the outer translation context.
-     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
-     * @param nextCorrelatedVar supplier of the next globally-unique integer index for {@code __vN} names; shared with
-     *     the outer translator to avoid collisions.
+     * @param outerCtx the outer translation context (provides parameter binders, hasJoins state, and outer qualifiers).
      * @return the translated {@link Expr}.
      */
-    private static Expr translateUnnestScalarSubquery(
-            SelectStatement ss,
-            Mqlv2TranslationContext outerCtx,
-            Set<String> outerQualifiers,
-            IntSupplier nextCorrelatedVar) {
+    private static Expr translateUnnestScalarSubquery(SelectStatement ss, Mqlv2TranslationContext outerCtx) {
         var innerSpec = ss.getQueryPart().getFirstQuerySpec();
         var innerRoot = innerSpec.getFromClause().getRoots().get(0);
         var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
@@ -1384,7 +1337,7 @@ public final class Mqlv2IrEmitters {
         var correlatedBindings = new LinkedHashMap<String, String>();
         if (where != null && !where.isEmpty()) {
             var bodyCtx = outerCtx
-                    .forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar)
+                    .forInnerSubquery(correlatedBindings)
                     .forArrayElement(Set.of(unnestAlias));
             stage = new Stage.MatchStage(stage, translatePredicate(where, bodyCtx));
         }
