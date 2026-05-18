@@ -28,11 +28,14 @@ import com.mongodb.mqlv2.ast.Stage;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
+import org.hibernate.query.sqm.sql.internal.EntityValuedPathInterpretation;
 import org.bson.BsonArray;
 import org.bson.BsonDocument;
 import org.bson.BsonString;
@@ -147,8 +150,25 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * so that column references qualified by the unnest alias resolve to {@code <arrayPath>.<column>}.
      */
     private final Map<String, String> unnestAliasToFieldPath = new LinkedHashMap<>();
-    // Maps aggregate signature (e.g. "sum:total") → _aggN name; populated during GROUP BY translation
-    private final Map<String, String> aggSignatureToName = new LinkedHashMap<>();
+    /**
+     * Maps aggregate AST node (by identity) → assigned alias name (e.g. {@code _agg0}). Populated during SELECT-clause
+     * analysis by {@link #buildAggNames} and during HAVING-only aggregate collection by
+     * {@link #collectHavingOnlyAggsInExpr}. Uses an {@link IdentityHashMap} because Hibernate may create structurally
+     * equal AST nodes with distinct identities for the same aggregate in SELECT vs. HAVING; identity-keying is safe
+     * because all lookups happen within a single translation pass.
+     *
+     * <p>When Hibernate produces two distinct node instances for the same aggregate in SELECT and HAVING,
+     * {@link #aggSignatureIndex} serves as a fallback dedup index; see {@link #collectHavingOnlyAggsInExpr}.
+     */
+    private final IdentityHashMap<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases =
+            new IdentityHashMap<>();
+    /**
+     * Secondary signature-keyed index of already-assigned aggregate aliases. Populated in parallel with
+     * {@link #aggregateAliases} by {@link #buildAggNames}. Used as a fallback in
+     * {@link #collectHavingOnlyAggsInExpr} to detect structurally-equal aggregates that appear in HAVING as distinct
+     * node instances from their SELECT counterparts.
+     */
+    private final Map<String, String> aggSignatureIndex = new LinkedHashMap<>();
     // Intentionally global (not reset per subquery branch): $__vN names only need to be unique across
     // the whole translation, and sharing the counter avoids collisions between nested correlated bindings.
     private int correlatedVarCounter = 0;
@@ -259,16 +279,20 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
     private SpecTranslation translateQuerySpecToMqlv2(QuerySpec querySpec) {
         var savedHasJoins = this.hasJoins;
-        var savedAggMap = new LinkedHashMap<>(this.aggSignatureToName);
+        var savedAggMap = new IdentityHashMap<SelfRenderingFunctionSqlAstExpression<?>, String>(this.aggregateAliases);
+        var savedSigIndex = new LinkedHashMap<>(this.aggSignatureIndex);
         var savedUnnestMap = new LinkedHashMap<>(this.unnestAliasToFieldPath);
-        this.aggSignatureToName.clear();
+        this.aggregateAliases.clear();
+        this.aggSignatureIndex.clear();
         this.unnestAliasToFieldPath.clear();
         try {
             return buildQuerySpecTranslation(querySpec, null);
         } finally {
             this.hasJoins = savedHasJoins;
-            this.aggSignatureToName.clear();
-            this.aggSignatureToName.putAll(savedAggMap);
+            this.aggregateAliases.clear();
+            this.aggregateAliases.putAll(savedAggMap);
+            this.aggSignatureIndex.clear();
+            this.aggSignatureIndex.putAll(savedSigIndex);
             this.unnestAliasToFieldPath.clear();
             this.unnestAliasToFieldPath.putAll(savedUnnestMap);
         }
@@ -352,7 +376,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     private Mqlv2TranslationContext newContext() {
-        return new Mqlv2TranslationContext(parameterBinders, unnestAliasToFieldPath, hasJoins, aggSignatureToName);
+        return new Mqlv2TranslationContext(parameterBinders, unnestAliasToFieldPath, hasJoins, aggregateAliases);
     }
 
     private static Set<String> collectOuterQualifiers(QuerySpec outerSpec) {
@@ -381,11 +405,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         for (var sel : selectClause.getSqlSelections()) {
             if (sel.isVirtual()) continue;
             if (isAggregateFunction(sel.getExpression())) {
+                var fn = (SelfRenderingFunctionSqlAstExpression<?>) sel.getExpression();
                 var name = "_agg" + aggIdx++;
-                aggSignatureToName.put(
-                        Mqlv2IrEmitters.aggSignature(
-                                (SelfRenderingFunctionSqlAstExpression<?>) sel.getExpression(), hasJoins),
-                        name);
+                aggregateAliases.put(fn, name);
+                // Also populate the signature index so that structurally-equal nodes from HAVING can be deduped
+                // even when Hibernate constructs them as distinct instances.
+                aggSignatureIndex.put(aggSignature(fn), name);
                 result.add(name);
             } else {
                 result.add(null);
@@ -425,10 +450,22 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             Expression expr, Map<String, SelfRenderingFunctionSqlAstExpression<?>> result) {
         if (isAggregateFunction(expr)) {
             var fn = (SelfRenderingFunctionSqlAstExpression<?>) expr;
-            var sig = Mqlv2IrEmitters.aggSignature(fn, hasJoins);
-            if (!aggSignatureToName.containsKey(sig)) {
-                var name = "_agg" + aggSignatureToName.size();
-                aggSignatureToName.put(sig, name);
+            if (aggregateAliases.containsKey(fn)) {
+                // Same instance already registered from SELECT; nothing to do.
+                return;
+            }
+            // Hibernate sometimes creates distinct AST node instances for the same aggregate in SELECT vs. HAVING.
+            // Fall back to signature-based dedup to detect structural equality across node instances.
+            var sig = aggSignature(fn);
+            var existingAlias = aggSignatureIndex.get(sig);
+            if (existingAlias != null) {
+                // A structurally-equal aggregate was already registered from SELECT; alias the HAVING node too
+                // so that Mqlv2IrEmitters can find it via the identity-keyed aggregateAliases map.
+                aggregateAliases.put(fn, existingAlias);
+            } else {
+                var name = "_agg" + aggregateAliases.size();
+                aggregateAliases.put(fn, name);
+                aggSignatureIndex.put(sig, name);
                 result.put(name, fn);
             }
         } else if (expr instanceof BinaryArithmeticExpression bae) {
@@ -437,9 +474,43 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         }
     }
 
+    private static final Set<String> AGGREGATE_FUNCTION_NAMES = Set.of("count", "sum", "avg", "min", "max");
+
     private static boolean isAggregateFunction(Expression expr) {
         return expr instanceof SelfRenderingFunctionSqlAstExpression<?> fn
-                && Mqlv2IrEmitters.AGGREGATE_FUNCTION_NAMES.contains(fn.getFunctionName());
+                && AGGREGATE_FUNCTION_NAMES.contains(fn.getFunctionName());
+    }
+
+    /**
+     * Compute a structural signature string for an aggregate function node. Used solely by
+     * {@link #aggSignatureIndex} as a fallback dedup key when Hibernate produces two distinct node instances for the
+     * same aggregate expression in SELECT and HAVING.
+     */
+    private String aggSignature(SelfRenderingFunctionSqlAstExpression<?> fn) {
+        var args = fn.getArguments();
+        if (args.isEmpty()
+                || args.get(0) instanceof Star
+                || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
+            return fn.getFunctionName() + ":*";
+        }
+        if (args.get(0) instanceof Expression argExpr) {
+            return fn.getFunctionName() + ":" + aggColumnSignature(argExpr);
+        }
+        return fn.getFunctionName() + ":?";
+    }
+
+    private String aggColumnSignature(Expression expr) {
+        if (expr instanceof ColumnReference cr) {
+            if (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty()) {
+                return cr.getQualifier() + "." + cr.getColumnExpression();
+            }
+            return cr.getColumnExpression();
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            return aggColumnSignature(bvpi.getColumnReference());
+        } else {
+            throw new FeatureNotSupportedException("Expected simple column reference in aggregate; got: "
+                    + expr.getClass().getSimpleName());
+        }
     }
 
     private static boolean selectHasAggregates(SelectClause selectClause) {

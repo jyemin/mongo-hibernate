@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.IntSupplier;
+import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 
 /**
@@ -40,11 +41,11 @@ public final class Mqlv2TranslationContext {
     private final Map<String, String> unnestAliasToFieldPath;
     private final boolean hasJoins;
     /**
-     * Maps aggregate signature (e.g., {@code "count:id"}) to the assigned alias name (e.g., {@code "_agg0"}). Used by
+     * Maps aggregate AST node (by identity) to the assigned alias name (e.g., {@code "_agg0"}). Used by
      * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters#translateExpression} to resolve aggregate
      * function references in HAVING clauses. Empty when not translating a HAVING predicate.
      */
-    private final Map<String, String> aggSignatureToName;
+    private final Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases;
 
     /**
      * Set of outer-query table-reference aliases (e.g., {@code "c"} for {@code Customer c}). Non-null only for inner
@@ -104,11 +105,11 @@ public final class Mqlv2TranslationContext {
             List<JdbcParameterBinder> parameterBinders,
             Map<String, String> unnestAliasToFieldPath,
             boolean hasJoins,
-            Map<String, String> aggSignatureToName) {
+            Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases) {
         this.parameterBinders = parameterBinders;
         this.unnestAliasToFieldPath = unnestAliasToFieldPath;
         this.hasJoins = hasJoins;
-        this.aggSignatureToName = aggSignatureToName;
+        this.aggregateAliases = aggregateAliases;
         this.outerQualifiers = null;
         this.correlatedBindings = null;
         this.nextCorrelatedVarIndex = null;
@@ -121,7 +122,7 @@ public final class Mqlv2TranslationContext {
             List<JdbcParameterBinder> parameterBinders,
             Map<String, String> unnestAliasToFieldPath,
             boolean hasJoins,
-            Map<String, String> aggSignatureToName,
+            Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases,
             @org.jspecify.annotations.Nullable Set<String> outerQualifiers,
             @org.jspecify.annotations.Nullable Map<String, String> correlatedBindings,
             @org.jspecify.annotations.Nullable IntSupplier nextCorrelatedVarIndex,
@@ -131,7 +132,7 @@ public final class Mqlv2TranslationContext {
         this.parameterBinders = parameterBinders;
         this.unnestAliasToFieldPath = unnestAliasToFieldPath;
         this.hasJoins = hasJoins;
-        this.aggSignatureToName = aggSignatureToName;
+        this.aggregateAliases = aggregateAliases;
         this.outerQualifiers = outerQualifiers;
         this.correlatedBindings = correlatedBindings;
         this.nextCorrelatedVarIndex = nextCorrelatedVarIndex;
@@ -193,7 +194,7 @@ public final class Mqlv2TranslationContext {
                 parameterBinders,
                 unnestAliasToFieldPath,
                 hasJoins,
-                aggSignatureToName,
+                aggregateAliases,
                 outerQualifiers,
                 correlatedBindings,
                 nextCorrelatedVarIndex,
@@ -223,7 +224,7 @@ public final class Mqlv2TranslationContext {
                 parameterBinders,
                 unnestAliasToFieldPath,
                 hasJoins,
-                aggSignatureToName,
+                aggregateAliases,
                 this.outerQualifiers,
                 this.correlatedBindings,
                 this.nextCorrelatedVarIndex,
@@ -289,8 +290,8 @@ public final class Mqlv2TranslationContext {
         return hasJoins;
     }
 
-    public Map<String, String> aggSignatureToName() {
-        return aggSignatureToName;
+    public Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases() {
+        return aggregateAliases;
     }
 
     /**

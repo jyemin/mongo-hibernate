@@ -125,14 +125,13 @@ public final class Mqlv2IrEmitters {
         }
         if (e instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
             var fnName = fn.getFunctionName();
-            if (AGGREGATE_FUNCTION_NAMES.contains(fnName)) {
-                var sig = aggSignature(fn, ctx.hasJoins());
-                var alias = ctx.aggSignatureToName().get(sig);
+            if (isAggregateFunction(fn)) {
+                var alias = ctx.aggregateAliases().get(fn);
                 if (alias == null) {
                     throw new FeatureNotSupportedException(
                             "Aggregate function in expression not found in SELECT: " + fnName + "()");
                 }
-                return translateAggregateReference(alias);
+                return new Expr.FieldAccess(new Expr.CurrentValue(), alias);
             }
             if ("array".equals(fnName) || "array_list".equals(fnName)) {
                 return translateArrayConstructor(fn, ctx);
@@ -164,35 +163,10 @@ public final class Mqlv2IrEmitters {
                 "Unsupported expression in IR translation: " + e.getClass().getSimpleName());
     }
 
-    public static final Set<String> AGGREGATE_FUNCTION_NAMES = Set.of("count", "sum", "avg", "min", "max");
+    private static final Set<String> AGGREGATE_FUNCTION_NAMES = Set.of("count", "sum", "avg", "min", "max");
 
-    /**
-     * Compute the aggregate signature key used to look up the assigned {@code _aggN} alias. Mirrors the logic in
-     * {@code Mqlv2SelectTranslator.aggSignature}.
-     */
-    public static String aggSignature(SelfRenderingFunctionSqlAstExpression<?> fn, boolean hasJoins) {
-        var args = fn.getArguments();
-        if (args.isEmpty() || args.get(0) instanceof Star || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
-            return fn.getFunctionName() + ":*";
-        }
-        if (args.get(0) instanceof Expression argExpr) {
-            return fn.getFunctionName() + ":" + aggColumnSignature(argExpr, hasJoins);
-        }
-        return fn.getFunctionName() + ":?";
-    }
-
-    private static String aggColumnSignature(Expression expr, boolean hasJoins) {
-        if (expr instanceof ColumnReference cr) {
-            if (hasJoins && cr.getQualifier() != null && !cr.getQualifier().isEmpty()) {
-                return cr.getQualifier() + "." + cr.getColumnExpression();
-            }
-            return cr.getColumnExpression();
-        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
-            return aggColumnSignature(bvpi.getColumnReference(), hasJoins);
-        } else {
-            throw new FeatureNotSupportedException("Expected simple column reference in aggregate; got: "
-                    + expr.getClass().getSimpleName());
-        }
+    private static boolean isAggregateFunction(SelfRenderingFunctionSqlAstExpression<?> fn) {
+        return AGGREGATE_FUNCTION_NAMES.contains(fn.getFunctionName());
     }
 
     private static Value translateLiteralValue(Object v) {
@@ -849,12 +823,12 @@ public final class Mqlv2IrEmitters {
      * Append a {@link Stage.MatchStage} for the HAVING clause if it is non-empty; otherwise return {@code prev}
      * unchanged.
      *
-     * <p>The HAVING predicate may reference aggregate aliases (e.g., {@code _agg0}) via the {@code aggSignatureToName}
-     * map in {@code ctx}; these are resolved by {@link #translateExpression} via {@link #translateAggregateReference}.
+     * <p>The HAVING predicate may reference aggregate aliases (e.g., {@code _agg0}) via the {@code aggregateAliases}
+     * map in {@code ctx}; these are resolved by {@link #translateExpression}.
      *
      * @param prev the pipeline stage to wrap.
      * @param qs the query spec whose HAVING clause is consulted.
-     * @param ctx translation context (must have {@code aggSignatureToName} populated).
+     * @param ctx translation context (must have {@code aggregateAliases} populated).
      * @return the updated stage.
      */
     public static Stage translateHaving(Stage prev, QuerySpec qs, Mqlv2TranslationContext ctx) {
