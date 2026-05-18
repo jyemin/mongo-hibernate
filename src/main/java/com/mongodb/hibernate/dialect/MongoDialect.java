@@ -370,11 +370,9 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
             functionRegistry.registerAlternateKey("array_overlaps", "array_intersects");
             functionRegistry.registerAlternateKey("array_overlaps_nullable", "array_intersects_nullable");
         }
-        // Register Hibernate's standard `unnest` set-returning function so HQL like
-        // `from O o join lateral unnest(o.array) a on 1=1` is parseable. The v2 translator
-        // does not yet handle the resulting FunctionTableReference; Phase 3 of the elemMatch
-        // design plugs that in. Registering here lets Phase 0's diagnostic test confirm the
-        // SQL-AST shape Hibernate 7 produces.
+        // Standard Hibernate `unnest` set-returning function — used by HQL patterns like
+        // `from O o join lateral unnest(o.array) a`; the MQLv2 translator
+        // (`Mqlv2SelectTranslator.buildUnnestJoinStage`) renders it as `UnwindComplexStage`.
         functionRegistry.register("unnest", new UnnestFunction("value", "ordinality"));
     }
 

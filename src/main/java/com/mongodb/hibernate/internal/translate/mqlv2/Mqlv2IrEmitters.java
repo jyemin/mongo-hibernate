@@ -430,14 +430,13 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Convert a Hibernate {@link Predicate} to a driver-mqlv2 {@link Expr}. Phase C scope: leaf-shape predicates
-     * (Comparison, Nullness, BooleanExpression, Grouped, SelfRendering array functions), conjunctions/disjunctions
-     * (Junction), and negation (NegatedPredicate). InList, InSubQuery, Exists deferred to subsequent tasks.
+     * Convert a Hibernate {@link Predicate} to a driver-mqlv2 {@link Expr}. Handles leaf-shape predicates (Comparison,
+     * Nullness, BooleanExpression, Grouped, SelfRendering array functions), conjunctions/disjunctions (Junction),
+     * negation (NegatedPredicate), InList, InSubQuery, and Exists predicates.
      *
      * <p>Junction with N predicates builds a left-associative {@link Expr.BinaryOp} chain: {@code (p1 op p2 op p3)}
      * becomes {@code ((p1 op p2) op p3)}. The Serializer adds inner parentheses around each binary sub-expression,
-     * producing {@code ((p1 op p2) op p3)} — identical output to the old hand-rolled emission for 2-predicate cases; 3+
-     * predicate cases get extra nesting (D6 drift).
+     * so 3+ predicate conjunctions/disjunctions produce extra nesting compared to an equivalent hand-flattened form.
      *
      * <p>NegatedPredicate emits {@code UnaryOp(NOT, inner)}. The Serializer's UnaryOp branch wraps an {@code Any}
      * argument in extra parens, preserving correct precedence for negated array-function predicates.
@@ -561,7 +560,7 @@ public final class Mqlv2IrEmitters {
         };
     }
 
-    // ---- Stage-level translation helpers (Phase D2) ----
+    // ---- Stage-level translation helpers ----
 
     /**
      * Return value of {@link #translateFormat}: the updated pipeline {@link Stage} and the ordered list of field names
@@ -686,8 +685,7 @@ public final class Mqlv2IrEmitters {
      * Build a {@link Stage.FormatStage} wrapping {@code prev} and return a {@link FormatTranslation} that also carries
      * the ordered field-name list for the result-set mapping.
      *
-     * <p>Field-name assignment mirrors
-     * {@link com.mongodb.hibernate.internal.translate.Mqlv2SelectTranslator#appendFormat}:
+     * <p>Field-name assignment rules:
      *
      * <ul>
      *   <li>Aggregate selection (aggName non-null): synthetic {@code _fN} key; value is a bare field reference to the
@@ -763,13 +761,12 @@ public final class Mqlv2IrEmitters {
         return new FormatTranslation(new Stage.FormatStage(prev, docConstructor), fieldNames);
     }
 
-    // ---- Group / Having / Scalar-agg stage translation helpers (Phase D4) ----
+    // ---- Group / Having / Scalar-agg stage translation helpers ----
 
     /**
-     * Build a {@link Stage.GroupStage} for a GROUP BY query. Mirrors the hand-rolled {@code appendGroup} method in
-     * {@code Mqlv2SelectTranslator}.
+     * Build a {@link Stage.GroupStage} for a GROUP BY query.
      *
-     * <p>Group keys are named after the column expression (via {@link #simpleColumnName}). Aggregate keys come from (a)
+     * <p>Group keys are named after the column expression (column name only, no qualifier). Aggregate keys come from (a)
      * non-null entries in {@code aggNames} (SELECT-position aggregates) and (b) HAVING-only aggregates in
      * {@code havingOnlyAggs}.
      *
@@ -817,8 +814,7 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Build a {@link Stage.AggStage} for a scalar-aggregate query (aggregates without GROUP BY). Mirrors the
-     * hand-rolled {@code appendScalarAgg} method in {@code Mqlv2SelectTranslator}.
+     * Build a {@link Stage.AggStage} for a scalar-aggregate query (aggregates without GROUP BY).
      *
      * @param prev the pipeline stage to wrap.
      * @param selectClause the SELECT clause.
@@ -845,7 +841,7 @@ public final class Mqlv2IrEmitters {
 
     /**
      * Append a {@link Stage.MatchStage} for the HAVING clause if it is non-empty; otherwise return {@code prev}
-     * unchanged. Mirrors the hand-rolled {@code appendHaving} method.
+     * unchanged.
      *
      * <p>The HAVING predicate may reference aggregate aliases (e.g., {@code _agg0}) via the {@code aggSignatureToName}
      * map in {@code ctx}; these are resolved by {@link #translateExpression} via {@link #translateAggregateReference}.
@@ -863,7 +859,7 @@ public final class Mqlv2IrEmitters {
 
     /**
      * Translate an aggregate function call (not a reference to an already-assigned alias) into its driver-mqlv2
-     * {@link Expr.FunctionCall} form. Mirrors the hand-rolled {@code appendAggFunctionText}.
+     * {@link Expr.FunctionCall} form.
      *
      * <p>Argument mapping:
      *
@@ -894,8 +890,7 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Translate an aggregate function field argument into the {@code $->field} arrow-op form. Mirrors the hand-rolled
-     * {@code appendAggFieldRef} in {@code Mqlv2SelectTranslator}.
+     * Translate an aggregate function field argument into the {@code $->field} arrow-op form.
      *
      * <p>Rule: the arrow-op always starts from {@code $} (current value). In a join context the qualifier is preserved:
      * {@code qualifier->column}. For unnest aliases the mapped field path is used: {@code arrayFieldPath->column}.
@@ -938,7 +933,7 @@ public final class Mqlv2IrEmitters {
 
     /**
      * Extracts the simple column expression from a GROUP BY key expression, used to name the group key in the
-     * {@link Stage.GroupStage}. Mirrors the hand-rolled {@code simpleColumnName}.
+     * {@link Stage.GroupStage}.
      */
     private static String simpleColumnName(Expression expr) {
         if (expr instanceof ColumnReference cr) {
@@ -951,12 +946,11 @@ public final class Mqlv2IrEmitters {
         }
     }
 
-    // ---- Inner-subquery IR translation helpers (Phase D5) ----
+    // ---- Inner-subquery IR translation helpers ----
 
     /**
      * Translate a simple inner-subquery {@link QuerySpec} into a {@link Stage} pipeline. The inner spec must have
-     * exactly one FROM root with no joins (the same constraint enforced by the hand-rolled
-     * {@code appendQuerySpecPipeline}).
+     * exactly one FROM root with no joins.
      *
      * <p>Outer-correlated column references (i.e., column references whose qualifier is in the outer-query scope) are
      * translated as {@code VarRef("__vN")} rather than field accesses. The allocated bindings are recorded in the
@@ -991,18 +985,14 @@ public final class Mqlv2IrEmitters {
      * Wrap a translated inner-subquery {@link Stage} as a {@link Expr.SubPipelineExpr}, optionally enclosed in a
      * {@link Expr.LetExpr} when there are correlated outer-query bindings.
      *
-     * <p>Mirrors {@code wrapWithLet(String innerPipeline, Map<String,String> correlatedBindings)} in
-     * {@code Mqlv2SelectTranslator}:
-     *
      * <ul>
      *   <li>No bindings → {@code (innerPipeline)} (a bare {@link Expr.SubPipelineExpr}).
      *   <li>With bindings → {@code let $__v0 = field0[, $__v1 = field1, ...] in (innerPipeline)}.
      * </ul>
      *
      * <p>The binding <em>values</em> (the field expressions for outer-correlated columns) are built using
-     * {@link #outerCorrelatedFieldExpr(String, boolean)}, which mirrors the logic in the hand-rolled
-     * {@code correlatedFieldExpr}: unqualified column name in simple scans, full {@code qualifier.column} in join
-     * contexts.
+     * {@link #outerCorrelatedFieldExpr(String, boolean)}: unqualified column name in simple scans, full
+     * {@code qualifier.column} in join contexts.
      *
      * @param stage the inner pipeline stage (produced by {@link #translateInnerQuerySpec}).
      * @param correlatedBindings map of {@code "qualifier.column" → "__vN"} collected during inner-spec translation
@@ -1029,10 +1019,7 @@ public final class Mqlv2IrEmitters {
 
     /**
      * Overload for the IN/ANY/ALL pattern that prepends a head binding (the test expression variable) before the
-     * correlated outer-column bindings.
-     *
-     * <p>Mirrors {@code wrapWithLet(String innerPipeline, String headVarName, String headValueText, Map)} in
-     * {@code Mqlv2SelectTranslator}. Produces:
+     * correlated outer-column bindings. Produces:
      * {@code let $headVarName = headValueExpr[, $__vN = field, ...] in (innerPipeline)}.
      *
      * @param stage the inner pipeline stage.
@@ -1061,8 +1048,7 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * Build the field-access {@link Expr} for an outer correlated column binding value. Mirrors the hand-rolled
-     * {@code correlatedFieldExpr(String qualifiedKey)} in {@code Mqlv2SelectTranslator}.
+     * Build the field-access {@link Expr} for an outer correlated column binding value.
      *
      * <ul>
      *   <li>No joins: unqualified column name — {@code FieldAccess($, "column")}.
@@ -1082,7 +1068,7 @@ public final class Mqlv2IrEmitters {
         return new Expr.FieldAccess(new Expr.CurrentValue(), column);
     }
 
-    // ---- Subquery-predicate IR translation helpers (Phase D6) ----
+    // ---- Subquery-predicate IR translation helpers ----
 
     /**
      * Translate an {@link ExistsPredicate} (non-unnest form) into a driver-mqlv2 {@link Expr}.
@@ -1184,9 +1170,9 @@ public final class Mqlv2IrEmitters {
      *   <li>ALL ({@code isAll=true}): same shape but with the inverse swap operator and {@code == 0}.
      * </ul>
      *
-     * <p>The swap operator follows the same convention as the hand-rolled {@code anyMatchOp}/{@code allMatchOp}: the
-     * inner {@code | match} stage places the projected column on the left and the test variable on the right, requiring
-     * operand-order swapping (and for ALL also negation) of the original operator.
+     * <p>The inner {@code | match} stage places the projected column on the left and the test variable on the right,
+     * requiring operand-order swapping (and for ALL also negation) of the original operator (see
+     * {@link #anyMatchOpIr}/{@link #allMatchOpIr}).
      *
      * @param cp the comparison predicate whose RHS is the {@link org.hibernate.sql.ast.tree.expression.Any}/{@link
      *     org.hibernate.sql.ast.tree.expression.Every} expression.
@@ -1241,9 +1227,9 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * IR counterpart of {@code anyMatchOp}: returns the {@link BinaryOpType} for the {@code | match} inside an ANY
-     * subquery. Swaps operand order so that {@code col op $__vN} is semantically equivalent to {@code $__vN op col}
-     * (i.e., {@code x op ANY(col)} counts rows where {@code col} satisfies the predicate with {@code x}).
+     * Returns the {@link BinaryOpType} for the {@code | match} stage inside an ANY subquery. Swaps operand order so
+     * that {@code col op $__vN} is semantically equivalent to {@code $__vN op col} (i.e., {@code x op ANY(col)} counts
+     * rows where {@code col} satisfies the predicate with {@code x}).
      */
     private static BinaryOpType anyMatchOpIr(ComparisonOperator op) {
         return switch (op) {
@@ -1259,8 +1245,8 @@ public final class Mqlv2IrEmitters {
     }
 
     /**
-     * IR counterpart of {@code allMatchOp}: returns the {@link BinaryOpType} for the {@code | match} inside an ALL
-     * subquery. Negates and swaps operand order so that ALL counts rows where the condition does NOT hold.
+     * Returns the {@link BinaryOpType} for the {@code | match} stage inside an ALL subquery. Negates and swaps operand
+     * order so that ALL counts rows where the condition does NOT hold.
      */
     private static BinaryOpType allMatchOpIr(ComparisonOperator op) {
         return switch (op) {
@@ -1275,12 +1261,12 @@ public final class Mqlv2IrEmitters {
         };
     }
 
-    // ---- Scalar-subquery expression IR translation helper (Phase D7) ----
+    // ---- Scalar-subquery expression IR translation helper ----
 
     /**
      * Translate a scalar {@link SelectStatement} subquery in expression position (e.g., in a SELECT clause) into a
      * driver-mqlv2 {@link Expr}. Only the non-unnest form is handled here; unnest-form subqueries (whose inner FROM is a
-     * {@link FunctionTableReference}) are left to the hand-rolled {@code appendUnnestScalarSubquery}.
+     * {@link FunctionTableReference}) are handled by {@link #translateUnnestScalarSubquery}.
      *
      * <p>Only {@code count()} is supported: MQLv2's {@code count(pipeline)} returns the pipeline cardinality. Other
      * aggregates have no pipeline-argument form and throw {@link FeatureNotSupportedException}.
@@ -1320,16 +1306,16 @@ public final class Mqlv2IrEmitters {
         return new Expr.FunctionCall("count", List.of(wrapped));
     }
 
-    // ---- Unnest predicate / scalar-subquery IR translation helpers (Phase D9) ----
+    // ---- Unnest predicate / scalar-subquery IR translation helpers ----
 
     /**
      * Translate {@code exists (select 1 from o.array a where <body>)} (an unnest-form {@link ExistsPredicate}) into a
      * driver-mqlv2 {@link Expr.Any}: {@code arrayPath any (<body-rewritten>)}, with outer-correlated references captured
      * into a {@code let} wrapper around the {@code any} expression. Negation wraps the whole thing in {@code (not …)}.
      *
-     * <p>Mirrors the hand-rolled {@code appendUnnestExistsPredicate}. The inner predicate body is translated in a
-     * context where the unnest alias resolves to {@code FieldAccess(CurrentValue, column)} ({@code $.col}), reflecting
-     * that inside an {@code any} body the current value is the array element.
+     * <p>The inner predicate body is translated in a context where the unnest alias resolves to
+     * {@code FieldAccess(CurrentValue, column)} ({@code $.col}), reflecting that inside an {@code any} body the current
+     * value is the array element.
      *
      * @param ep the unnest-EXISTS predicate (caller must verify the inner FROM root is a {@link FunctionTableReference}).
      * @param outerCtx the outer translation context.

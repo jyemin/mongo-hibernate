@@ -30,10 +30,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Unit tests for {@link Mqlv2IrEmitters}.
  *
- * <p>These tests lock the Serializer's text for the leaf {@link Expr} shapes used in IR translation. The full
- * Hibernate-AST → IR dispatch path is exercised through the integration tests in
- * {@code Mqlv2ArrayFunctionsIntegrationTests} once the per-function migrations (Tasks 3-7) wire {@link Mqlv2IrEmitters}
- * into {@link com.mongodb.hibernate.internal.translate.Mqlv2SelectTranslator}.
+ * <p>These tests lock the Serializer's output for canonical {@link Expr} shapes used in IR translation. The full
+ * Hibernate-AST → IR dispatch path is exercised through the integration tests.
  */
 class Mqlv2IrEmittersTest {
 
@@ -92,8 +90,8 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * No correlated bindings → bare {@code SubPipelineExpr} (parenthesised pipeline). Mirrors hand-rolled
-     * {@code wrapWithLet(innerPipeline, emptyMap)} producing {@code "(from $orders | match (...))"}.
+     * No correlated bindings → bare {@code SubPipelineExpr} (parenthesised pipeline):
+     * {@code "(from $orders | match (...))"}.
      */
     @Test
     void wrapAsSubPipeline_noBindings_yieldsBareParens() {
@@ -103,8 +101,7 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * One correlated binding without joins → unqualified field in the let clause. Mirrors hand-rolled
-     * {@code wrapWithLet("from $orders | match ...", {"c.id" → "$__v0"})} with {@code hasJoins=false} producing
+     * One correlated binding without joins → unqualified field in the let clause:
      * {@code "let $__v0 = id in (from $orders | match (...))"}.
      */
     @Test
@@ -118,8 +115,7 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * One correlated binding with joins → qualified {@code qualifier.column} in the let clause. Mirrors hand-rolled
-     * {@code wrapWithLet(...)} with {@code hasJoins=true} producing
+     * One correlated binding with joins → qualified {@code qualifier.column} in the let clause:
      * {@code "let $__v0 = c.id in (from $orders | match (...))"}.
      */
     @Test
@@ -148,8 +144,7 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * Head binding (IN/ANY/ALL pattern) with no extra correlated bindings. Mirrors hand-rolled
-     * {@code wrapWithLet(innerPipeline, headVarName, headText, emptyMap)} producing
+     * Head binding (IN/ANY/ALL pattern) with no extra correlated bindings:
      * {@code "let $__v0 = $p0 in (from $orders | match (...))"}.
      */
     @Test

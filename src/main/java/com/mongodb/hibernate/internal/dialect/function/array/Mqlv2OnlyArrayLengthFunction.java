@@ -29,9 +29,13 @@ import org.hibernate.sql.ast.tree.SqlAstNode;
 import org.hibernate.type.spi.TypeConfiguration;
 
 /**
- * MQLv2-only descriptor for {@code array_length(arr)}. The MQLv2 translator intercepts this function by name in
- * {@code appendExprText} and emits {@code count(arr)}; this descriptor's {@code render()} method is never called under
- * v2 and throws under v1.
+ * MQLv2-only descriptor for {@code array_length(arr)}. Intercepted by the MQLv2 translator via the function-name
+ * dispatch in {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters#translateExpression} and emitted
+ * as {@code count(arr)}.
+ *
+ * <p>Inherits Hibernate's argument-validator and return-type-resolver wiring; the inherited {@code render()} is
+ * overridden to throw — under MQLv1 this signals an unsupported function, under MQLv2 the translator intercepts before
+ * {@code render()} is reached.
  *
  * @hidden
  */

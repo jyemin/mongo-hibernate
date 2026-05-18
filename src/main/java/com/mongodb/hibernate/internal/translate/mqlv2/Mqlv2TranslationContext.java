@@ -29,8 +29,8 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
  * binder list (shared with {@code Mqlv2SelectTranslator}) and the qualifier-rendering rules currently active for column
  * references.
  *
- * <p>Phase B introduction. Phase D5 extends this with an outer-qualifier set and correlated-binding map for
- * inner-subquery IR translation (EXISTS/IN/ANY/ALL patterns).
+ * <p>Extended contexts for inner-subquery IR translation (EXISTS/IN/ANY/ALL patterns) carry an outer-qualifier set and
+ * correlated-binding map; create them via {@link #forInnerSubquery}.
  *
  * @hidden
  */

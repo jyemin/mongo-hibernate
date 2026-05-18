@@ -147,7 +147,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private final SelectStatement selectStatement;
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
     private final Serializer serializer = new Serializer();
-    private @org.jspecify.annotations.Nullable LimitJdbcParameter limitJdbcParameter = null;
+    private @Nullable LimitJdbcParameter limitJdbcParameter = null;
     private boolean hasJoins = false;
     /**
      * Maps join-alias → array field path for unnest joins (struct arrays). Populated by
@@ -404,7 +404,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         };
     }
 
-    // ---- IR-path join translation (Phase D3) ----
+    // ---- Join translation ----
 
     /**
      * Traverses the table-group-join list and builds a chain of {@link Stage} nodes
@@ -738,7 +738,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         }
     }
 
-    // ---- Phase 2/3/4 unnest helpers ----
+    // ---- Unnest helpers ----
 
     /**
      * @return true iff the table reference is a {@link FunctionTableReference} whose function descriptor identifies as

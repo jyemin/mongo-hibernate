@@ -958,11 +958,11 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @Test
     void testGroupByCountWithJoinOnSharedColumnName() {
-        // Bug: appendGroup uses simpleColumnName for GROUP BY keys and appendAggFunctionText
-        // uses simpleColumnName for agg arguments — both strip the table qualifier.
-        // Customer.id and Order.id share the unqualified name "id", so in a JOIN + GROUP BY
-        // query the translator emits "group (id=id) (_agg0=count($->id))" where both "id"
-        // references are ambiguous, producing wrong grouping or wrong counts.
+        // Bug: the GROUP BY key naming and aggregate argument resolution both strip the table
+        // qualifier (using only the column name). Customer.id and Order.id share the unqualified
+        // name "id", so in a JOIN + GROUP BY query the translator would emit
+        // "group (id=id) (_agg0=count($->id))" where both "id" references are ambiguous,
+        // producing wrong grouping or wrong counts.
         sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery(
                             "select c.id, count(o.id)"
