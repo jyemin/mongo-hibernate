@@ -87,6 +87,14 @@ public final class Mqlv2TranslationContext {
     @org.jspecify.annotations.Nullable
     private final IntSupplier subqueryNextCorrelatedVar;
 
+    /**
+     * Set of table-reference aliases whose qualified column references should be translated as
+     * {@code FieldAccess(CurrentValue, column)} ({@code $.column}) — used inside MQLv2 {@code any}/{@code every} bodies
+     * and inside the unnest-source pipeline of an unnest scalar subquery, where the current value is the array element.
+     * Empty when not translating such a body.
+     */
+    private final Set<String> currentValueAliases;
+
     public Mqlv2TranslationContext(
             List<JdbcParameterBinder> parameterBinders, Map<String, String> unnestAliasToFieldPath, boolean hasJoins) {
         this(parameterBinders, unnestAliasToFieldPath, hasJoins, Collections.emptyMap());
@@ -106,6 +114,7 @@ public final class Mqlv2TranslationContext {
         this.nextCorrelatedVarIndex = null;
         this.subqueryOuterQualifiers = null;
         this.subqueryNextCorrelatedVar = null;
+        this.currentValueAliases = Collections.emptySet();
     }
 
     private Mqlv2TranslationContext(
@@ -117,7 +126,8 @@ public final class Mqlv2TranslationContext {
             @org.jspecify.annotations.Nullable Map<String, String> correlatedBindings,
             @org.jspecify.annotations.Nullable IntSupplier nextCorrelatedVarIndex,
             @org.jspecify.annotations.Nullable Set<String> subqueryOuterQualifiers,
-            @org.jspecify.annotations.Nullable IntSupplier subqueryNextCorrelatedVar) {
+            @org.jspecify.annotations.Nullable IntSupplier subqueryNextCorrelatedVar,
+            Set<String> currentValueAliases) {
         this.parameterBinders = parameterBinders;
         this.unnestAliasToFieldPath = unnestAliasToFieldPath;
         this.hasJoins = hasJoins;
@@ -127,6 +137,7 @@ public final class Mqlv2TranslationContext {
         this.nextCorrelatedVarIndex = nextCorrelatedVarIndex;
         this.subqueryOuterQualifiers = subqueryOuterQualifiers;
         this.subqueryNextCorrelatedVar = subqueryNextCorrelatedVar;
+        this.currentValueAliases = currentValueAliases;
     }
 
     /**
@@ -159,7 +170,41 @@ public final class Mqlv2TranslationContext {
                 correlatedBindings,
                 nextCorrelatedVarIndex,
                 null,
-                null);
+                null,
+                Collections.emptySet());
+    }
+
+    /**
+     * Return a copy of this context augmented with a set of "current-value aliases" that resolve to
+     * {@code FieldAccess(CurrentValue, column)} ({@code $.column}). Used to translate column references inside MQLv2
+     * {@code any}/{@code every} bodies and inside the unnest-source pipeline of an unnest scalar subquery, where the
+     * current value is the unwrapped array element.
+     *
+     * <p>The new aliases are added on top of any existing current-value aliases (nested unwrap bodies are supported).
+     *
+     * @param newAliases additional table-reference aliases that should resolve to the current value.
+     * @return a new context whose {@link #isCurrentValueAlias(String)} returns true for {@code newAliases} (and any
+     *     previously-registered current-value aliases).
+     */
+    public Mqlv2TranslationContext forArrayElement(Set<String> newAliases) {
+        var merged = new java.util.LinkedHashSet<>(this.currentValueAliases);
+        merged.addAll(newAliases);
+        return new Mqlv2TranslationContext(
+                parameterBinders,
+                unnestAliasToFieldPath,
+                hasJoins,
+                aggSignatureToName,
+                outerQualifiers,
+                correlatedBindings,
+                nextCorrelatedVarIndex,
+                subqueryOuterQualifiers,
+                subqueryNextCorrelatedVar,
+                Collections.unmodifiableSet(merged));
+    }
+
+    /** Returns true iff {@code qualifier} is a registered current-value alias (see {@link #forArrayElement}). */
+    public boolean isCurrentValueAlias(String qualifier) {
+        return currentValueAliases.contains(qualifier);
     }
 
     /**
@@ -183,7 +228,8 @@ public final class Mqlv2TranslationContext {
                 this.correlatedBindings,
                 this.nextCorrelatedVarIndex,
                 outerQualifiers,
-                nextCorrelatedVar);
+                nextCorrelatedVar,
+                currentValueAliases);
     }
 
     /**

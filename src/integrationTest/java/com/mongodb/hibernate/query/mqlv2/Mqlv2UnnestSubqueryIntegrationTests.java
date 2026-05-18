@@ -84,7 +84,7 @@ class Mqlv2UnnestSubqueryIntegrationTests implements SessionFactoryScopeAware {
 
         var captured =
                 BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue();
-        assertThat(captured).contains("count((from lineItems | match ($.qty > 4)))");
+        assertThat(captured).contains("count((from lineItems | match (qty > 4)))");
 
         // Expected: (1, 2), (2, 1), (3, 0)
         assertThat(results).hasSize(3);
@@ -103,7 +103,7 @@ class Mqlv2UnnestSubqueryIntegrationTests implements SessionFactoryScopeAware {
         var captured =
                 BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue();
         // Inner emission wraps in a let for the outer ref.
-        assertThat(captured).contains("let $__v0 = minQty in (count((from lineItems | match ($.qty > $__v0))))");
+        assertThat(captured).contains("count(let $__v0 = minQty in (from lineItems | match (qty > $__v0)))");
 
         // Order 1: minQty=4. Items with qty > 4: WIDGET-1(5), WIDGET-2(8) → 2.
         // Order 2: minQty=5. Items with qty > 5: GADGET-1(10) → 1.

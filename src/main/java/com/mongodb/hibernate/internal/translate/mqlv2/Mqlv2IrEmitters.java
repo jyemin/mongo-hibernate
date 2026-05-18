@@ -149,9 +149,8 @@ public final class Mqlv2IrEmitters {
             var innerSpec = ss.getQueryPart().getFirstQuerySpec();
             var innerRoot = innerSpec.getFromClause().getRoots().get(0);
             if (innerRoot.getPrimaryTableReference() instanceof FunctionTableReference) {
-                // Unnest-scalar subquery: still handled by the hand-rolled appendUnnestScalarSubquery.
-                throw new FeatureNotSupportedException(
-                        "Unnest scalar subquery in IR translation pending Phase D Task 9");
+                return translateUnnestScalarSubquery(
+                        ss, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
             }
             return translateScalarSubquery(ss, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
         }
@@ -234,6 +233,11 @@ public final class Mqlv2IrEmitters {
     private static Expr translateColumnRef(ColumnReference cr, Mqlv2TranslationContext ctx) {
         String qualifier = cr.getQualifier();
         String column = cr.getColumnExpression();
+        // Inside an any/every body or unnest-source pipeline: qualified refs to the array-element alias
+        // resolve to $.column (the current value is the array element itself).
+        if (qualifier != null && ctx.isCurrentValueAlias(qualifier)) {
+            return new Expr.FieldAccess(new Expr.CurrentValue(), column);
+        }
         // Outer-correlated reference inside an inner subquery: bind to a $__vN variable.
         if (qualifier != null && ctx.isOuterCorrelated(qualifier)) {
             return new Expr.VarRef(ctx.allocateCorrelatedVar(qualifier, column));
@@ -530,14 +534,14 @@ public final class Mqlv2IrEmitters {
                         isp, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
             }
             if (p instanceof ExistsPredicate ep) {
-                // Unnest-EXISTS is handled by the hand-rolled appendUnnestExistsPredicate; only
-                // dispatch the non-unnest variant through the IR path here.
                 var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
                 var innerRoot = innerSpec.getFromClause().getRoots().get(0);
-                if (!(innerRoot.getPrimaryTableReference() instanceof org.hibernate.sql.ast.tree.from.FunctionTableReference)) {
-                    return translateExists(
+                if (innerRoot.getPrimaryTableReference() instanceof FunctionTableReference) {
+                    return translateUnnestExists(
                             ep, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
                 }
+                return translateExists(
+                        ep, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
             }
         }
         throw new FeatureNotSupportedException(
@@ -1314,5 +1318,142 @@ public final class Mqlv2IrEmitters {
         Stage innerStage = translateInnerQuerySpec(innerSpec, innerCtx);
         Expr wrapped = wrapAsSubPipeline(innerStage, correlatedBindings, outerCtx.hasJoins());
         return new Expr.FunctionCall("count", List.of(wrapped));
+    }
+
+    // ---- Unnest predicate / scalar-subquery IR translation helpers (Phase D9) ----
+
+    /**
+     * Translate {@code exists (select 1 from o.array a where <body>)} (an unnest-form {@link ExistsPredicate}) into a
+     * driver-mqlv2 {@link Expr.Any}: {@code arrayPath any (<body-rewritten>)}, with outer-correlated references captured
+     * into a {@code let} wrapper around the {@code any} expression. Negation wraps the whole thing in {@code (not …)}.
+     *
+     * <p>Mirrors the hand-rolled {@code appendUnnestExistsPredicate}. The inner predicate body is translated in a
+     * context where the unnest alias resolves to {@code FieldAccess(CurrentValue, column)} ({@code $.col}), reflecting
+     * that inside an {@code any} body the current value is the array element.
+     *
+     * @param ep the unnest-EXISTS predicate (caller must verify the inner FROM root is a {@link FunctionTableReference}).
+     * @param outerCtx the outer translation context.
+     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
+     * @param nextCorrelatedVar supplier of the next globally-unique integer index for {@code __vN} names; shared with
+     *     the outer translator to avoid collisions.
+     * @return the translated {@link Expr}.
+     */
+    public static Expr translateUnnestExists(
+            ExistsPredicate ep,
+            Mqlv2TranslationContext outerCtx,
+            Set<String> outerQualifiers,
+            IntSupplier nextCorrelatedVar) {
+        var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
+        var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+        var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
+        var arrayPath = extractUnnestArrayPath(ftr);
+        var unnestAlias = ftr.getIdentificationVariable();
+
+        // Array path is rendered in the outer context (resolves to e.g. lineItems or o.lineItems).
+        Expr arrayPathExpr = translateExpression(arrayPath, outerCtx);
+
+        // Body is rendered in a context where:
+        //   - the unnest alias resolves to $.column (current value is the array element),
+        //   - outer qualifiers resolve to $__vN variables (correlated bindings).
+        var correlatedBindings = new LinkedHashMap<String, String>();
+        var bodyCtx = outerCtx
+                .forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar)
+                .forArrayElement(Set.of(unnestAlias));
+        Expr bodyExpr = translatePredicate(innerSpec.getWhereClauseRestrictions(), bodyCtx);
+
+        Expr anyExpr = new Expr.Any(arrayPathExpr, bodyExpr);
+        Expr wrapped = wrapAsSubPipelineLikeAny(anyExpr, correlatedBindings, outerCtx.hasJoins());
+        if (ep.isNegated()) {
+            wrapped = new Expr.UnaryOp(UnaryOpType.NOT, wrapped);
+        }
+        return wrapped;
+    }
+
+    /**
+     * Translate {@code (select count(*) from o.array a [where <body>])} (an unnest-form scalar subquery) into a
+     * driver-mqlv2 {@code count((from arrayPath [| match (<body>)]))} expression, optionally wrapped in a {@code let}
+     * for outer-correlated bindings.
+     *
+     * <p>Only {@code count()} is supported. Other aggregates throw {@link FeatureNotSupportedException}.
+     *
+     * @param ss the scalar SELECT (caller must verify the inner FROM root is a {@link FunctionTableReference}).
+     * @param outerCtx the outer translation context.
+     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
+     * @param nextCorrelatedVar supplier of the next globally-unique integer index for {@code __vN} names; shared with
+     *     the outer translator to avoid collisions.
+     * @return the translated {@link Expr}.
+     */
+    public static Expr translateUnnestScalarSubquery(
+            SelectStatement ss,
+            Mqlv2TranslationContext outerCtx,
+            Set<String> outerQualifiers,
+            IntSupplier nextCorrelatedVar) {
+        var innerSpec = ss.getQueryPart().getFirstQuerySpec();
+        var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+        var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
+
+        var selections = innerSpec.getSelectClause().getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
+        if (selections.size() != 1) {
+            throw new FeatureNotSupportedException("Scalar subquery over unnest() must project exactly one column");
+        }
+        var selExpr = selections.get(0).getExpression();
+        if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression<?> fn)
+                || !"count".equals(fn.getFunctionName())) {
+            throw new FeatureNotSupportedException(
+                    "Scalar subquery over unnest() must use count(); other aggregates have no "
+                            + "pipeline-argument form in MQLv2 yet");
+        }
+
+        var arrayPath = extractUnnestArrayPath(ftr);
+        var unnestAlias = ftr.getIdentificationVariable();
+
+        // Build "from arrayPath" stage.
+        Expr arrayPathExpr = translateExpression(arrayPath, outerCtx);
+        Stage stage = new Stage.FromStageSimple(arrayPathExpr);
+
+        // Optional "| match (body)" stage.
+        var where = innerSpec.getWhereClauseRestrictions();
+        var correlatedBindings = new LinkedHashMap<String, String>();
+        if (where != null && !where.isEmpty()) {
+            var bodyCtx = outerCtx
+                    .forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar)
+                    .forArrayElement(Set.of(unnestAlias));
+            stage = new Stage.MatchStage(stage, translatePredicate(where, bodyCtx));
+        }
+
+        Expr wrapped = wrapAsSubPipeline(stage, correlatedBindings, outerCtx.hasJoins());
+        return new Expr.FunctionCall("count", List.of(wrapped));
+    }
+
+    /**
+     * Like {@link #wrapAsSubPipeline} but for a non-pipeline body (an {@code Expr.Any} expression): wraps in a
+     * {@link Expr.LetExpr} when there are correlated bindings, otherwise returns the body unchanged.
+     */
+    private static Expr wrapAsSubPipelineLikeAny(
+            Expr body, Map<String, String> correlatedBindings, boolean outerHasJoins) {
+        if (correlatedBindings.isEmpty()) {
+            return body;
+        }
+        var bindings = new ArrayList<Map.Entry<String, Expr>>(correlatedBindings.size());
+        for (var entry : correlatedBindings.entrySet()) {
+            var fieldExpr = outerCorrelatedFieldExpr(entry.getKey(), outerHasJoins);
+            bindings.add(Map.entry(entry.getValue(), fieldExpr));
+        }
+        return new Expr.LetExpr(bindings, body);
+    }
+
+    private static Expression extractUnnestArrayPath(FunctionTableReference ftr) {
+        var args = ftr.getFunctionExpression().getArguments();
+        if (args.size() != 1) {
+            throw new FeatureNotSupportedException("unnest() requires exactly one argument; got " + args.size());
+        }
+        var arg = args.get(0);
+        if (arg instanceof ColumnReference || arg instanceof BasicValuedPathInterpretation<?>) {
+            return (Expression) arg;
+        }
+        throw new FeatureNotSupportedException("unnest() argument must be a path expression on an outer entity; got: "
+                + arg.getClass().getSimpleName());
     }
 }

@@ -251,8 +251,41 @@ The existing `LimitJdbcParameter` inner class (line 2059) and the limit-paramete
   `emitIrPredicateFunction` (the outer-parens wrapper that was needed for NegatedPredicate
   compatibility; D3a absorbed since NegatedPredicate is now IR-routed). Updated 6 test assertions to
   drop the hand-rolled outer parens from `any`-predicate match stages.
-- **Phase D (stages)** — port the `appendMatch` / `appendSort` / `appendLimit` / `appendGroup` / `appendHaving` / `appendFormat` / `appendJoin` / `appendUnnestJoin` methods. By this point, all sub-pieces (expressions, predicates) return AST nodes; stage methods are mostly assembly.
-- **Phase E (cleanup)** — delete the `StringBuilder sb` parameter from any helpers that still have it; remove the old `appendX` methods; collapse to the new top-level `translateQuerySpec` flow.
+- **Phase D (complete, 2026-05-17)** — all stage emitters migrated to driver-mqlv2 Stage IR:
+  `FromStageSimple` / `FromStageNested`, `MatchStage`, `SortStage`, `LimitStage`, `GroupStage`,
+  `AggStage`, `FormatStage`, `DistinctStage`, `JoinStage` (regular joins), and `UnwindComplexStage`
+  (unnest joins). Deferred subquery-referencing predicates (`ExistsPredicate`, `InSubQueryPredicate`,
+  ANY/ALL `ComparisonPredicate`) translated via `SubPipelineExpr` + `LetExpr` for correlated outer
+  bindings. Scalar `SelectStatement` subqueries in expression position translated via the same
+  helpers (`translateScalarSubquery`). UNION / UNION_ALL / INTERSECT / EXCEPT migrated to IR via
+  `Stage.FromStageSimple(BagConstructor(...))` + `UnwindSimpleStage` / `DistinctStage` / `MatchStage`.
+  Inner-pipeline subquery handling consolidated in `translateInnerQuerySpec` /
+  `wrapAsSubPipeline` / `wrapAsSubPipelineWithHead`.
+
+  D9 final-cleanup absorbed Phase E: migrated unnest-EXISTS predicates (`translateUnnestExists`,
+  producing `Expr.Any(arrayPath, body)` with a per-call `forArrayElement(unnestAlias)` context that
+  resolves the alias to `FieldAccess(CurrentValue, column)`) and unnest scalar subqueries
+  (`translateUnnestScalarSubquery`, producing `count(FromStageSimple(arrayPath) | MatchStage(...))`).
+  Top-level `buildQuerySpecTranslation` is now pure Stage construction + a single
+  `serializer.serialize(stage)`; the legacy `canUseIr` guard, hand-rolled `buildQuerySpecTranslation`
+  fallback body, and `buildArraySourcePipeline` string fallback in `translateQueryGroupToMqlv2` are
+  deleted.
+
+- **Phase E (complete, 2026-05-17, absorbed into D9)** — all StringBuilder-based emitters deleted
+  from `Mqlv2SelectTranslator`: `appendExprText` / `appendPredicateText` / `appendFrom` /
+  `appendJoins` / `appendUnwindJoin` / `appendMatch` / `appendMatchStage` / `appendSort` /
+  `appendSortSpec` / `appendLimit` / `appendLimitToBuilder` / `appendGroup` / `appendHaving` /
+  `appendScalarAgg` / `appendAggFunctionText` / `appendAggFieldRef` / `appendFormat` /
+  `appendUnnestExistsPredicate` / `appendUnnestScalarSubquery` / `appendPredicateTextWithResolver` /
+  `appendExprTextWithResolver` / `appendIrExprFunction` / `appendExprTextToString` /
+  `simpleColumnName` / `isFoundationExpression` / `comparisonOpSurface`. Helper interfaces
+  `ColumnReferenceResolver` and `IrFunctionTranslator`, helper methods `wrapWithLet` /
+  `correlatedFieldExpr` / `outerCorrelatedResolver` / `insideAnyResolver` /
+  `selectHasUnnestScalarSubqueries` / `whereHasUnnestExistsPredicates`: deleted. Translator is now
+  pure Stage construction + single serialize; `Mqlv2IrEmitters` is the canonical translation
+  library. `Mqlv2TranslationContext` gained `forArrayElement(Set<String>)` /
+  `isCurrentValueAlias(String)` to thread the "inside an `any` body or unnest-source pipeline"
+  qualifier-resolution rule. `Mqlv2SelectTranslator` shrank from ~2,040 to ~1,180 lines (42%).
 
 Each phase is a separate PR; each PR keeps all tests green; rollback is per-PR.
 

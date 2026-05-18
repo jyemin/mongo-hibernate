@@ -93,7 +93,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
         var captured = MqlCapture.LAST.get();
         assertThat(captured).isNotNull();
         assertThat(BsonDocument.parse(captured).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | match (lineItems any ($.sku == \"WIDGET-1\"))"
+                .isEqualTo("from $orders | match lineItems any ((sku == \"WIDGET-1\"))"
                         + " | format {_id: _id, lineItems: lineItems, minQty: minQty, scores: scores}");
 
         // Execution assertion: orders 1 and 3 contain a WIDGET-1 line item; order 2 does not.
@@ -108,7 +108,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | match (lineItems any (($.sku == \"WIDGET-1\") and ($.qty > 0)))"
+                .isEqualTo("from $orders | match lineItems any (((sku == \"WIDGET-1\") and (qty > 0)))"
                         + " | format {_id: _id, lineItems: lineItems, minQty: minQty, scores: scores}");
         // Order 1 has WIDGET-1 with qty=5 (matches); order 3 has WIDGET-1 with qty=0 (doesn't).
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1);
@@ -122,7 +122,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | match (lineItems any (($.sku == \"WIDGET-1\") or ($.qty > 5)))"
+                .isEqualTo("from $orders | match lineItems any (((sku == \"WIDGET-1\") or (qty > 5)))"
                         + " | format {_id: _id, lineItems: lineItems, minQty: minQty, scores: scores}");
         // Order 1 matches (WIDGET-1), order 2 matches (qty=10), order 3 matches (WIDGET-1).
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(1, 2, 3);
@@ -135,7 +135,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | match (lineItems any (not ($.sku == \"WIDGET-1\")))"
+                .isEqualTo("from $orders | match lineItems any ((not (sku == \"WIDGET-1\")))"
                         + " | format {_id: _id, lineItems: lineItems, minQty: minQty, scores: scores}");
         // Order 1 has WIDGET-2 (matches NOT WIDGET-1), order 2 has GADGET-1 (matches), order 3 has only WIDGET-1
         // (doesn't match).
@@ -149,7 +149,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | match (not (lineItems any ($.sku == \"WIDGET-1\")))"
+                .isEqualTo("from $orders | match (not (lineItems any ((sku == \"WIDGET-1\"))))"
                         + " | format {_id: _id, lineItems: lineItems, minQty: minQty, scores: scores}");
         // Only order 2 lacks WIDGET-1.
         assertThat(results).extracting(o -> o.id).containsExactlyInAnyOrder(2);
@@ -162,7 +162,7 @@ class Mqlv2UnnestExistsIntegrationTests implements SessionFactoryScopeAware {
                 session -> session.createSelectionQuery(hql, Order.class).getResultList());
 
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from $orders | match let $__v0 = minQty in (lineItems any ($.qty > $__v0))"
+                .isEqualTo("from $orders | match let $__v0 = minQty in lineItems any ((qty > $__v0))"
                         + " | format {_id: _id, lineItems: lineItems, minQty: minQty, scores: scores}");
         // Order 1: minQty=3, has qty=5 (matches). Order 2: minQty=5, has qty=10 (matches).
         // Order 3: minQty=1, has qty=0 (doesn't match).

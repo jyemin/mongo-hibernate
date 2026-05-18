@@ -43,9 +43,7 @@ import org.bson.BsonString;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.internal.util.collections.Stack;
 import org.hibernate.persister.internal.SqlFragmentPredicate;
-import org.hibernate.query.SortDirection;
 import org.hibernate.query.spi.QueryOptions;
-import org.hibernate.query.sqm.ComparisonOperator;
 import org.hibernate.query.sqm.SetOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
@@ -143,11 +141,7 @@ import org.jspecify.annotations.Nullable;
 /** Translates a Hibernate SELECT SQL AST directly to a MQLv2 text command. */
 final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
-    private record SpecTranslation(String mqlv2, List<String> fieldNames, @Nullable Stage stage) {
-        SpecTranslation(String mqlv2, List<String> fieldNames) {
-            this(mqlv2, fieldNames, null);
-        }
-    }
+    private record SpecTranslation(String mqlv2, List<String> fieldNames, Stage stage) {}
 
     private final SessionFactoryImplementor sessionFactory;
     private final SelectStatement selectStatement;
@@ -156,9 +150,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private @org.jspecify.annotations.Nullable LimitJdbcParameter limitJdbcParameter = null;
     private boolean hasJoins = false;
     /**
-     * Maps join-alias → array field path for unnest joins (struct arrays). Populated by appendJoins when emitting
-     * {@code | unwind <arrayPath>}; consulted by appendExprText / appendAggFieldRef so that column references qualified
-     * by the unnest alias resolve to {@code <arrayPath>.<column>}.
+     * Maps join-alias → array field path for unnest joins (struct arrays). Populated by
+     * {@link #buildUnnestJoinStage} when emitting an unwind stage; consulted by
+     * {@link Mqlv2IrEmitters#translateExpression} (via the shared map in {@link Mqlv2TranslationContext})
+     * so that column references qualified by the unnest alias resolve to {@code <arrayPath>.<column>}.
      */
     private final Map<String, String> unnestAliasToFieldPath = new LinkedHashMap<>();
     // Maps aggregate signature (e.g. "sum:total") → _aggN name; populated during GROUP BY translation
@@ -289,78 +284,22 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Builds the MQLv2 pipeline text and field-name list for a single QuerySpec. Pass non-null {@code queryOptions} at
-     * the top level to honour dynamic first/max rows; pass {@code null} for sub-queries (UNION members, correlated
-     * sub-queries) where only the HQL literal LIMIT clause applies.
+     * Builds the MQLv2 pipeline text and field-name list for a single QuerySpec by constructing a full driver-mqlv2
+     * {@link com.mongodb.mqlv2.ast.Stage} chain and serializing it in one shot via {@link com.mongodb.mqlv2.Serializer}.
+     * Pass non-null {@code queryOptions} at the top level to honour dynamic first/max rows; pass {@code null} for
+     * sub-queries (UNION members, correlated sub-queries) where only the HQL literal LIMIT clause applies.
      *
-     * <p>Phase D2: simple query shapes (no joins, no GROUP BY, no scalar aggregates) are routed through
-     * {@link #buildQuerySpecTranslationViaIr} which builds a full driver-mqlv2 {@link com.mongodb.mqlv2.ast.Stage}
-     * chain and serializes it in one shot. All other shapes fall through to the original hand-rolled path.
+     * <p>Subquery-based predicates (EXISTS, IN subquery, ANY/ALL) in WHERE/HAVING and scalar SELECT-position subqueries
+     * are translated via {@link Mqlv2IrEmitters#translatePredicate} / {@link Mqlv2IrEmitters#translateExpression} when
+     * the context has subquery support enabled.
      */
     private SpecTranslation buildQuerySpecTranslation(QuerySpec querySpec, @Nullable QueryOptions queryOptions) {
-        var sb = new StringBuilder();
         var root = querySpec.getFromClause().getRoots().get(0);
         // Only count non-unnest joins: unnest joins translate to | unwind and don't introduce
-        // a new MQLv2 alias, so they must not trigger the qualifier-prefix path in appendExprText.
+        // a new MQLv2 alias, so they must not trigger the qualifier-prefix path in column-ref rendering.
         this.hasJoins = root.getTableGroupJoins().stream()
                 .anyMatch(tgj -> !isUnnestFunctionTable(tgj.getJoinedGroup().getPrimaryTableReference()));
 
-        // Phase D2/D3/D4/D6/D7: route query shapes through the full IR path.
-        // Guard: the IR path handles only shapes that Mqlv2IrEmitters.translatePredicate and
-        // translateExpression cover. Two shapes still require the hand-rolled path:
-        //  - Unnest scalar subqueries in SELECT (Task D9): inner FROM is a FunctionTableReference,
-        //    not a NamedTableReference; the IR path does not yet have a from-unnest stage.
-        //  - Unnest-EXISTS predicates (appendUnnestExistsPredicate), whose any-body translation
-        //    uses the hand-rolled resolver machinery; left for Task D9 final cleanup.
-        // Non-unnest scalar subqueries in SELECT are now handled by the IR path (Task D7).
-        // All other subquery-based predicates (non-unnest EXISTS, IN subquery, ANY/ALL) are
-        // handled by the IR path via Mqlv2IrEmitters (Task D6).
-        boolean canUseIr = !selectHasUnnestScalarSubqueries(querySpec.getSelectClause())
-                && !whereHasUnnestExistsPredicates(querySpec.getWhereClauseRestrictions());
-        if (canUseIr) {
-            return buildQuerySpecTranslationViaIr(querySpec, queryOptions, root);
-        }
-
-        appendFrom(sb, root);
-        appendJoins(sb, root, querySpec);
-        appendMatch(sb, querySpec);
-        List<@Nullable String> aggNames = null;
-        if (!querySpec.getGroupByClauseExpressions().isEmpty()) {
-            aggNames = buildAggNames(querySpec.getSelectClause());
-            var havingOnlyAggs = collectHavingOnlyAggs(querySpec.getHavingClauseRestrictions());
-            appendGroup(
-                    sb, querySpec.getGroupByClauseExpressions(), querySpec.getSelectClause(), aggNames, havingOnlyAggs);
-            appendHaving(sb, querySpec);
-        } else if (selectHasAggregates(querySpec.getSelectClause())) {
-            aggNames = buildAggNames(querySpec.getSelectClause());
-            appendScalarAgg(sb, querySpec.getSelectClause(), aggNames);
-        }
-        appendSort(sb, querySpec);
-        if (queryOptions != null) {
-            appendLimit(sb, querySpec, queryOptions);
-        } else {
-            appendLimitToBuilder(sb, querySpec);
-        }
-        var fieldNames = appendFormat(sb, querySpec.getSelectClause(), aggNames);
-        if (querySpec.getSelectClause().isDistinct()) {
-            sb.append(" | distinct");
-        }
-        return new SpecTranslation(sb.toString(), fieldNames);
-    }
-
-    /**
-     * IR-path implementation of {@link #buildQuerySpecTranslation} for query shapes handled by the IR path (no scalar
-     * subqueries in SELECT). Builds a full driver-mqlv2 {@link com.mongodb.mqlv2.ast.Stage} chain — FROM → optional
-     * MATCH → optional GROUP/AGG → optional HAVING → optional SORT → optional LIMIT → FORMAT → optional DISTINCT — and
-     * serializes it in one shot via the {@link com.mongodb.mqlv2.Serializer}.
-     *
-     * <p>Subquery-based predicates (EXISTS, IN subquery, ANY/ALL) in WHERE/HAVING are handled via
-     * {@link Mqlv2IrEmitters#translateExists}, {@link Mqlv2IrEmitters#translateInSubQuery}, and
-     * {@link Mqlv2IrEmitters#translateAnyAllSubquery}, dispatched from {@link Mqlv2IrEmitters#translatePredicate} when
-     * the context has subquery support enabled.
-     */
-    private SpecTranslation buildQuerySpecTranslationViaIr(
-            QuerySpec querySpec, @Nullable QueryOptions queryOptions, TableGroup root) {
         var ntr = (NamedTableReference) root.getPrimaryTableReference();
         var outerQualifiers = collectOuterQualifiers(querySpec);
         var ctx = newContext().withSubquerySupport(outerQualifiers, () -> correlatedVarCounter++);
@@ -415,40 +354,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 .map(p -> translateQuerySpecToMqlv2(p.getFirstQuerySpec()))
                 .toList();
 
-        // Use IR path if every sub-spec was translated via the IR path (all have a Stage).
-        // If any sub-spec fell through to the hand-rolled text path (stage == null), fall back
-        // to text concatenation for the whole group.
         var subStages = translations.stream().map(SpecTranslation::stage).toList();
-        if (subStages.stream().allMatch(s -> s != null)) {
-            Stage groupStage = buildQueryGroupStageViaIr(operator, subStages);
-            return new SpecTranslation(serializer.serialize(groupStage), translations.get(0).fieldNames(), groupStage);
-        }
-
-        // Fallback: hand-rolled text path (reached only when a sub-spec contains an unnest
-        // scalar subquery or unnest EXISTS predicate that the IR path does not yet cover).
-        var mqlv2Pipelines =
-                translations.stream().map(t -> "(" + t.mqlv2() + ")").toList();
-        var mqlv2 =
-                switch (operator) {
-                    case UNION_ALL -> buildArraySourcePipeline(mqlv2Pipelines);
-                    case UNION -> buildArraySourcePipeline(mqlv2Pipelines) + " | distinct";
-                    case INTERSECT -> {
-                        var left = translations.get(0).mqlv2();
-                        var right = translations.get(1).mqlv2();
-                        var varName = "$__v" + correlatedVarCounter++;
-                        yield left + " | match (count(let " + varName + " = $ in (" + right + " | match ($ == "
-                                + varName + "))) > 0)";
-                    }
-                    case EXCEPT -> {
-                        var left = translations.get(0).mqlv2();
-                        var right = translations.get(1).mqlv2();
-                        var varName = "$__v" + correlatedVarCounter++;
-                        yield left + " | match (count(let " + varName + " = $ in (" + right + " | match ($ == "
-                                + varName + "))) == 0)";
-                    }
-                    default -> throw new FeatureNotSupportedException("Unsupported set operator: " + operator);
-                };
-        return new SpecTranslation(mqlv2, translations.get(0).fieldNames());
+        Stage groupStage = buildQueryGroupStageViaIr(operator, subStages);
+        return new SpecTranslation(serializer.serialize(groupStage), translations.get(0).fieldNames(), groupStage);
     }
 
     /**
@@ -496,127 +404,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         };
     }
 
-    private static String buildArraySourcePipeline(List<String> pipelines) {
-        var sb = new StringBuilder("from << ");
-        for (var i = 0; i < pipelines.size(); i++) {
-            if (i > 0) sb.append(", ");
-            sb.append(pipelines.get(i));
-        }
-        return sb.append(" >> | unwind $*").toString();
-    }
-
-    private void appendFrom(StringBuilder sb, TableGroup root) {
-        var tableRef = root.getPrimaryTableReference();
-        if (!(tableRef instanceof NamedTableReference ntr)) {
-            throw new FeatureNotSupportedException("Subquery in FROM (derived table) is not supported in MQLv2");
-        }
-        var collName = ntr.getTableExpression();
-        if (!hasJoins) {
-            sb.append("from $").append(collName);
-        } else {
-            var alias = ntr.getIdentificationVariable();
-            sb.append("from ").append(alias).append("=$").append(collName);
-        }
-    }
-
-    private void appendJoins(StringBuilder sb, TableGroup root, QuerySpec querySpec) {
-        for (var tgj : root.getTableGroupJoins()) {
-            var joinedGroup = tgj.getJoinedGroup();
-            var primaryRef = joinedGroup.getPrimaryTableReference();
-            if (isUnnestFunctionTable(primaryRef)) {
-                var rootAlias = ((NamedTableReference) root.getPrimaryTableReference()).getIdentificationVariable();
-                appendUnwindJoin(sb, tgj, (FunctionTableReference) primaryRef, querySpec, rootAlias);
-                continue;
-            }
-            var joinNtr = (NamedTableReference) primaryRef;
-            var joinCollName = joinNtr.getTableExpression();
-            var joinAlias = joinNtr.getIdentificationVariable();
-            var joinType = tgj.getJoinType();
-            var joinKeyword =
-                    switch (joinType) {
-                        case INNER -> " | join ";
-                        case LEFT -> " | join leftOuter ";
-                        case RIGHT -> " | join rightOuter ";
-                        case FULL -> " | join fullOuter ";
-                        default -> throw new FeatureNotSupportedException("Unsupported join type: " + joinType);
-                    };
-            sb.append(joinKeyword);
-            sb.append(joinAlias).append("=$").append(joinCollName);
-            var joinPredicate = tgj.getPredicate();
-            if (joinPredicate != null) {
-                sb.append(" ");
-                appendPredicateText(sb, joinPredicate);
-            }
-            appendJoins(sb, joinedGroup, querySpec);
-        }
-    }
-
-    /**
-     * Translates a plural-attribute join ({@code FROM O o JOIN o.array a}) into a MQLv2 complex unwind stage that
-     * preserves the parent document:
-     *
-     * <pre>{@code | unwind $__elem = arrayField in {col1: col1, ..., arrayField: $__elem}}</pre>
-     *
-     * <p>The body object enumerates all parent-entity columns referenced anywhere in the QuerySpec (SELECT, WHERE,
-     * ORDER BY, GROUP BY, HAVING), preserving them across the unwind stage. The array field itself is mapped to
-     * {@code $__elem} (the current element variable), so subsequent pipeline stages can reference it as
-     * {@code arrayField.subField}.
-     *
-     * <p>Records the alias→field-path mapping so column references qualified by the unnest alias ({@code a.sku})
-     * resolve to {@code <arrayPath>.<column>} ({@code lineItems.sku}) in subsequent WHERE / SELECT / GROUP BY / ORDER
-     * BY emission.
-     */
-    private void appendUnwindJoin(
-            StringBuilder sb,
-            TableGroupJoin tgj,
-            FunctionTableReference ftr,
-            QuerySpec querySpec,
-            @Nullable String rootAlias) {
-        var arrayPath = extractUnnestArrayPath(ftr);
-        var alias = extractUnnestAlias(tgj.getJoinedGroup());
-        // Render the array field name directly (without qualifier prefix) regardless of hasJoins,
-        // because unwind targets the field on the current (outer) document, not a named alias.
-        var arrayFieldPath = columnExpressionOf(arrayPath);
-        var internalVar = "$__elem";
-
-        // Collect all parent-entity column names referenced anywhere in the QuerySpec.
-        // These must be enumerated in the unwind body to be preserved across the stage.
-        var parentCols = new LinkedHashSet<String>();
-        collectParentColumnNames(querySpec, rootAlias, parentCols);
-        // Always include the array field itself: subsequent pipeline stages reference it as
-        // arrayField.subField (e.g., lineItems.sku), so the unwind body must carry it forward.
-        parentCols.add(arrayFieldPath);
-
-        // Emit: | unwind $__elem = arrayField in {col1: col1, ..., arrayField: $__elem}
-        // The array field is mapped to the element variable (a single struct document), allowing
-        // subsequent | match (arrayField.subField == ...) stages to work. The | format stage
-        // will then re-wrap it in an array so Hibernate's getArray() call succeeds.
-        sb.append(" | unwind ")
-                .append(internalVar)
-                .append(" = ")
-                .append(arrayFieldPath)
-                .append(" in {");
-        var first = true;
-        for (var col : parentCols) {
-            if (!first) sb.append(", ");
-            first = false;
-            if (col.equals(arrayFieldPath)) {
-                sb.append(col).append(": ").append(internalVar);
-            } else {
-                sb.append(col).append(": ").append(col);
-            }
-        }
-        sb.append("}");
-
-        unnestAliasToFieldPath.put(alias, arrayFieldPath);
-    }
-
     // ---- IR-path join translation (Phase D3) ----
 
     /**
-     * IR-path counterpart of {@link #appendJoins}: traverses the table-group-join list and builds a chain of
-     * {@link Stage} nodes ({@link Stage.UnwindComplexStage} for unnest joins, {@link Stage.JoinStage} for regular
-     * joins).
+     * Traverses the table-group-join list and builds a chain of {@link Stage} nodes
+     * ({@link Stage.UnwindComplexStage} for unnest joins, {@link Stage.JoinStage} for regular joins).
      *
      * <p>Populates {@code unnestAliasToFieldPath} (via the shared map in {@code ctx}) so that subsequent
      * column-reference rendering resolves unnest aliases correctly.
@@ -647,8 +439,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * IR-path counterpart of {@link #appendUnwindJoin}: builds a {@link Stage.UnwindComplexStage} that explodes the
-     * array field and preserves all parent-entity columns in the unwind body.
+     * Builds a {@link Stage.UnwindComplexStage} that explodes the array field and preserves all parent-entity columns
+     * in the unwind body.
      *
      * <p>Also records the alias→array-field-path mapping in {@link #unnestAliasToFieldPath} so that subsequent
      * column-reference rendering resolves {@code alias.column} to {@code arrayFieldPath.column}.
@@ -805,235 +597,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 + expr.getClass().getSimpleName());
     }
 
-    private void appendMatch(StringBuilder sb, QuerySpec querySpec) {
-        appendMatchStage(sb, querySpec.getWhereClauseRestrictions());
-    }
-
-    private void appendHaving(StringBuilder sb, QuerySpec querySpec) {
-        appendMatchStage(sb, querySpec.getHavingClauseRestrictions());
-    }
-
-    private void appendMatchStage(StringBuilder sb, @Nullable Predicate predicate) {
-        if (predicate == null || predicate.isEmpty()) return;
-        sb.append(" | match ");
-        appendPredicateText(sb, predicate);
-    }
-
-    private void appendSort(StringBuilder sb, QuerySpec querySpec) {
-        if (!querySpec.hasSortSpecifications()) return;
-        sb.append(" | sort ");
-        var specs = querySpec.getSortSpecifications();
-        for (var i = 0; i < specs.size(); i++) {
-            if (i > 0) sb.append(", ");
-            appendSortSpec(sb, specs.get(i));
-        }
-    }
-
-    private void appendSortSpec(StringBuilder sb, SortSpecification spec) {
-        appendExprText(sb, spec.getSortExpression());
-        if (spec.getSortOrder() == SortDirection.DESCENDING) {
-            sb.append(" desc");
-        }
-        // ASCENDING is default in MQLv2, omit
-    }
-
-    private void appendLimit(StringBuilder sb, QuerySpec querySpec, QueryOptions queryOptions) {
-        var limit = queryOptions.getLimit();
-        if (limit != null && limit.getFirstRow() != null) {
-            throw new FeatureNotSupportedException("OFFSET is not supported in MQLv2");
-        }
-        if (limit != null && limit.getMaxRows() != null) {
-            var basicIntegerType = sessionFactory.getTypeConfiguration().getBasicTypeForJavaType(Integer.class);
-            sb.append(" | limit ");
-            limitJdbcParameter = new LimitJdbcParameter(basicIntegerType);
-            appendExprText(sb, limitJdbcParameter);
-        } else {
-            appendLimitToBuilder(sb, querySpec);
-        }
-    }
-
-    private void appendLimitToBuilder(StringBuilder sb, QuerySpec querySpec) {
-        var fetchExpr = querySpec.getFetchClauseExpression();
-        if (fetchExpr == null) return;
-        if (querySpec.getOffsetClauseExpression() != null) {
-            throw new FeatureNotSupportedException("OFFSET is not supported in MQLv2");
-        }
-        sb.append(" | limit ");
-        appendExprText(sb, fetchExpr);
-    }
-
-    /**
-     * Decides how a {@link ColumnReference} encountered inside a predicate/expression walker is rendered.
-     * Implementations: outer-correlated (used by existing EXISTS/IN/ANY/ALL paths) and inside-any (used by Phase 2).
-     */
-    @FunctionalInterface
-    private interface ColumnReferenceResolver {
-        void render(StringBuilder sb, ColumnReference cr);
-    }
-
-    /** Translates a {@link SelfRenderingFunctionSqlAstExpression} to an IR {@link Expr} node. */
-    @FunctionalInterface
-    private interface IrFunctionTranslator {
-        Expr translate(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx);
-    }
-
-    /**
-     * Returns a {@link ColumnReferenceResolver} that implements the existing outer-correlated logic: references to
-     * outer-query aliases are bound to {@code $__vN} variables; all others have their qualifier stripped (inner
-     * subquery alias is just a Hibernate internal alias).
-     */
-    private ColumnReferenceResolver outerCorrelatedResolver(
-            Set<String> outerQualifiers, Map<String, String> correlatedBindings) {
-        return (sb, cr) -> {
-            var qualifier = cr.getQualifier();
-            if (qualifier != null && outerQualifiers.contains(qualifier)) {
-                // Correlated outer reference: bind to a $__vN variable
-                var key = qualifier + "." + cr.getColumnExpression();
-                var varName = correlatedBindings.computeIfAbsent(key, k -> "$__v" + correlatedVarCounter++);
-                sb.append(varName);
-            } else {
-                // Inner column reference: the subquery is always a simple (non-join) scan,
-                // so the qualifier is just Hibernate's internal alias — strip it.
-                sb.append(cr.getColumnExpression());
-            }
-        };
-    }
-
-    /**
-     * Builds a resolver for column references encountered inside an {@code any} body. Rule:
-     *
-     * <ul>
-     *   <li>Qualifier matches an unnest alias on the stack → {@code $.<column>} (resolved against the current element
-     *       of the array).
-     *   <li>Qualifier matches an outer-query alias → {@code $__vN} via the outer-correlated path.
-     *   <li>Qualifier is null → {@code $.<column>} (treat as current element).
-     *   <li>Otherwise → {@code FeatureNotSupportedException}.
-     * </ul>
-     */
-    private ColumnReferenceResolver insideAnyResolver(
-            List<String> unnestAliasStack, Set<String> outerQualifiers, Map<String, String> correlatedBindings) {
-        var outerResolver = outerCorrelatedResolver(outerQualifiers, correlatedBindings);
-        return (sb, cr) -> {
-            var qualifier = cr.getQualifier();
-            if (qualifier != null && unnestAliasStack.contains(qualifier)) {
-                sb.append("$.").append(cr.getColumnExpression());
-            } else if (qualifier != null && outerQualifiers.contains(qualifier)) {
-                outerResolver.render(sb, cr);
-            } else if (qualifier == null) {
-                // Unqualified ref inside any body — treat as the current element.
-                sb.append("$.").append(cr.getColumnExpression());
-            } else {
-                throw new FeatureNotSupportedException(
-                        "Reference to alias '" + qualifier + "' inside unnest body is not in scope");
-            }
-        };
-    }
-
-    private void appendPredicateTextWithResolver(
-            StringBuilder sb, Predicate predicate, ColumnReferenceResolver resolver) {
-        if (predicate instanceof ComparisonPredicate cp) {
-            sb.append("(");
-            appendExprTextWithResolver(sb, cp.getLeftHandExpression(), resolver);
-            sb.append(" ").append(comparisonOpSurface(cp.getOperator())).append(" ");
-            appendExprTextWithResolver(sb, cp.getRightHandExpression(), resolver);
-            sb.append(")");
-        } else if (predicate instanceof Junction junction) {
-            var preds = junction.getPredicates();
-            var op = junction.getNature() == Junction.Nature.CONJUNCTION ? "and" : "or";
-            sb.append("(");
-            for (var i = 0; i < preds.size(); i++) {
-                if (i > 0) sb.append(" ").append(op).append(" ");
-                appendPredicateTextWithResolver(sb, preds.get(i), resolver);
-            }
-            sb.append(")");
-        } else if (predicate instanceof NegatedPredicate np) {
-            sb.append("(not ");
-            appendPredicateTextWithResolver(sb, np.getPredicate(), resolver);
-            sb.append(")");
-        } else if (predicate instanceof NullnessPredicate np) {
-            if (np.isNegated()) {
-                sb.append("(not isNullish(");
-                appendExprTextWithResolver(sb, np.getExpression(), resolver);
-                sb.append("))");
-            } else {
-                sb.append("isNullish(");
-                appendExprTextWithResolver(sb, np.getExpression(), resolver);
-                sb.append(")");
-            }
-        } else if (predicate instanceof BooleanExpressionPredicate bp) {
-            sb.append("(");
-            appendExprTextWithResolver(sb, bp.getExpression(), resolver);
-            sb.append(bp.isNegated() ? " == false)" : " == true)");
-        } else if (predicate instanceof GroupedPredicate gp) {
-            appendPredicateTextWithResolver(sb, gp.getSubPredicate(), resolver);
-        } else if (predicate instanceof InListPredicate ilp) {
-            var exprs = ilp.getListExpressions();
-            var negated = ilp.isNegated();
-            var op = negated ? " != " : " == ";
-            var logic = negated ? " and " : " or ";
-            sb.append("(");
-            for (var i = 0; i < exprs.size(); i++) {
-                if (i > 0) sb.append(logic);
-                sb.append("(");
-                appendExprTextWithResolver(sb, ilp.getTestExpression(), resolver);
-                sb.append(op);
-                appendExprTextWithResolver(sb, exprs.get(i), resolver);
-                sb.append(")");
-            }
-            sb.append(")");
-        } else {
-            throw new FeatureNotSupportedException(
-                    "Unsupported predicate in subquery: " + predicate.getClass().getSimpleName());
-        }
-    }
-
-    private void appendExprTextWithResolver(StringBuilder sb, Expression expression, ColumnReferenceResolver resolver) {
-        if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
-            appendExprTextWithResolver(sb, bvpi.getColumnReference(), resolver);
-        } else if (expression instanceof ColumnReference cr) {
-            resolver.render(sb, cr);
-        } else {
-            // Non-correlated: delegate to the standard path
-            appendExprText(sb, expression);
-        }
-    }
-
-    /**
-     * Wraps innerPipeline with let bindings for all entries in correlatedBindings (EXISTS pattern). If
-     * correlatedBindings is empty, returns "(innerPipeline)" without a let clause.
-     *
-     * <p>correlatedBindings maps "qualifier.column" → "$__vN". When the outer query is a simple scan
-     * ({@code hasJoins=false}) the binding value is the unqualified column name; when the outer query has joins
-     * ({@code hasJoins=true}) the full "qualifier.column" path is used so the reference is unambiguous in MQLv2's
-     * aliased-join document context.
-     */
-    private String wrapWithLet(String innerPipeline, Map<String, String> correlatedBindings) {
-        if (correlatedBindings.isEmpty()) {
-            return "(" + innerPipeline + ")";
-        }
-        var sb = new StringBuilder("let ");
-        var first = true;
-        for (var entry : correlatedBindings.entrySet()) {
-            if (!first) sb.append(", ");
-            first = false;
-            sb.append(entry.getValue()).append(" = ").append(correlatedFieldExpr(entry.getKey()));
-        }
-        sb.append(" in (").append(innerPipeline).append(")");
-        return sb.toString();
-    }
-
-    /**
-     * Returns the MQLv2 field expression for a correlated outer binding key ("qualifier.column"). Uses the qualified
-     * form in a join context so the reference is unambiguous.
-     */
-    private String correlatedFieldExpr(String qualifiedKey) {
-        if (hasJoins) {
-            return qualifiedKey;
-        }
-        var dotIdx = qualifiedKey.indexOf('.');
-        return dotIdx >= 0 ? qualifiedKey.substring(dotIdx + 1) : qualifiedKey;
-    }
-
     private Mqlv2TranslationContext newContext() {
         return new Mqlv2TranslationContext(parameterBinders, unnestAliasToFieldPath, hasJoins, aggSignatureToName);
     }
@@ -1152,428 +715,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 && AGGREGATE_FUNCTION_NAMES.contains(fn.getFunctionName());
     }
 
-    private void appendGroup(
-            StringBuilder sb,
-            List<Expression> groupByExprs,
-            SelectClause selectClause,
-            List<@Nullable String> aggNames,
-            Map<String, SelfRenderingFunctionSqlAstExpression<?>> havingOnlyAggs) {
-        sb.append(" | group (");
-        for (var i = 0; i < groupByExprs.size(); i++) {
-            if (i > 0) sb.append(", ");
-            var expr = groupByExprs.get(i);
-            var keyName = simpleColumnName(expr);
-            sb.append(keyName).append("=");
-            appendExprText(sb, expr);
-        }
-        sb.append(") (");
-        var selections = selectClause.getSqlSelections().stream()
-                .filter(s -> !s.isVirtual())
-                .toList();
-        var first = true;
-        for (var i = 0; i < selections.size(); i++) {
-            var aggName = aggNames.get(i);
-            if (aggName == null) continue;
-            if (!first) sb.append(", ");
-            first = false;
-            sb.append(aggName).append("=");
-            appendAggFunctionText(sb, (SelfRenderingFunctionSqlAstExpression<?>)
-                    selections.get(i).getExpression());
-        }
-        for (var entry : havingOnlyAggs.entrySet()) {
-            if (!first) sb.append(", ");
-            first = false;
-            sb.append(entry.getKey()).append("=");
-            appendAggFunctionText(sb, entry.getValue());
-        }
-        sb.append(")");
-    }
-
     private static boolean selectHasAggregates(SelectClause selectClause) {
         return selectClause.getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
                 .anyMatch(s -> isAggregateFunction(s.getExpression()));
-    }
-
-    /**
-     * Returns {@code true} if the predicate tree contains an unnest-EXISTS predicate — i.e., an {@link ExistsPredicate}
-     * whose inner FROM root is a {@link FunctionTableReference} (an unnest join). These still require the hand-rolled
-     * {@link #appendUnnestExistsPredicate} path (Task D9 final cleanup).
-     */
-    private static boolean whereHasUnnestExistsPredicates(@Nullable Predicate predicate) {
-        if (predicate == null || predicate.isEmpty()) {
-            return false;
-        }
-        if (predicate instanceof ExistsPredicate ep) {
-            var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
-            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
-            return isUnnestFunctionTable(innerRoot.getPrimaryTableReference());
-        }
-        if (predicate instanceof Junction j) {
-            return j.getPredicates().stream().anyMatch(Mqlv2SelectTranslator::whereHasUnnestExistsPredicates);
-        }
-        if (predicate instanceof NegatedPredicate np) {
-            return whereHasUnnestExistsPredicates(np.getPredicate());
-        }
-        if (predicate instanceof GroupedPredicate gp) {
-            return whereHasUnnestExistsPredicates(gp.getSubPredicate());
-        }
-        return false;
-    }
-
-    /**
-     * Returns true if any non-virtual selection in the SELECT clause contains an unnest-form scalar subquery
-     * ({@link SelectStatement} whose inner FROM root is a {@link FunctionTableReference}). Unnest scalar subqueries
-     * still require the hand-rolled path; non-unnest scalar subqueries are handled by the IR path (Task D7).
-     */
-    private static boolean selectHasUnnestScalarSubqueries(SelectClause selectClause) {
-        return selectClause.getSqlSelections().stream()
-                .filter(s -> !s.isVirtual())
-                .anyMatch(s -> {
-                    if (!(s.getExpression() instanceof SelectStatement ss)) return false;
-                    var innerRoot = ss.getQueryPart().getFirstQuerySpec().getFromClause().getRoots().get(0);
-                    return isUnnestFunctionTable(innerRoot.getPrimaryTableReference());
-                });
-    }
-
-    private void appendScalarAgg(StringBuilder sb, SelectClause selectClause, List<@Nullable String> aggNames) {
-        sb.append(" | agg {");
-        var selections = selectClause.getSqlSelections().stream()
-                .filter(s -> !s.isVirtual())
-                .toList();
-        var first = true;
-        for (var i = 0; i < selections.size(); i++) {
-            var aggName = aggNames.get(i);
-            if (aggName == null) continue;
-            if (!first) sb.append(", ");
-            first = false;
-            sb.append(aggName).append(": ");
-            appendAggFunctionText(sb, (SelfRenderingFunctionSqlAstExpression<?>)
-                    selections.get(i).getExpression());
-        }
-        sb.append("}");
-    }
-
-    private void appendAggFunctionText(StringBuilder sb, SelfRenderingFunctionSqlAstExpression<?> fn) {
-        var name = fn.getFunctionName();
-        var args = fn.getArguments();
-        sb.append(name).append("(");
-        if (args.isEmpty() || args.get(0) instanceof Star || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
-            // count(*) / count() / count(entity) → count($): count all elements
-            sb.append("$");
-        } else {
-            if (!(args.get(0) instanceof Expression argExpr)) {
-                throw new FeatureNotSupportedException(name + "() requires a field argument in MQLv2");
-            }
-            sb.append("$->");
-            appendAggFieldRef(sb, argExpr);
-        }
-        sb.append(")");
-    }
-
-    /**
-     * Appends the field reference for an aggregate function argument using {@code ->} at every level so that MQLv2's
-     * auto-mapping over the group sequence is preserved end-to-end. Without joins: emits {@code column}. With joins:
-     * emits {@code qualifier->column}.
-     */
-    private void appendAggFieldRef(StringBuilder sb, Expression expr) {
-        ColumnReference cr;
-        if (expr instanceof ColumnReference c) {
-            cr = c;
-        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
-            cr = bvpi.getColumnReference();
-        } else {
-            throw new FeatureNotSupportedException("Expected column reference in aggregate; got: "
-                    + expr.getClass().getSimpleName());
-        }
-        var qualifier = cr.getQualifier();
-        if (qualifier != null && unnestAliasToFieldPath.containsKey(qualifier)) {
-            sb.append(unnestAliasToFieldPath.get(qualifier)).append("->").append(cr.getColumnExpression());
-        } else if (hasJoins && qualifier != null && !qualifier.isEmpty()) {
-            sb.append(qualifier).append("->").append(cr.getColumnExpression());
-        } else {
-            sb.append(cr.getColumnExpression());
-        }
-    }
-
-    private static String simpleColumnName(Expression expr) {
-        if (expr instanceof ColumnReference cr) {
-            return cr.getColumnExpression();
-        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
-            return bvpi.getColumnReference().getColumnExpression();
-        } else {
-            throw new FeatureNotSupportedException(
-                    "Expected simple column reference; got: " + expr.getClass().getSimpleName());
-        }
-    }
-
-    private List<String> appendFormat(
-            StringBuilder sb, SelectClause selectClause, @Nullable List<@Nullable String> aggNames) {
-        var fieldNames = new ArrayList<String>();
-        var formatParts = new ArrayList<String>();
-        var syntheticIdx = 0;
-
-        var selections = selectClause.getSqlSelections().stream()
-                .filter(s -> !s.isVirtual())
-                .toList();
-        // Collect the set of array field paths from unnest joins. These columns require re-wrapping
-        // in a single-element array in the format stage so Hibernate's getArray() call succeeds.
-        // (The | unwind body maps the array field to the element document for match purposes;
-        // the format stage then wraps it back so the result set delivers an ARRAY.)
-        var unnestArrayFields = new LinkedHashSet<>(unnestAliasToFieldPath.values());
-
-        for (var i = 0; i < selections.size(); i++) {
-            var selExpr = selections.get(i).getExpression();
-            var aggName = aggNames != null ? aggNames.get(i) : null;
-
-            String key;
-            String valueText;
-            if (aggName != null) {
-                key = "_f" + syntheticIdx++;
-                valueText = aggName;
-            } else if (selExpr instanceof ColumnReference cr) {
-                key = cr.getColumnExpression();
-                // After a group stage, the key field is named by simpleColumnName (= key),
-                // so reference it directly rather than via the pre-group qualified path.
-                var rawValue = aggNames != null ? key : appendExprTextToString(selExpr);
-                // Re-wrap unnest array fields: the unwind body emits the element as a struct;
-                // the format stage must wrap it in [rawValue] so getArray() sees an ARRAY.
-                valueText = (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key))
-                        ? "[" + rawValue + "]"
-                        : rawValue;
-            } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
-                key = bvpi.getColumnReference().getColumnExpression();
-                var rawValue = aggNames != null ? key : appendExprTextToString(selExpr);
-                valueText = (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key))
-                        ? "[" + rawValue + "]"
-                        : rawValue;
-            } else {
-                key = "_f" + syntheticIdx++;
-                valueText = appendExprTextToString(selExpr);
-            }
-
-            fieldNames.add(key);
-            formatParts.add(key + ": " + valueText);
-        }
-
-        sb.append(" | format {");
-        for (var i = 0; i < formatParts.size(); i++) {
-            if (i > 0) sb.append(", ");
-            sb.append(formatParts.get(i));
-        }
-        sb.append("}");
-        return fieldNames;
-    }
-
-    /**
-     * Translates {@code exists (select 1 from o.array a where <body>)} into MQLv2 {@code (<arrayPath> any
-     * (<body-rewritten>))}, with outer-correlated references captured into a {@code let} wrapper around the {@code any}
-     * expression. Negation wraps the whole thing in {@code (not …)}.
-     */
-    private void appendUnnestExistsPredicate(StringBuilder sb, ExistsPredicate ep) {
-        var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
-        var innerRoot = innerSpec.getFromClause().getRoots().get(0);
-        var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
-        var arrayPath = extractUnnestArrayPath(ftr);
-        var unnestAlias = extractUnnestAlias(innerRoot);
-
-        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-        var outerQualifiers = collectOuterQualifiers(outerSpec);
-        var correlatedBindings = new LinkedHashMap<String, String>();
-
-        var arrayPathSb = new StringBuilder();
-        appendExprText(arrayPathSb, arrayPath);
-
-        var bodySb = new StringBuilder();
-        appendPredicateTextWithResolver(
-                bodySb,
-                innerSpec.getWhereClauseRestrictions(),
-                insideAnyResolver(List.of(unnestAlias), outerQualifiers, correlatedBindings));
-
-        // wrapWithLet adds the outer parens (or a `let … in (...)` wrapper) around the
-        // any expression. Negation wraps the whole thing in `(not …)`.
-        var wrapped = wrapWithLet(arrayPathSb + " any " + bodySb, correlatedBindings);
-        if (ep.isNegated()) {
-            sb.append("(not ").append(wrapped).append(")");
-        } else {
-            sb.append(wrapped);
-        }
-    }
-
-    /**
-     * Translates {@code (SELECT count(*) FROM o.array a [WHERE <body>])} (when the inner FROM root is an unnest
-     * function table) into MQLv2 {@code count((from <arrayPath> | match (<body>)))}, using the subpipeline-expression
-     * form. Outer-correlated body references flow through the existing {@code $__vN} let-binding machinery.
-     *
-     * <p>Only {@code count()} is supported. Other aggregates ({@code max}, {@code sum}, etc.) have no pipeline-argument
-     * form in MQLv2 and throw {@link FeatureNotSupportedException}.
-     */
-    private void appendUnnestScalarSubquery(StringBuilder sb, SelectStatement ss) {
-        var innerSpec = ss.getQueryPart().getFirstQuerySpec();
-        var innerRoot = innerSpec.getFromClause().getRoots().get(0);
-        var ftr = (FunctionTableReference) innerRoot.getPrimaryTableReference();
-
-        var selections = innerSpec.getSelectClause().getSqlSelections().stream()
-                .filter(s -> !s.isVirtual())
-                .toList();
-        if (selections.size() != 1) {
-            throw new FeatureNotSupportedException("Scalar subquery over unnest() must project exactly one column");
-        }
-        var selExpr = selections.get(0).getExpression();
-        if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression<?> fn)
-                || !"count".equals(fn.getFunctionName())) {
-            throw new FeatureNotSupportedException(
-                    "Scalar subquery over unnest() must use count(); other aggregates have no "
-                            + "pipeline-argument form in MQLv2 yet");
-        }
-
-        var arrayPath = extractUnnestArrayPath(ftr);
-        var unnestAlias = extractUnnestAlias(innerRoot);
-
-        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-        var outerQualifiers = collectOuterQualifiers(outerSpec);
-        var correlatedBindings = new LinkedHashMap<String, String>();
-
-        var arrayPathSb = new StringBuilder();
-        appendExprText(arrayPathSb, arrayPath);
-
-        var innerPipelineSb = new StringBuilder("from ").append(arrayPathSb);
-        var where = innerSpec.getWhereClauseRestrictions();
-        if (where != null && !where.isEmpty()) {
-            var bodySb = new StringBuilder();
-            appendPredicateTextWithResolver(
-                    bodySb, where, insideAnyResolver(List.of(unnestAlias), outerQualifiers, correlatedBindings));
-            innerPipelineSb.append(" | match ").append(bodySb);
-        }
-
-        var subpipelineExpr = "(" + innerPipelineSb + ")";
-        var countExpr = "count(" + subpipelineExpr + ")";
-        sb.append(wrapWithLet(countExpr, correlatedBindings));
-    }
-
-    private void appendPredicateText(StringBuilder sb, Predicate predicate) {
-        if (predicate instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr) {
-            var outerQualifiers = collectOuterQualifiers(selectStatement.getQueryPart().getFirstQuerySpec());
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translateAnyAllSubquery(
-                    cp, anyExpr.getSubquery(), false, newContext(), outerQualifiers,
-                    () -> correlatedVarCounter++)));
-        } else if (predicate instanceof ComparisonPredicate cp
-                && cp.getRightHandExpression() instanceof Every everyExpr) {
-            var outerQualifiers = collectOuterQualifiers(selectStatement.getQueryPart().getFirstQuerySpec());
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translateAnyAllSubquery(
-                    cp, everyExpr.getSubquery(), true, newContext(), outerQualifiers,
-                    () -> correlatedVarCounter++)));
-        } else if (predicate instanceof ComparisonPredicate
-                || predicate instanceof Junction
-                || predicate instanceof GroupedPredicate
-                || predicate instanceof NegatedPredicate
-                || predicate instanceof NullnessPredicate
-                || predicate instanceof BooleanExpressionPredicate
-                || predicate instanceof InListPredicate
-                || predicate instanceof SelfRenderingPredicate) {
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translatePredicate(predicate, newContext())));
-        } else if (predicate instanceof InSubQueryPredicate isp) {
-            // Note: IN-subquery over an unnest function table is Hibernate-SQM-blocked
-            // (resolveSqmPath AssertionError on the unnest FunctionJoin path during type
-            // inference in visitInSubQueryPredicate). The AST never reaches us, so no
-            // dispatch hook is needed here. See Mqlv2UnnestSubqueryIntegrationTests for the
-            // negative tests that lock the contract.
-            var outerQualifiers = collectOuterQualifiers(selectStatement.getQueryPart().getFirstQuerySpec());
-            sb.append(serializer.serialize(Mqlv2IrEmitters.translateInSubQuery(
-                    isp, newContext(), outerQualifiers, () -> correlatedVarCounter++)));
-        } else if (predicate instanceof ExistsPredicate ep) {
-            var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
-            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
-            if (isUnnestFunctionTable(innerRoot.getPrimaryTableReference())) {
-                appendUnnestExistsPredicate(sb, ep);
-            } else {
-                var outerQualifiers = collectOuterQualifiers(selectStatement.getQueryPart().getFirstQuerySpec());
-                sb.append(serializer.serialize(Mqlv2IrEmitters.translateExists(
-                        ep, newContext(), outerQualifiers, () -> correlatedVarCounter++)));
-            }
-        } else {
-            throw new FeatureNotSupportedException(
-                    "Unsupported predicate: " + predicate.getClass().getSimpleName());
-        }
-    }
-
-    /**
-     * Appends the serialized IR text for a function expression. Constructs an IR node via {@code translator} (which
-     * allocates any JDBC parameter binders as it walks the AST) and appends the serialized text to {@code sb}.
-     */
-    private void appendIrExprFunction(
-            StringBuilder sb, SelfRenderingFunctionSqlAstExpression<?> fn, IrFunctionTranslator translator) {
-        Expr ir = translator.translate(fn, newContext());
-        sb.append(serializer.serialize(ir));
-    }
-
-    private String appendExprTextToString(Expression expression) {
-        var sb = new StringBuilder();
-        appendExprText(sb, expression);
-        return sb.toString();
-    }
-
-    private static boolean isFoundationExpression(Expression expression) {
-        return expression instanceof BasicValuedPathInterpretation<?>
-                || expression instanceof ColumnReference
-                || expression instanceof QueryLiteral<?>
-                || expression instanceof UnparsedNumericLiteral<?>
-                || expression instanceof SqmParameterInterpretation
-                || expression instanceof JdbcParameter
-                || expression instanceof BinaryArithmeticExpression;
-    }
-
-    private void appendExprText(StringBuilder sb, Expression expression) {
-        if (isFoundationExpression(expression)) {
-            Expr ir = Mqlv2IrEmitters.translateExpression(expression, newContext());
-            sb.append(serializer.serialize(ir));
-        } else if (expression instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
-            if (isAggregateFunction(expression)) {
-                var aggName = aggSignatureToName.get(aggSignature(fn));
-                if (aggName == null) {
-                    throw new FeatureNotSupportedException(
-                            "Aggregate function in expression not found in SELECT: " + fn.getFunctionName() + "()");
-                }
-                sb.append(serializer.serialize(Mqlv2IrEmitters.translateAggregateReference(aggName)));
-            } else if ("extract".equals(fn.getFunctionName())) {
-                appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateExtract);
-            } else if ("array_length".equals(fn.getFunctionName())) {
-                appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateArrayLength);
-            } else if ("array_get".equals(fn.getFunctionName())) {
-                appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateArrayGet);
-            } else if ("array".equals(fn.getFunctionName()) || "array_list".equals(fn.getFunctionName())) {
-                appendIrExprFunction(sb, fn, Mqlv2IrEmitters::translateArrayConstructor);
-            } else {
-                throw new FeatureNotSupportedException("Unsupported function: " + fn.getFunctionName() + "()");
-            }
-        } else if (expression instanceof SelectStatement ss) {
-            var innerSpec = ss.getQueryPart().getFirstQuerySpec();
-            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
-            if (isUnnestFunctionTable(innerRoot.getPrimaryTableReference())) {
-                appendUnnestScalarSubquery(sb, ss);
-            } else {
-                var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-                var outerQualifiers = collectOuterQualifiers(outerSpec);
-                sb.append(serializer.serialize(
-                        Mqlv2IrEmitters.translateScalarSubquery(
-                                ss, newContext(), outerQualifiers, () -> correlatedVarCounter++)));
-            }
-        } else {
-            throw new FeatureNotSupportedException(
-                    "Unsupported expression: " + expression.getClass().getSimpleName());
-        }
-    }
-
-    private static String comparisonOpSurface(ComparisonOperator op) {
-        return switch (op) {
-            case EQUAL -> "==";
-            case NOT_EQUAL -> "!=";
-            case LESS_THAN -> "<";
-            case LESS_THAN_OR_EQUAL -> "<=";
-            case GREATER_THAN -> ">";
-            case GREATER_THAN_OR_EQUAL -> ">=";
-            default -> throw new FeatureNotSupportedException("Unsupported comparison operator: " + op);
-        };
     }
 
     private static Set<String> collectAffectedTableNames(TableGroup root) {

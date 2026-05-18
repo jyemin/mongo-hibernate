@@ -410,37 +410,37 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "from Cart c where exists (from c.lineItems li where li.sku = 'WIDGET-1')",
-                    "from $carts | match (lineItems any ($.sku == \"WIDGET-1\")) | " + fmtCart);
+                    "from $carts | match lineItems any ((sku == \"WIDGET-1\")) | " + fmtCart);
 
             // EXISTS — AND conjunction in body
             check(
                     soft,
                     "from Cart c where exists (" + "from c.lineItems li where li.sku = 'WIDGET-1' and li.qty > 0)",
-                    "from $carts | match (lineItems any (($.sku == \"WIDGET-1\") and ($.qty > 0))) | " + fmtCart);
+                    "from $carts | match lineItems any (((sku == \"WIDGET-1\") and (qty > 0))) | " + fmtCart);
 
             // EXISTS — OR disjunction in body
             check(
                     soft,
                     "from Cart c where exists (" + "from c.lineItems li where li.sku = 'WIDGET-1' or li.qty > 5)",
-                    "from $carts | match (lineItems any (($.sku == \"WIDGET-1\") or ($.qty > 5))) | " + fmtCart);
+                    "from $carts | match lineItems any (((sku == \"WIDGET-1\") or (qty > 5))) | " + fmtCart);
 
             // EXISTS — NOT in body
             check(
                     soft,
                     "from Cart c where exists (" + "from c.lineItems li where not (li.sku = 'WIDGET-1'))",
-                    "from $carts | match (lineItems any (not ($.sku == \"WIDGET-1\"))) | " + fmtCart);
+                    "from $carts | match lineItems any ((not (sku == \"WIDGET-1\"))) | " + fmtCart);
 
             // NOT EXISTS
             check(
                     soft,
                     "from Cart c where not exists (from c.lineItems li where li.sku = 'WIDGET-1')",
-                    "from $carts | match (not (lineItems any ($.sku == \"WIDGET-1\"))) | " + fmtCart);
+                    "from $carts | match (not (lineItems any ((sku == \"WIDGET-1\")))) | " + fmtCart);
 
             // EXISTS — correlated outer reference
             check(
                     soft,
                     "from Cart c where exists (from c.lineItems li where li.qty > c.minQty)",
-                    "from $carts | match let $__v0 = minQty in (lineItems any ($.qty > $__v0)) | " + fmtCart);
+                    "from $carts | match let $__v0 = minQty in lineItems any ((qty > $__v0)) | " + fmtCart);
 
             // JOIN — single predicate (row-multiplying; re-wraps matched element)
             // IR path: unwind uses $__elem=lineItems (no spaces around = from JoinStage serializer)
@@ -465,7 +465,7 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "select c.id, (select count(*) from c.lineItems li where li.qty > 4) from Cart c order by c.id",
-                    "from $carts | sort _id | format {_id: _id, _f0: (count((from lineItems | match ($.qty > 4))))}");
+                    "from $carts | sort _id | format {_id: _id, _f0: count((from lineItems | match (qty > 4)))}");
 
             // Array functions
             var fmtInv = "format {_id: _id, boxedScores: boxedScores, scores: scores}";
