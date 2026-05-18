@@ -127,6 +127,30 @@ class Mqlv2UnnestJoinIntegrationTests implements SessionFactoryScopeAware {
     }
 
     @Test
+    void joinOverStructArray_inSubQueryPredicate_parentColProjectedThroughUnwind() {
+        // o.id appears only in the IN subquery test expression — not in SELECT.
+        // Without the fix, _id is missing from the unwind body and the match silently returns nothing.
+        var hql = "select a.sku from Order o join o.lineItems a"
+                + " where o.id in (select o2.id from Order o2 where o2.id in (1, 2))";
+        var results = sessionFactoryScope.fromSession(
+                session -> session.createSelectionQuery(hql, String.class).getResultList());
+        // Orders 1 and 2 match; order 1 has WIDGET-1 + WIDGET-2, order 2 has GADGET-1.
+        assertThat(results).containsExactlyInAnyOrder("WIDGET-1", "WIDGET-2", "GADGET-1");
+    }
+
+    @Test
+    void joinOverStructArray_arrayContainsPredicate_parentColProjectedThroughUnwind() {
+        // array_contains(o.scores, :score) references scores only in the predicate — not in SELECT.
+        // Without the fix, scores is missing from the unwind body and the match silently returns nothing.
+        var hql = "select a.sku from Order o join o.lineItems a where array_contains(o.scores, :score)";
+        var results = sessionFactoryScope.fromSession(session -> session.createSelectionQuery(hql, String.class)
+                .setParameter("score", 10)
+                .getResultList());
+        // Only order 1 has score 10; its line items are WIDGET-1 and WIDGET-2.
+        assertThat(results).containsExactlyInAnyOrder("WIDGET-1", "WIDGET-2");
+    }
+
+    @Test
     void joinOverScalarArray_withBodyPredicate_unsupported() {
         // Scalar JOIN with a body predicate (s > 5) fails at HQL semantic-analysis time.
         // Hibernate throws AssertionError when it cannot resolve the scalar path for the join alias.

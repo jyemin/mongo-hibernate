@@ -48,12 +48,15 @@ import org.hibernate.sql.ast.tree.from.TableGroupJoin;
 import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
 import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
 import org.hibernate.sql.ast.tree.predicate.GroupedPredicate;
+import org.hibernate.sql.ast.tree.predicate.ExistsPredicate;
+import org.hibernate.sql.ast.tree.predicate.FilterPredicate;
 import org.hibernate.sql.ast.tree.predicate.InListPredicate;
+import org.hibernate.sql.ast.tree.predicate.InSubQueryPredicate;
+import org.hibernate.sql.ast.tree.predicate.SelfRenderingPredicate;
 import org.hibernate.sql.ast.tree.predicate.Junction;
 import org.hibernate.sql.ast.tree.predicate.NegatedPredicate;
 import org.hibernate.sql.ast.tree.predicate.NullnessPredicate;
 import org.hibernate.sql.ast.tree.predicate.Predicate;
-import org.hibernate.sql.ast.tree.predicate.SelfRenderingPredicate;
 import org.hibernate.sql.ast.tree.select.QueryGroup;
 import org.hibernate.sql.ast.tree.select.QuerySpec;
 import org.hibernate.sql.ast.tree.select.SelectClause;
@@ -662,12 +665,22 @@ public final class Mqlv2StageEmitter {
         } else if (predicate instanceof InListPredicate ilp) {
             collectParentColsFromExpr(ilp.getTestExpression(), rootAlias, result);
             for (var e : ilp.getListExpressions()) collectParentColsFromExpr(e, rootAlias, result);
-        } else if (predicate instanceof SelfRenderingPredicate) {
-            // SelfRenderingPredicate (array function predicates) — not walked here,
-            // their subqueries are separate query scopes and don't contribute parent columns.
+        } else if (predicate instanceof InSubQueryPredicate isp) {
+            collectParentColsFromExpr(isp.getTestExpression(), rootAlias, result);
+            // don't walk the subquery — separate scope
+        } else if (predicate instanceof SelfRenderingPredicate srp
+                && srp.getSelfRenderingExpression() instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
+            for (var arg : fn.getArguments()) {
+                if (arg instanceof Expression e) collectParentColsFromExpr(e, rootAlias, result);
+            }
+        } else if (!(predicate instanceof ExistsPredicate) && !(predicate instanceof FilterPredicate)) {
+            // ExistsPredicate: subquery scope only, no direct column refs.
+            // FilterPredicate: opaque SQL fragment, cannot be walked.
+            // Everything else: throw so that adding a new predicate type to translatePredicate
+            // forces the implementor to wire it here too.
+            throw new FeatureNotSupportedException(
+                    "Unsupported predicate type: " + predicate.getClass().getSimpleName());
         }
-        // Other predicate types (EXISTS, IN subquery, etc.) are not walked — their subqueries
-        // are separate query scopes and don't need to contribute columns to the unwind body.
     }
 
     private static void collectParentColsFromExpr(Expression expr, @Nullable String rootAlias, Set<String> result) {
