@@ -20,6 +20,7 @@ import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.mqlv2.ast.Assignment;
 import com.mongodb.mqlv2.ast.BinaryOpType;
 import com.mongodb.mqlv2.ast.Expr;
+import com.mongodb.mqlv2.ast.JoinType;
 import com.mongodb.mqlv2.ast.SortDirection;
 import com.mongodb.mqlv2.ast.SortSpec;
 import com.mongodb.mqlv2.ast.Stage;
@@ -36,6 +37,7 @@ import org.hibernate.query.common.TemporalUnit;
 import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.ComparisonOperator;
+import org.hibernate.query.sqm.SetOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.EntityValuedPathInterpretation;
@@ -50,8 +52,11 @@ import org.hibernate.sql.ast.tree.expression.JdbcParameter;
 import org.hibernate.sql.ast.tree.expression.QueryLiteral;
 import org.hibernate.sql.ast.tree.expression.Star;
 import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
+import org.hibernate.sql.ast.SqlAstJoinType;
 import org.hibernate.sql.ast.tree.from.FunctionTableReference;
 import org.hibernate.sql.ast.tree.from.NamedTableReference;
+import org.hibernate.sql.ast.tree.from.TableGroup;
+import org.hibernate.sql.ast.tree.from.TableGroupJoin;
 import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
 import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
 import org.hibernate.sql.ast.tree.predicate.ExistsPredicate;
@@ -63,6 +68,7 @@ import org.hibernate.sql.ast.tree.predicate.NegatedPredicate;
 import org.hibernate.sql.ast.tree.predicate.NullnessPredicate;
 import org.hibernate.sql.ast.tree.predicate.Predicate;
 import org.hibernate.sql.ast.tree.predicate.SelfRenderingPredicate;
+import org.hibernate.sql.ast.tree.select.QueryGroup;
 import org.hibernate.sql.ast.tree.select.QuerySpec;
 import org.hibernate.sql.ast.tree.select.SelectClause;
 import org.hibernate.sql.ast.tree.select.SelectStatement;
@@ -158,13 +164,13 @@ public final class Mqlv2IrEmitters {
                 "Unsupported expression in IR translation: " + e.getClass().getSimpleName());
     }
 
-    private static final Set<String> AGGREGATE_FUNCTION_NAMES = Set.of("count", "sum", "avg", "min", "max");
+    public static final Set<String> AGGREGATE_FUNCTION_NAMES = Set.of("count", "sum", "avg", "min", "max");
 
     /**
      * Compute the aggregate signature key used to look up the assigned {@code _aggN} alias. Mirrors the logic in
      * {@code Mqlv2SelectTranslator.aggSignature}.
      */
-    private static String aggSignature(SelfRenderingFunctionSqlAstExpression<?> fn, boolean hasJoins) {
+    public static String aggSignature(SelfRenderingFunctionSqlAstExpression<?> fn, boolean hasJoins) {
         var args = fn.getArguments();
         if (args.isEmpty() || args.get(0) instanceof Star || args.get(0) instanceof EntityValuedPathInterpretation<?>) {
             return fn.getFunctionName() + ":*";
@@ -276,7 +282,7 @@ public final class Mqlv2IrEmitters {
      * @param fn the function call AST node.
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateArrayGet(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
+    private static Expr translateArrayGet(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var args = fn.getArguments();
         if (!(args.get(0) instanceof Expression arr) || !(args.get(1) instanceof Expression idx)) {
             throw new FeatureNotSupportedException("Non-expression argument in " + fn.getFunctionName() + "()");
@@ -293,7 +299,7 @@ public final class Mqlv2IrEmitters {
      * @param fn the function call AST node.
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateArrayConstructor(
+    private static Expr translateArrayConstructor(
             SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var args = fn.getArguments();
         List<Expr> elements = new ArrayList<>(args.size());
@@ -312,7 +318,7 @@ public final class Mqlv2IrEmitters {
      * @param fn the function call AST node.
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateArrayLength(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
+    private static Expr translateArrayLength(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         if (!(fn.getArguments().get(0) instanceof Expression arg)) {
             throw new FeatureNotSupportedException("Non-expression argument in " + fn.getFunctionName() + "()");
         }
@@ -336,7 +342,7 @@ public final class Mqlv2IrEmitters {
      * @param fn the function call AST node.
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateArrayIntersects(
+    private static Expr translateArrayIntersects(
             SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var name = fn.getFunctionName();
         var args = fn.getArguments();
@@ -369,7 +375,7 @@ public final class Mqlv2IrEmitters {
      * @param fn the function call AST node.
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateArrayContains(
+    private static Expr translateArrayContains(
             SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var name = fn.getFunctionName();
         var args = fn.getArguments();
@@ -393,7 +399,7 @@ public final class Mqlv2IrEmitters {
      * @param aggName the alias name assigned to the aggregate (e.g., {@code "_agg0"}).
      * @return a {@code FieldAccess} expression that the Serializer renders as the bare alias.
      */
-    public static Expr translateAggregateReference(String aggName) {
+    private static Expr translateAggregateReference(String aggName) {
         return new Expr.FieldAccess(new Expr.CurrentValue(), aggName);
     }
 
@@ -404,7 +410,7 @@ public final class Mqlv2IrEmitters {
      * @param fn the function call AST node (function name must be {@code "extract"}).
      * @param ctx translation context — see {@link #translateExpression(Expression, Mqlv2TranslationContext)}.
      */
-    public static Expr translateExtract(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
+    private static Expr translateExtract(SelfRenderingFunctionSqlAstExpression<?> fn, Mqlv2TranslationContext ctx) {
         var args = fn.getArguments();
         if (args.size() != 2 || !(args.get(0) instanceof ExtractUnit eu)) {
             throw new FeatureNotSupportedException("Unsupported extract() form");
@@ -966,7 +972,7 @@ public final class Mqlv2IrEmitters {
      *     correlated-bindings map.
      * @return the translated {@link Stage} for the inner pipeline.
      */
-    public static Stage translateInnerQuerySpec(QuerySpec innerSpec, Mqlv2TranslationContext innerCtx) {
+    private static Stage translateInnerQuerySpec(QuerySpec innerSpec, Mqlv2TranslationContext innerCtx) {
         var roots = innerSpec.getFromClause().getRoots();
         if (roots.size() != 1 || !roots.get(0).getTableGroupJoins().isEmpty()) {
             throw new FeatureNotSupportedException(
@@ -1088,7 +1094,7 @@ public final class Mqlv2IrEmitters {
      *     the outer translator to avoid collisions.
      * @return the translated {@link Expr}.
      */
-    public static Expr translateExists(
+    private static Expr translateExists(
             ExistsPredicate ep,
             Mqlv2TranslationContext outerCtx,
             Set<String> outerQualifiers,
@@ -1123,7 +1129,7 @@ public final class Mqlv2IrEmitters {
      * @param nextCorrelatedVar supplier of the next globally-unique integer index; shared with the outer translator.
      * @return the translated {@link Expr}.
      */
-    public static Expr translateInSubQuery(
+    private static Expr translateInSubQuery(
             InSubQueryPredicate isp,
             Mqlv2TranslationContext outerCtx,
             Set<String> outerQualifiers,
@@ -1183,7 +1189,7 @@ public final class Mqlv2IrEmitters {
      * @param nextCorrelatedVar supplier of the next globally-unique integer index; shared with the outer translator.
      * @return the translated {@link Expr}.
      */
-    public static Expr translateAnyAllSubquery(
+    private static Expr translateAnyAllSubquery(
             ComparisonPredicate cp,
             SelectStatement subquery,
             boolean isAll,
@@ -1281,7 +1287,7 @@ public final class Mqlv2IrEmitters {
      *     the outer translator to avoid collisions.
      * @return the translated {@link Expr}.
      */
-    public static Expr translateScalarSubquery(
+    private static Expr translateScalarSubquery(
             SelectStatement ss,
             Mqlv2TranslationContext outerCtx,
             Set<String> outerQualifiers,
@@ -1324,7 +1330,7 @@ public final class Mqlv2IrEmitters {
      *     the outer translator to avoid collisions.
      * @return the translated {@link Expr}.
      */
-    public static Expr translateUnnestExists(
+    private static Expr translateUnnestExists(
             ExistsPredicate ep,
             Mqlv2TranslationContext outerCtx,
             Set<String> outerQualifiers,
@@ -1369,7 +1375,7 @@ public final class Mqlv2IrEmitters {
      *     the outer translator to avoid collisions.
      * @return the translated {@link Expr}.
      */
-    public static Expr translateUnnestScalarSubquery(
+    private static Expr translateUnnestScalarSubquery(
             SelectStatement ss,
             Mqlv2TranslationContext outerCtx,
             Set<String> outerQualifiers,
@@ -1441,5 +1447,265 @@ public final class Mqlv2IrEmitters {
         }
         throw new FeatureNotSupportedException("unnest() argument must be a path expression on an outer entity; got: "
                 + arg.getClass().getSimpleName());
+    }
+
+    // ---- Join-stage translation helpers ----
+
+    /**
+     * Traverses the table-group-join list and builds a chain of {@link Stage} nodes
+     * ({@link Stage.UnwindComplexStage} for unnest joins, {@link Stage.JoinStage} for regular joins).
+     *
+     * <p>Populates {@code unnestAliasToFieldPath} (via {@link Mqlv2TranslationContext#unnestAliasToFieldPath()}) so that
+     * subsequent column-reference rendering resolves unnest aliases correctly.
+     */
+    public static Stage translateJoins(
+            Stage prev, TableGroup root, QuerySpec querySpec, Mqlv2TranslationContext ctx) {
+        var s = prev;
+        for (var tgj : root.getTableGroupJoins()) {
+            var joinedGroup = tgj.getJoinedGroup();
+            var primaryRef = joinedGroup.getPrimaryTableReference();
+            if (isUnnestFunctionTable(primaryRef)) {
+                var rootAlias =
+                        ((NamedTableReference) root.getPrimaryTableReference()).getIdentificationVariable();
+                s = buildUnnestJoinStage(s, tgj, (FunctionTableReference) primaryRef, querySpec, rootAlias, ctx);
+            } else {
+                var joinNtr = (NamedTableReference) primaryRef;
+                var joinCollName = joinNtr.getTableExpression();
+                var joinAlias = joinNtr.getIdentificationVariable();
+                var joinPredicate = tgj.getPredicate();
+                if (joinPredicate == null) {
+                    throw new FeatureNotSupportedException("Join without ON condition is not supported in MQLv2");
+                }
+                var condExpr = translatePredicate(joinPredicate, ctx);
+                s = new Stage.JoinStage(
+                        s, irJoinType(tgj.getJoinType()), joinAlias, new Expr.VarRef(joinCollName), condExpr);
+                s = translateJoins(s, joinedGroup, querySpec, ctx);
+            }
+        }
+        return s;
+    }
+
+    /**
+     * Builds a {@link Stage.UnwindComplexStage} that explodes the array field and preserves all parent-entity columns
+     * in the unwind body.
+     *
+     * <p>Also records the alias→array-field-path mapping in {@link Mqlv2TranslationContext#unnestAliasToFieldPath()} so
+     * that subsequent column-reference rendering resolves {@code alias.column} to {@code arrayFieldPath.column}.
+     */
+    private static Stage buildUnnestJoinStage(
+            Stage prev,
+            TableGroupJoin tgj,
+            FunctionTableReference ftr,
+            QuerySpec querySpec,
+            @Nullable String rootAlias,
+            Mqlv2TranslationContext ctx) {
+        var arrayPath = extractUnnestArrayPath(ftr);
+        var alias = ((FunctionTableReference) tgj.getJoinedGroup().getPrimaryTableReference())
+                .getIdentificationVariable();
+        // Unwind targets the field on the current (outer) document without qualifier prefix.
+        var arrayFieldPath = columnExpressionOf(arrayPath);
+        var internalVarName = "__elem";
+
+        // Collect all parent-entity column names referenced anywhere in the QuerySpec.
+        // These must be enumerated in the unwind body to be preserved across the stage.
+        var parentCols = new LinkedHashSet<String>();
+        collectParentColumnNames(querySpec, rootAlias, parentCols);
+        // Always include the array field itself: subsequent pipeline stages reference it as
+        // arrayField.subField (e.g., lineItems.sku), so the unwind body must carry it forward.
+        parentCols.add(arrayFieldPath);
+
+        // Build the body document: {col1: col1, ..., arrayField: $__elem}
+        var fields = new ArrayList<Map.Entry<Expr, Expr>>();
+        for (var col : parentCols) {
+            Expr keyExpr = new Expr.ValueLit(new Value.VString(col));
+            Expr valExpr;
+            if (col.equals(arrayFieldPath)) {
+                // Map the array field to the element variable so subsequent match stages work.
+                valExpr = new Expr.VarRef(internalVarName);
+            } else {
+                valExpr = new Expr.FieldAccess(new Expr.CurrentValue(), col);
+            }
+            fields.add(Map.entry(keyExpr, valExpr));
+        }
+        var bodyExpr = new Expr.DocumentConstructor(fields);
+
+        // Source expression: the array field on the current document.
+        var sourceExpr = new Expr.FieldAccess(new Expr.CurrentValue(), arrayFieldPath);
+
+        // Register the alias so downstream column-reference rendering resolves it correctly.
+        ctx.unnestAliasToFieldPath().put(alias, arrayFieldPath);
+
+        return new Stage.UnwindComplexStage(prev, internalVarName, sourceExpr, bodyExpr);
+    }
+
+    /**
+     * @return true iff the table reference is a {@link FunctionTableReference} whose function descriptor identifies as
+     *     "unnest".
+     */
+    private static boolean isUnnestFunctionTable(org.hibernate.sql.ast.tree.from.TableReference ref) {
+        return ref instanceof FunctionTableReference ftr
+                && "unnest".equals(ftr.getFunctionExpression().getFunctionName());
+    }
+
+    /**
+     * Maps a Hibernate {@link SqlAstJoinType} to the driver-mqlv2 {@link JoinType}. Returns {@code null} for INNER
+     * joins because {@link Stage.JoinStage} treats a {@code null} join type as an inner join (and the Serializer omits
+     * the keyword).
+     */
+    private static @Nullable JoinType irJoinType(SqlAstJoinType joinType) {
+        return switch (joinType) {
+            case INNER -> null;
+            case LEFT -> JoinType.LEFT_OUTER;
+            case RIGHT -> JoinType.RIGHT_OUTER;
+            case FULL -> JoinType.FULL_OUTER;
+            default -> throw new FeatureNotSupportedException("Unsupported join type: " + joinType);
+        };
+    }
+
+    /**
+     * Collects all parent-entity column names referenced in the given {@code QuerySpec}. A column is considered
+     * "parent" if its qualifier matches {@code rootAlias} (or is null/empty).
+     *
+     * <p>Scans SELECT, WHERE, ORDER BY, GROUP BY, and HAVING clauses.
+     */
+    private static void collectParentColumnNames(
+            QuerySpec querySpec, @Nullable String rootAlias, Set<String> result) {
+        // SELECT
+        for (var sel : querySpec.getSelectClause().getSqlSelections()) {
+            collectParentColsFromExpr(sel.getExpression(), rootAlias, result);
+        }
+        // WHERE
+        var where = querySpec.getWhereClauseRestrictions();
+        if (where != null && !where.isEmpty()) {
+            collectParentColsFromPredicate(where, rootAlias, result);
+        }
+        // ORDER BY
+        var sortSpecs = querySpec.getSortSpecifications();
+        if (sortSpecs != null) {
+            for (var sort : sortSpecs) {
+                collectParentColsFromExpr(sort.getSortExpression(), rootAlias, result);
+            }
+        }
+        // GROUP BY
+        for (var expr : querySpec.getGroupByClauseExpressions()) {
+            collectParentColsFromExpr(expr, rootAlias, result);
+        }
+        // HAVING
+        var having = querySpec.getHavingClauseRestrictions();
+        if (having != null && !having.isEmpty()) {
+            collectParentColsFromPredicate(having, rootAlias, result);
+        }
+    }
+
+    private static void collectParentColsFromPredicate(
+            Predicate predicate, @Nullable String rootAlias, Set<String> result) {
+        if (predicate instanceof ComparisonPredicate cp) {
+            collectParentColsFromExpr(cp.getLeftHandExpression(), rootAlias, result);
+            collectParentColsFromExpr(cp.getRightHandExpression(), rootAlias, result);
+        } else if (predicate instanceof Junction junction) {
+            for (var p : junction.getPredicates()) collectParentColsFromPredicate(p, rootAlias, result);
+        } else if (predicate instanceof GroupedPredicate gp) {
+            collectParentColsFromPredicate(gp.getSubPredicate(), rootAlias, result);
+        } else if (predicate instanceof NegatedPredicate np) {
+            collectParentColsFromPredicate(np.getPredicate(), rootAlias, result);
+        } else if (predicate instanceof NullnessPredicate np) {
+            collectParentColsFromExpr(np.getExpression(), rootAlias, result);
+        } else if (predicate instanceof BooleanExpressionPredicate bp) {
+            collectParentColsFromExpr(bp.getExpression(), rootAlias, result);
+        } else if (predicate instanceof InListPredicate ilp) {
+            collectParentColsFromExpr(ilp.getTestExpression(), rootAlias, result);
+            for (var e : ilp.getListExpressions()) collectParentColsFromExpr(e, rootAlias, result);
+        }
+        // Other predicate types (EXISTS, IN subquery, etc.) are not walked — their subqueries
+        // are separate query scopes and don't need to contribute columns to the unwind body.
+    }
+
+    private static void collectParentColsFromExpr(
+            Expression expr, @Nullable String rootAlias, Set<String> result) {
+        if (expr instanceof ColumnReference cr) {
+            var q = cr.getQualifier();
+            if (q == null || q.isEmpty() || q.equals(rootAlias)) {
+                result.add(cr.getColumnExpression());
+            }
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            collectParentColsFromExpr(bvpi.getColumnReference(), rootAlias, result);
+        } else if (expr instanceof BinaryArithmeticExpression bae) {
+            collectParentColsFromExpr(bae.getLeftHandOperand(), rootAlias, result);
+            collectParentColsFromExpr(bae.getRightHandOperand(), rootAlias, result);
+        } else if (expr instanceof SelfRenderingFunctionSqlAstExpression<?> fn) {
+            for (var arg : fn.getArguments()) {
+                if (arg instanceof Expression e) collectParentColsFromExpr(e, rootAlias, result);
+            }
+        } else if (expr instanceof SqmParameterInterpretation spi) {
+            collectParentColsFromExpr(spi.getResolvedExpression(), rootAlias, result);
+        }
+        // Literals, parameters, subqueries — no column references to collect.
+    }
+
+    /**
+     * Extracts the simple column expression from a path expression. Used to render unwind targets without qualifier
+     * prefix.
+     */
+    private static String columnExpressionOf(Expression expr) {
+        if (expr instanceof ColumnReference cr) {
+            return cr.getColumnExpression();
+        } else if (expr instanceof BasicValuedPathInterpretation<?> bvpi) {
+            return bvpi.getColumnReference().getColumnExpression();
+        }
+        throw new FeatureNotSupportedException("Expected simple column reference for unwind path; got: "
+                + expr.getClass().getSimpleName());
+    }
+
+    // ---- QueryGroup-stage translation helper ----
+
+    /**
+     * Builds the driver-mqlv2 {@link Stage} for a UNION/UNION_ALL/INTERSECT/EXCEPT query group.
+     *
+     * <ul>
+     *   <li>UNION_ALL: {@code from <<(sub1), (sub2), ...>> | unwind $*}
+     *   <li>UNION: {@code from <<(sub1), (sub2), ...>> | unwind $* | distinct}
+     *   <li>INTERSECT: {@code left | match (count(let $__vN = $ in (right | match ($ == $__vN))) > 0)}
+     *   <li>EXCEPT: same shape but with {@code == 0}
+     * </ul>
+     *
+     * @param queryGroup the set-operation query group.
+     * @param subStages the already-translated stage for each query-group member.
+     * @param nextCorrelatedVar supplier for the next globally-unique {@code __vN} integer index.
+     * @return the translated {@link Stage}.
+     */
+    public static Stage translateQueryGroupStage(
+            QueryGroup queryGroup, List<Stage> subStages, IntSupplier nextCorrelatedVar) {
+        var operator = queryGroup.getSetOperator();
+        return switch (operator) {
+            case UNION_ALL, UNION -> {
+                var subPipeExprs = subStages.stream()
+                        .map(s -> (Expr) new Expr.SubPipelineExpr(s))
+                        .toList();
+                Stage source = new Stage.FromStageSimple(new Expr.BagConstructor(subPipeExprs));
+                Stage unwind = new Stage.UnwindSimpleStage(source, new Expr.UnwindExpr(new Expr.CurrentValue()));
+                yield operator == SetOperator.UNION ? new Stage.DistinctStage(unwind) : unwind;
+            }
+            case INTERSECT, EXCEPT -> {
+                var leftStage = subStages.get(0);
+                var rightStage = subStages.get(1);
+                // right | match ($ == $__vN)
+                var varName = "__v" + nextCorrelatedVar.getAsInt();
+                Stage rightWithMatch = new Stage.MatchStage(
+                        rightStage,
+                        new Expr.BinaryOp(BinaryOpType.EQ, new Expr.CurrentValue(), new Expr.VarRef(varName)));
+                // let $__vN = $ in (right | match ...)
+                Expr letExpr = new Expr.LetExpr(
+                        List.of(Map.entry(varName, new Expr.CurrentValue())),
+                        new Expr.SubPipelineExpr(rightWithMatch));
+                // count(let ...) > 0  or  == 0
+                Expr countExpr = new Expr.FunctionCall("count", List.of(letExpr));
+                Expr predicate = new Expr.BinaryOp(
+                        operator == SetOperator.INTERSECT ? BinaryOpType.GT : BinaryOpType.EQ,
+                        countExpr,
+                        new Expr.ValueLit(new Value.VInt(0)));
+                yield new Stage.MatchStage(leftStage, predicate);
+            }
+            default -> throw new FeatureNotSupportedException("Unsupported set operator: " + operator);
+        };
     }
 }
