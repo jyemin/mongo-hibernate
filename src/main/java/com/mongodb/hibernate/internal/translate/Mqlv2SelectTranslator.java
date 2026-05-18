@@ -141,8 +141,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
     private final Serializer serializer = new Serializer();
     private @Nullable LimitJdbcParameter limitJdbcParameter;
-    /** Root context that holds the shared parameter-binder list; use {@link Mqlv2TranslationContext#forSpec} to obtain a fresh per-spec context. */
-    private final Mqlv2TranslationContext rootCtx = Mqlv2TranslationContext.root(parameterBinders);
     // Intentionally global (not reset per subquery branch): $__vN names only need to be unique across
     // the whole translation, and sharing the counter avoids collisions between nested correlated bindings.
     private int correlatedVarCounter = 0;
@@ -289,7 +287,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
         var ntr = (NamedTableReference) root.getPrimaryTableReference();
         var outerQualifiers = collectOuterQualifiers(querySpec);
-        var ctx = rootCtx.forSpec(hasJoins).withOuterScope(outerQualifiers, () -> correlatedVarCounter++);
+        var ctx = Mqlv2TranslationContext.forSpec(parameterBinders, hasJoins)
+                .withOuterScope(outerQualifiers, () -> correlatedVarCounter++);
         var stage = Mqlv2StageEmitter.translateFromStage(ntr, hasJoins);
         stage = Mqlv2StageEmitter.translateJoins(stage, root, querySpec, ctx);
         stage = Mqlv2StageEmitter.translateMatch(stage, querySpec, ctx);

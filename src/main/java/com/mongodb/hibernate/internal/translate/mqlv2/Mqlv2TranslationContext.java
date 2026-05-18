@@ -121,31 +121,14 @@ public final class Mqlv2TranslationContext {
     }
 
     /**
-     * Creates a root context that holds the shared (translator-global) parameter-binder list. Call {@link
-     * #forSpec(boolean)} on this instance to obtain a fresh per-spec context for each {@link
-     * org.hibernate.sql.ast.tree.select.QuerySpec} build.
+     * Constructs a fresh per-spec context: shares the translator-global parameter-binder list but gives the new spec
+     * its own per-spec state ({@code hasJoins}, unnest aliases, aggregate aliases, agg-signature index). Called at the
+     * start of each {@link org.hibernate.sql.ast.tree.select.QuerySpec} build so sub-specs automatically get a clean
+     * state slate without manual save/restore.
      */
-    public static Mqlv2TranslationContext root(List<JdbcParameterBinder> parameterBinders) {
+    public static Mqlv2TranslationContext forSpec(List<JdbcParameterBinder> parameterBinders, boolean hasJoins) {
         return new Mqlv2TranslationContext(
                 parameterBinders,
-                Collections.emptyMap(),
-                false,
-                Collections.emptyMap(),
-                Collections.emptyMap(),
-                null,
-                null,
-                null,
-                Collections.emptySet());
-    }
-
-    /**
-     * Constructs a fresh per-spec context, sharing the translator-global parameter-binder list but giving the new spec
-     * its own per-spec state ({@code hasJoins}, unnest aliases, aggregate aliases, agg-signature index). Used at the
-     * start of each {@link org.hibernate.sql.ast.tree.select.QuerySpec} build to give the spec a clean state slate.
-     */
-    public Mqlv2TranslationContext forSpec(boolean hasJoins) {
-        return new Mqlv2TranslationContext(
-                this.parameterBinders,
                 new LinkedHashMap<>(),
                 hasJoins,
                 new IdentityHashMap<>(),
