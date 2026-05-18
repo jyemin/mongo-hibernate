@@ -24,6 +24,7 @@ import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters;
 import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2TranslationContext;
 import com.mongodb.mqlv2.Serializer;
+import com.mongodb.mqlv2.ast.BinaryOpType;
 import com.mongodb.mqlv2.ast.Expr;
 import com.mongodb.mqlv2.ast.JoinType;
 import com.mongodb.mqlv2.ast.Stage;
@@ -142,7 +143,11 @@ import org.jspecify.annotations.Nullable;
 /** Translates a Hibernate SELECT SQL AST directly to a MQLv2 text command. */
 final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
-    private record SpecTranslation(String mqlv2, List<String> fieldNames) {}
+    private record SpecTranslation(String mqlv2, List<String> fieldNames, @Nullable Stage stage) {
+        SpecTranslation(String mqlv2, List<String> fieldNames) {
+            this(mqlv2, fieldNames, null);
+        }
+    }
 
     private final SessionFactoryImplementor sessionFactory;
     private final SelectStatement selectStatement;
@@ -391,7 +396,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         if (querySpec.getSelectClause().isDistinct()) {
             stage = new Stage.DistinctStage(stage);
         }
-        return new SpecTranslation(serializer.serialize(stage), fmt.fieldNames());
+        return new SpecTranslation(serializer.serialize(stage), fmt.fieldNames(), stage);
     }
 
     private SpecTranslation translateQueryGroupToMqlv2(QueryGroup queryGroup) {
@@ -409,9 +414,20 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         var translations = parts.stream()
                 .map(p -> translateQuerySpecToMqlv2(p.getFirstQuerySpec()))
                 .toList();
+
+        // Use IR path if every sub-spec was translated via the IR path (all have a Stage).
+        // If any sub-spec fell through to the hand-rolled text path (stage == null), fall back
+        // to text concatenation for the whole group.
+        var subStages = translations.stream().map(SpecTranslation::stage).toList();
+        if (subStages.stream().allMatch(s -> s != null)) {
+            Stage groupStage = buildQueryGroupStageViaIr(operator, subStages);
+            return new SpecTranslation(serializer.serialize(groupStage), translations.get(0).fieldNames(), groupStage);
+        }
+
+        // Fallback: hand-rolled text path (reached only when a sub-spec contains an unnest
+        // scalar subquery or unnest EXISTS predicate that the IR path does not yet cover).
         var mqlv2Pipelines =
                 translations.stream().map(t -> "(" + t.mqlv2() + ")").toList();
-
         var mqlv2 =
                 switch (operator) {
                     case UNION_ALL -> buildArraySourcePipeline(mqlv2Pipelines);
@@ -433,6 +449,51 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                     default -> throw new FeatureNotSupportedException("Unsupported set operator: " + operator);
                 };
         return new SpecTranslation(mqlv2, translations.get(0).fieldNames());
+    }
+
+    /**
+     * Builds the driver-mqlv2 {@link Stage} for a UNION/UNION_ALL/INTERSECT/EXCEPT query group. Called when all
+     * sub-specs were translated via the IR path (each sub-spec's {@link SpecTranslation#stage()} is non-null).
+     *
+     * <ul>
+     *   <li>UNION_ALL: {@code from <<(sub1), (sub2), ...>> | unwind $*}
+     *   <li>UNION: {@code from <<(sub1), (sub2), ...>> | unwind $* | distinct}
+     *   <li>INTERSECT: {@code left | match (count(let $__vN = $ in (right | match ($ == $__vN))) > 0)}
+     *   <li>EXCEPT: same shape but with {@code == 0}
+     * </ul>
+     */
+    private Stage buildQueryGroupStageViaIr(SetOperator operator, List<@Nullable Stage> subStages) {
+        return switch (operator) {
+            case UNION_ALL, UNION -> {
+                var subPipeExprs = subStages.stream()
+                        .map(s -> (Expr) new Expr.SubPipelineExpr(s))
+                        .toList();
+                Stage source = new Stage.FromStageSimple(new Expr.BagConstructor(subPipeExprs));
+                Stage unwind = new Stage.UnwindSimpleStage(source, new Expr.UnwindExpr(new Expr.CurrentValue()));
+                yield operator == SetOperator.UNION ? new Stage.DistinctStage(unwind) : unwind;
+            }
+            case INTERSECT, EXCEPT -> {
+                var leftStage = subStages.get(0);
+                var rightStage = subStages.get(1);
+                // right | match ($ == $__vN)
+                var varName = "__v" + correlatedVarCounter++;
+                Stage rightWithMatch = new Stage.MatchStage(
+                        rightStage,
+                        new Expr.BinaryOp(BinaryOpType.EQ, new Expr.CurrentValue(), new Expr.VarRef(varName)));
+                // let $__vN = $ in (right | match ...)
+                Expr letExpr = new Expr.LetExpr(
+                        List.of(Map.entry(varName, new Expr.CurrentValue())),
+                        new Expr.SubPipelineExpr(rightWithMatch));
+                // count(let ...) > 0  or  == 0
+                Expr countExpr = new Expr.FunctionCall("count", List.of(letExpr));
+                Expr predicate = new Expr.BinaryOp(
+                        operator == SetOperator.INTERSECT ? BinaryOpType.GT : BinaryOpType.EQ,
+                        countExpr,
+                        new Expr.ValueLit(new Value.VInt(0)));
+                yield new Stage.MatchStage(leftStage, predicate);
+            }
+            default -> throw new FeatureNotSupportedException("Unsupported set operator: " + operator);
+        };
     }
 
     private static String buildArraySourcePipeline(List<String> pipelines) {

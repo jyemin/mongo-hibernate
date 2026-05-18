@@ -375,16 +375,16 @@ class Mqlv2ShowcaseVerificationTests implements SessionFactoryScopeAware, Servic
             check(
                     soft,
                     "from Customer c where c.age > 30 union all from Customer c where c.active = true",
-                    "from << (from $customers | match (age > 30) | " + fmtC + "),"
-                            + " (from $customers | match (active == true) | " + fmtC + ") >>"
+                    "from <<(from $customers | match (age > 30) | " + fmtC + "),"
+                            + " (from $customers | match (active == true) | " + fmtC + ")>>"
                             + " | unwind $*");
 
             // UNION
             check(
                     soft,
                     "from Customer c where c.age > 30 union from Customer c where c.active = true",
-                    "from << (from $customers | match (age > 30) | " + fmtC + "),"
-                            + " (from $customers | match (active == true) | " + fmtC + ") >>"
+                    "from <<(from $customers | match (age > 30) | " + fmtC + "),"
+                            + " (from $customers | match (active == true) | " + fmtC + ")>>"
                             + " | unwind $* | distinct");
 
             // INTERSECT
