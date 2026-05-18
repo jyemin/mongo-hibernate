@@ -50,6 +50,7 @@ import org.hibernate.sql.ast.tree.expression.JdbcParameter;
 import org.hibernate.sql.ast.tree.expression.QueryLiteral;
 import org.hibernate.sql.ast.tree.expression.Star;
 import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
+import org.hibernate.sql.ast.tree.from.FunctionTableReference;
 import org.hibernate.sql.ast.tree.from.NamedTableReference;
 import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
 import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
@@ -140,6 +141,19 @@ public final class Mqlv2IrEmitters {
                 return translateExtract(fn, ctx);
             }
             throw new FeatureNotSupportedException("Unsupported function in IR translation: " + fnName);
+        }
+        if (e instanceof SelectStatement ss) {
+            if (!ctx.hasSubquerySupport()) {
+                throw new FeatureNotSupportedException("SelectStatement in expression requires subquery-aware context");
+            }
+            var innerSpec = ss.getQueryPart().getFirstQuerySpec();
+            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+            if (innerRoot.getPrimaryTableReference() instanceof FunctionTableReference) {
+                // Unnest-scalar subquery: still handled by the hand-rolled appendUnnestScalarSubquery.
+                throw new FeatureNotSupportedException(
+                        "Unnest scalar subquery in IR translation pending Phase D Task 9");
+            }
+            return translateScalarSubquery(ss, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
         }
         throw new FeatureNotSupportedException(
                 "Unsupported expression in IR translation: " + e.getClass().getSimpleName());
@@ -1255,5 +1269,50 @@ public final class Mqlv2IrEmitters {
             default ->
                 throw new FeatureNotSupportedException("Unsupported comparison operator in ALL subquery: " + op);
         };
+    }
+
+    // ---- Scalar-subquery expression IR translation helper (Phase D7) ----
+
+    /**
+     * Translate a scalar {@link SelectStatement} subquery in expression position (e.g., in a SELECT clause) into a
+     * driver-mqlv2 {@link Expr}. Only the non-unnest form is handled here; unnest-form subqueries (whose inner FROM is a
+     * {@link FunctionTableReference}) are left to the hand-rolled {@code appendUnnestScalarSubquery}.
+     *
+     * <p>Only {@code count()} is supported: MQLv2's {@code count(pipeline)} returns the pipeline cardinality. Other
+     * aggregates have no pipeline-argument form and throw {@link FeatureNotSupportedException}.
+     *
+     * <p>Produces: {@code count(<subpipeline>)} or {@code count(let $__vN = field in (<subpipeline>))} when there are
+     * outer-correlated column references.
+     *
+     * @param ss the scalar subquery statement.
+     * @param outerCtx the outer translation context (provides parameter binders and hasJoins state).
+     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
+     * @param nextCorrelatedVar supplier of the next globally-unique integer index for {@code __vN} names; shared with
+     *     the outer translator to avoid collisions.
+     * @return the translated {@link Expr}.
+     */
+    public static Expr translateScalarSubquery(
+            SelectStatement ss,
+            Mqlv2TranslationContext outerCtx,
+            Set<String> outerQualifiers,
+            IntSupplier nextCorrelatedVar) {
+        var innerSpec = ss.getQueryPart().getFirstQuerySpec();
+        var selections = innerSpec.getSelectClause().getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .toList();
+        if (selections.size() != 1) {
+            throw new FeatureNotSupportedException("Scalar subquery in SELECT must project exactly one column");
+        }
+        var selExpr = selections.get(0).getExpression();
+        if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression<?> fn)
+                || !"count".equals(fn.getFunctionName())) {
+            throw new FeatureNotSupportedException(
+                    "Scalar subquery in SELECT must use count(); other aggregates are not supported");
+        }
+        var correlatedBindings = new LinkedHashMap<String, String>();
+        var innerCtx = outerCtx.forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar);
+        Stage innerStage = translateInnerQuerySpec(innerSpec, innerCtx);
+        Expr wrapped = wrapAsSubPipeline(innerStage, correlatedBindings, outerCtx.hasJoins());
+        return new Expr.FunctionCall("count", List.of(wrapped));
     }
 }

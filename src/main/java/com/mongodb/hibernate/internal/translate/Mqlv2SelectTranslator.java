@@ -300,15 +300,17 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         this.hasJoins = root.getTableGroupJoins().stream()
                 .anyMatch(tgj -> !isUnnestFunctionTable(tgj.getJoinedGroup().getPrimaryTableReference()));
 
-        // Phase D2/D3/D4/D6: route query shapes through the full IR path.
+        // Phase D2/D3/D4/D6/D7: route query shapes through the full IR path.
         // Guard: the IR path handles only shapes that Mqlv2IrEmitters.translatePredicate and
         // translateExpression cover. Two shapes still require the hand-rolled path:
-        //  - Scalar subqueries in SELECT (Task D7).
+        //  - Unnest scalar subqueries in SELECT (Task D9): inner FROM is a FunctionTableReference,
+        //    not a NamedTableReference; the IR path does not yet have a from-unnest stage.
         //  - Unnest-EXISTS predicates (appendUnnestExistsPredicate), whose any-body translation
         //    uses the hand-rolled resolver machinery; left for Task D9 final cleanup.
+        // Non-unnest scalar subqueries in SELECT are now handled by the IR path (Task D7).
         // All other subquery-based predicates (non-unnest EXISTS, IN subquery, ANY/ALL) are
         // handled by the IR path via Mqlv2IrEmitters (Task D6).
-        boolean canUseIr = !selectHasSubqueryExpressions(querySpec.getSelectClause())
+        boolean canUseIr = !selectHasUnnestScalarSubqueries(querySpec.getSelectClause())
                 && !whereHasUnnestExistsPredicates(querySpec.getWhereClauseRestrictions());
         if (canUseIr) {
             return buildQuerySpecTranslationViaIr(querySpec, queryOptions, root);
@@ -800,30 +802,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Translates innerSpec to a MQLv2 pipeline text, binding correlated outer column references as $__v0, $__v1, ... in
-     * correlatedBindings.
-     */
-    private String appendQuerySpecPipeline(
-            QuerySpec innerSpec, Set<String> outerQualifiers, Map<String, String> correlatedBindings) {
-        var innerSb = new StringBuilder();
-        var root = innerSpec.getFromClause().getRoots().get(0);
-        if (innerSpec.getFromClause().getRoots().size() != 1
-                || !root.getTableGroupJoins().isEmpty()) {
-            throw new FeatureNotSupportedException(
-                    "Subquery with joins or multiple FROM roots is not supported in MQLv2");
-        }
-        var ntr = (NamedTableReference) root.getPrimaryTableReference();
-        innerSb.append("from $").append(ntr.getTableExpression());
-        var where = innerSpec.getWhereClauseRestrictions();
-        if (where != null && !where.isEmpty()) {
-            innerSb.append(" | match ");
-            appendPredicateTextWithResolver(
-                    innerSb, where, outerCorrelatedResolver(outerQualifiers, correlatedBindings));
-        }
-        return innerSb.toString();
-    }
-
-    /**
      * Decides how a {@link ColumnReference} encountered inside a predicate/expression walker is rendered.
      * Implementations: outer-correlated (used by existing EXISTS/IN/ANY/ALL paths) and inside-any (used by Phase 2).
      */
@@ -1183,13 +1161,18 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Returns true if any non-virtual selection in the SELECT clause contains a scalar subquery
-     * ({@link SelectStatement} in expression position), which requires the hand-rolled path.
+     * Returns true if any non-virtual selection in the SELECT clause contains an unnest-form scalar subquery
+     * ({@link SelectStatement} whose inner FROM root is a {@link FunctionTableReference}). Unnest scalar subqueries
+     * still require the hand-rolled path; non-unnest scalar subqueries are handled by the IR path (Task D7).
      */
-    private static boolean selectHasSubqueryExpressions(SelectClause selectClause) {
+    private static boolean selectHasUnnestScalarSubqueries(SelectClause selectClause) {
         return selectClause.getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
-                .anyMatch(s -> s.getExpression() instanceof SelectStatement);
+                .anyMatch(s -> {
+                    if (!(s.getExpression() instanceof SelectStatement ss)) return false;
+                    var innerRoot = ss.getQueryPart().getFirstQuerySpec().getFromClause().getRoots().get(0);
+                    return isUnnestFunctionTable(innerRoot.getPrimaryTableReference());
+                });
     }
 
     private void appendScalarAgg(StringBuilder sb, SelectClause selectClause, List<@Nullable String> aggNames) {
@@ -1508,26 +1491,11 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             if (isUnnestFunctionTable(innerRoot.getPrimaryTableReference())) {
                 appendUnnestScalarSubquery(sb, ss);
             } else {
-                var selections = innerSpec.getSelectClause().getSqlSelections().stream()
-                        .filter(s -> !s.isVirtual())
-                        .toList();
-                if (selections.size() != 1) {
-                    throw new FeatureNotSupportedException("Scalar subquery in SELECT must project exactly one column");
-                }
-                var selExpr = selections.get(0).getExpression();
-                // Only count() is supported: MQLv2 count(pipeline) returns the pipeline cardinality.
-                // Other aggregates (sum, avg, min, max) have no equivalent pipeline-argument form in MQLv2.
-                if (!(selExpr instanceof SelfRenderingFunctionSqlAstExpression<?> fn)
-                        || !"count".equals(fn.getFunctionName())) {
-                    throw new FeatureNotSupportedException(
-                            "Scalar subquery in SELECT must use count(); other aggregates are not supported");
-                }
                 var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
                 var outerQualifiers = collectOuterQualifiers(outerSpec);
-                var correlatedBindings = new LinkedHashMap<String, String>();
-                var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
-                var wrapped = wrapWithLet(innerPipeline, correlatedBindings);
-                sb.append("count(").append(wrapped).append(")");
+                sb.append(serializer.serialize(
+                        Mqlv2IrEmitters.translateScalarSubquery(
+                                ss, newContext(), outerQualifiers, () -> correlatedVarCounter++)));
             }
         } else {
             throw new FeatureNotSupportedException(
