@@ -77,7 +77,28 @@ import org.hibernate.sql.results.jdbc.spi.JdbcValuesMappingProducerProvider;
 import org.hibernate.type.BasicType;
 import org.jspecify.annotations.Nullable;
 
-/** Translates a Hibernate SELECT SQL AST directly to a MQLv2 text command. */
+/**
+ * Translates a Hibernate SELECT SQL AST directly to a MQLv2 text command.
+ *
+ * <p>Design note — recursive descent over the visitor pattern: the actual translation work is done by
+ * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2ExpressionEmitter} and
+ * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2StageEmitter} using recursive descent ({@code instanceof}
+ * dispatch, explicit return values) rather than the {@link org.hibernate.sql.ast.SqlAstWalker} visitor interface. Two
+ * reasons:
+ *
+ * <ol>
+ *   <li><b>Return values.</b> Visitor {@code visitX} methods are {@code void}; building a typed IR tree requires
+ *       returning {@link com.mongodb.mqlv2.ast.Expr}/{@link com.mongodb.mqlv2.ast.Stage} nodes. The visitor alternative
+ *       is a mutable push/pop accumulator stack — error-prone bookkeeping, especially across nested translations.
+ *   <li><b>Context threading.</b> {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2TranslationContext} is
+ *       copy-on-write and passed as an explicit parameter; different subtrees require different contexts (inner
+ *       subquery, array-element scope, etc.). As visitor state this would require save/restore around every scope
+ *       boundary.
+ * </ol>
+ *
+ * <p>This class still implements {@link org.hibernate.sql.ast.SqlAstWalker} (via {@link ThrowingMqlv2SqlAstWalker}) to
+ * satisfy the {@link org.hibernate.sql.ast.SqlAstTranslator} contract, not as a design choice.
+ */
 final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect>, ThrowingMqlv2SqlAstWalker {
 
     private record QueryPartTranslation(String mqlv2, List<String> fieldNames, Stage stage) {}
