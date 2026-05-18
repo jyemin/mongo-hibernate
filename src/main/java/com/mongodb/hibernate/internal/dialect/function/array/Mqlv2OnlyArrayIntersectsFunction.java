@@ -28,9 +28,9 @@ import org.hibernate.type.spi.TypeConfiguration;
 /**
  * MQLv2-only descriptor for {@code array_intersects(a, b)} and the nullable variant. Intercepted by the MQLv2
  * translator via the function-name dispatch in
- * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters#translateExpression} and emitted as
- * {@code (a any (let $__x = $ in b any ($ <eqOp> $__x)))} where {@code eqOp} is {@code ==} for the non-nullable
- * variant and {@code is} for {@code _nullable}.
+ * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2ExpressionEmitter#translateExpression} and emitted as {@code (a
+ * any (let $__x = $ in b any ($ <eqOp> $__x)))} where {@code eqOp} is {@code ==} for the non-nullable variant and
+ * {@code is} for {@code _nullable}.
  *
  * <p>Inherits Hibernate's argument-validator and return-type-resolver wiring from
  * {@link AbstractArrayIntersectsFunction}; the inherited {@code render()} is overridden to throw — under MQLv1 this

@@ -32,6 +32,7 @@ import org.hibernate.query.sqm.BinaryArithmeticOperator;
 import org.hibernate.query.sqm.ComparisonOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
+import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.sql.ast.tree.expression.Any;
 import org.hibernate.sql.ast.tree.expression.BinaryArithmeticExpression;
 import org.hibernate.sql.ast.tree.expression.ColumnReference;
@@ -56,7 +57,6 @@ import org.hibernate.sql.ast.tree.predicate.Predicate;
 import org.hibernate.sql.ast.tree.predicate.SelfRenderingPredicate;
 import org.hibernate.sql.ast.tree.select.QuerySpec;
 import org.hibernate.sql.ast.tree.select.SelectStatement;
-import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 
 /**
  * Translates Hibernate SQL AST {@link Expression} and {@link Predicate} nodes into driver-mqlv2 {@link Expr} nodes.
@@ -155,8 +155,8 @@ public final class Mqlv2ExpressionEmitter {
      * negation (NegatedPredicate), InList, InSubQuery, and Exists predicates.
      *
      * <p>Junction with N predicates builds a left-associative {@link Expr.BinaryOp} chain: {@code (p1 op p2 op p3)}
-     * becomes {@code ((p1 op p2) op p3)}. The Serializer adds inner parentheses around each binary sub-expression,
-     * so 3+ predicate conjunctions/disjunctions produce extra nesting compared to an equivalent hand-flattened form.
+     * becomes {@code ((p1 op p2) op p3)}. The Serializer adds inner parentheses around each binary sub-expression, so
+     * 3+ predicate conjunctions/disjunctions produce extra nesting compared to an equivalent hand-flattened form.
      *
      * <p>NegatedPredicate emits {@code UnaryOp(NOT, inner)}. The Serializer's UnaryOp branch wraps an {@code Any}
      * argument in extra parens, preserving correct precedence for negated array-function predicates.
@@ -187,11 +187,13 @@ public final class Mqlv2ExpressionEmitter {
         }
         // Check for ANY/ALL subquery before the generic ComparisonPredicate arm, since Any/Every
         // are not translatable as plain expressions.
-        if (p instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr
+        if (p instanceof ComparisonPredicate cp
+                && cp.getRightHandExpression() instanceof Any anyExpr
                 && ctx.hasOuterScope()) {
             return translateAnyAllSubquery(cp, anyExpr.getSubquery(), false, ctx);
         }
-        if (p instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Every everyExpr
+        if (p instanceof ComparisonPredicate cp
+                && cp.getRightHandExpression() instanceof Every everyExpr
                 && ctx.hasOuterScope()) {
             return translateAnyAllSubquery(cp, everyExpr.getSubquery(), true, ctx);
         }
@@ -280,8 +282,7 @@ public final class Mqlv2ExpressionEmitter {
      *     qualified ({@code qualifier.column}) or unqualified ({@code column}).
      * @return the wrapped {@link Expr}: either a bare {@link Expr.SubPipelineExpr} or a {@link Expr.LetExpr}.
      */
-    public static Expr wrapAsSubPipeline(
-            Stage stage, Map<String, String> correlatedBindings, boolean outerHasJoins) {
+    public static Expr wrapAsSubPipeline(Stage stage, Map<String, String> correlatedBindings, boolean outerHasJoins) {
         Expr pipelineExpr = new Expr.SubPipelineExpr(stage);
         if (correlatedBindings.isEmpty()) {
             return pipelineExpr;
@@ -298,15 +299,15 @@ public final class Mqlv2ExpressionEmitter {
 
     /**
      * Overload for the IN/ANY/ALL pattern that prepends a head binding (the test expression variable) before the
-     * correlated outer-column bindings. Produces:
-     * {@code let $headVarName = headValueExpr[, $__vN = field, ...] in (innerPipeline)}.
+     * correlated outer-column bindings. Produces: {@code let $headVarName = headValueExpr[, $__vN = field, ...] in
+     * (innerPipeline)}.
      *
      * @param stage the inner pipeline stage.
      * @param headVarName the {@code __vN} name (without {@code $}) for the head binding.
      * @param headValueExpr the expression that the head variable is bound to (the test expression from the outer
      *     query).
-     * @param correlatedBindings additional outer-correlated bindings, as in
-     *     {@link #wrapAsSubPipeline(Stage, Map, boolean)}.
+     * @param correlatedBindings additional outer-correlated bindings, as in {@link #wrapAsSubPipeline(Stage, Map,
+     *     boolean)}.
      * @param outerHasJoins whether the outer query has joins.
      * @return the wrapped {@link Expr.LetExpr}.
      */
@@ -490,7 +491,7 @@ public final class Mqlv2ExpressionEmitter {
         return new Expr.Any(
                 translateExpression(aE, ctx),
                 new Expr.LetExpr(
-                        List.of(Map.entry("__x", (Expr) new Expr.CurrentValue())),
+                        List.of(Map.entry("__x", new Expr.CurrentValue())),
                         new Expr.Any(
                                 translateExpression(bE, ctx),
                                 new Expr.BinaryOp(eqOp, new Expr.CurrentValue(), new Expr.VarRef("__x")))));
@@ -588,8 +589,8 @@ public final class Mqlv2ExpressionEmitter {
     // ---- Shared helpers (package-private so Mqlv2StageEmitter can call them) ----
 
     /**
-     * Extracts the simple column expression from a GROUP BY key expression or projected column expression.
-     * Used to name group keys in the {@link Stage.GroupStage} and projected columns in IN/ANY/ALL subqueries.
+     * Extracts the simple column expression from a GROUP BY key expression or projected column expression. Used to name
+     * group keys in the {@link Stage.GroupStage} and projected columns in IN/ANY/ALL subqueries.
      */
     static String simpleColumnName(Expression expr) {
         if (expr instanceof ColumnReference cr) {
@@ -699,9 +700,7 @@ public final class Mqlv2ExpressionEmitter {
         Expr wrapped = wrapAsSubPipeline(innerStage, correlatedBindings, outerCtx.hasJoins());
         Expr countExpr = new Expr.FunctionCall("count", List.of(wrapped));
         return new Expr.BinaryOp(
-                ep.isNegated() ? BinaryOpType.EQ : BinaryOpType.GT,
-                countExpr,
-                new Expr.ValueLit(new Value.VInt(0)));
+                ep.isNegated() ? BinaryOpType.EQ : BinaryOpType.GT, countExpr, new Expr.ValueLit(new Value.VInt(0)));
     }
 
     /**
@@ -746,13 +745,11 @@ public final class Mqlv2ExpressionEmitter {
                         new Expr.VarRef(headVarName)));
 
         Expr testExpr = translateExpression(isp.getTestExpression(), outerCtx);
-        Expr wrapped = wrapAsSubPipelineWithHead(innerStage, headVarName, testExpr, correlatedBindings,
-                outerCtx.hasJoins());
+        Expr wrapped =
+                wrapAsSubPipelineWithHead(innerStage, headVarName, testExpr, correlatedBindings, outerCtx.hasJoins());
         Expr countExpr = new Expr.FunctionCall("count", List.of(wrapped));
         return new Expr.BinaryOp(
-                isp.isNegated() ? BinaryOpType.EQ : BinaryOpType.GT,
-                countExpr,
-                new Expr.ValueLit(new Value.VInt(0)));
+                isp.isNegated() ? BinaryOpType.EQ : BinaryOpType.GT, countExpr, new Expr.ValueLit(new Value.VInt(0)));
     }
 
     /**
@@ -774,10 +771,7 @@ public final class Mqlv2ExpressionEmitter {
      * @return the translated {@link Expr}.
      */
     private static Expr translateAnyAllSubquery(
-            ComparisonPredicate cp,
-            SelectStatement subquery,
-            boolean isAll,
-            Mqlv2TranslationContext outerCtx) {
+            ComparisonPredicate cp, SelectStatement subquery, boolean isAll, Mqlv2TranslationContext outerCtx) {
         var innerSpec = subquery.getQueryPart().getFirstQuerySpec();
         var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
                 .filter(s -> !s.isVirtual())
@@ -804,14 +798,12 @@ public final class Mqlv2ExpressionEmitter {
                         new Expr.VarRef(headVarName)));
 
         Expr leftExpr = translateExpression(cp.getLeftHandExpression(), outerCtx);
-        Expr wrapped = wrapAsSubPipelineWithHead(innerStage, headVarName, leftExpr, correlatedBindings,
-                outerCtx.hasJoins());
+        Expr wrapped =
+                wrapAsSubPipelineWithHead(innerStage, headVarName, leftExpr, correlatedBindings, outerCtx.hasJoins());
         Expr countExpr = new Expr.FunctionCall("count", List.of(wrapped));
         // ANY: count > 0; ALL: count == 0 (no row where NOT condition holds)
         return new Expr.BinaryOp(
-                isAll ? BinaryOpType.EQ : BinaryOpType.GT,
-                countExpr,
-                new Expr.ValueLit(new Value.VInt(0)));
+                isAll ? BinaryOpType.EQ : BinaryOpType.GT, countExpr, new Expr.ValueLit(new Value.VInt(0)));
     }
 
     /**
@@ -827,8 +819,7 @@ public final class Mqlv2ExpressionEmitter {
             case LESS_THAN_OR_EQUAL -> BinaryOpType.GE;
             case GREATER_THAN -> BinaryOpType.LT;
             case GREATER_THAN_OR_EQUAL -> BinaryOpType.LE;
-            default ->
-                throw new FeatureNotSupportedException("Unsupported comparison operator in ANY subquery: " + op);
+            default -> throw new FeatureNotSupportedException("Unsupported comparison operator in ANY subquery: " + op);
         };
     }
 
@@ -844,8 +835,7 @@ public final class Mqlv2ExpressionEmitter {
             case LESS_THAN_OR_EQUAL -> BinaryOpType.LT;
             case GREATER_THAN -> BinaryOpType.GE;
             case GREATER_THAN_OR_EQUAL -> BinaryOpType.GT;
-            default ->
-                throw new FeatureNotSupportedException("Unsupported comparison operator in ALL subquery: " + op);
+            default -> throw new FeatureNotSupportedException("Unsupported comparison operator in ALL subquery: " + op);
         };
     }
 
@@ -853,8 +843,8 @@ public final class Mqlv2ExpressionEmitter {
 
     /**
      * Translate a scalar {@link SelectStatement} subquery in expression position (e.g., in a SELECT clause) into a
-     * driver-mqlv2 {@link Expr}. Only the non-unnest form is handled here; unnest-form subqueries (whose inner FROM is a
-     * {@link FunctionTableReference}) are handled by {@link #translateUnnestScalarSubquery}.
+     * driver-mqlv2 {@link Expr}. Only the non-unnest form is handled here; unnest-form subqueries (whose inner FROM is
+     * a {@link FunctionTableReference}) are handled by {@link #translateUnnestScalarSubquery}.
      *
      * <p>Only {@code count()} is supported: MQLv2's {@code count(pipeline)} returns the pipeline cardinality. Other
      * aggregates have no pipeline-argument form and throw {@link FeatureNotSupportedException}.
@@ -891,14 +881,16 @@ public final class Mqlv2ExpressionEmitter {
 
     /**
      * Translate {@code exists (select 1 from o.array a where <body>)} (an unnest-form {@link ExistsPredicate}) into a
-     * driver-mqlv2 {@link Expr.Any}: {@code arrayPath any (<body-rewritten>)}, with outer-correlated references captured
-     * into a {@code let} wrapper around the {@code any} expression. Negation wraps the whole thing in {@code (not …)}.
+     * driver-mqlv2 {@link Expr.Any}: {@code arrayPath any (<body-rewritten>)}, with outer-correlated references
+     * captured into a {@code let} wrapper around the {@code any} expression. Negation wraps the whole thing in
+     * {@code (not …)}.
      *
      * <p>The inner predicate body is translated in a context where the unnest alias resolves to
      * {@code FieldAccess(CurrentValue, column)} ({@code $.col}), reflecting that inside an {@code any} body the current
      * value is the array element.
      *
-     * @param ep the unnest-EXISTS predicate (caller must verify the inner FROM root is a {@link FunctionTableReference}).
+     * @param ep the unnest-EXISTS predicate (caller must verify the inner FROM root is a
+     *     {@link FunctionTableReference}).
      * @param outerCtx the outer translation context (provides parameter binders, hasJoins state, and outer qualifiers).
      * @return the translated {@link Expr}.
      */
@@ -916,9 +908,7 @@ public final class Mqlv2ExpressionEmitter {
         //   - the unnest alias resolves to $.column (current value is the array element),
         //   - outer qualifiers resolve to $__vN variables (correlated bindings).
         var correlatedBindings = new LinkedHashMap<String, String>();
-        var bodyCtx = outerCtx
-                .forInnerSubquery(correlatedBindings)
-                .forArrayElement(Set.of(unnestAlias));
+        var bodyCtx = outerCtx.forInnerSubquery(correlatedBindings).forArrayElement(Set.of(unnestAlias));
         Expr bodyExpr = translatePredicate(innerSpec.getWhereClauseRestrictions(), bodyCtx);
 
         Expr anyExpr = new Expr.Any(arrayPathExpr, bodyExpr);
@@ -970,9 +960,7 @@ public final class Mqlv2ExpressionEmitter {
         var where = innerSpec.getWhereClauseRestrictions();
         var correlatedBindings = new LinkedHashMap<String, String>();
         if (where != null && !where.isEmpty()) {
-            var bodyCtx = outerCtx
-                    .forInnerSubquery(correlatedBindings)
-                    .forArrayElement(Set.of(unnestAlias));
+            var bodyCtx = outerCtx.forInnerSubquery(correlatedBindings).forArrayElement(Set.of(unnestAlias));
             stage = new Stage.MatchStage(stage, translatePredicate(where, bodyCtx));
         }
 

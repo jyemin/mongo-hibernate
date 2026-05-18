@@ -397,7 +397,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect>, Throw
             var existingAlias = ctx.aggSignatureIndex().get(sig);
             if (existingAlias != null) {
                 // A structurally-equal aggregate was already registered from SELECT; alias the HAVING node too
-                // so that Mqlv2IrEmitters can find it via the identity-keyed aggregateAliases map.
+                // so that Mqlv2ExpressionEmitter can find it via the identity-keyed aggregateAliases map.
                 ctx.aggregateAliases().put(fn, existingAlias);
             } else {
                 var name = "_agg" + ctx.aggregateAliases().size();

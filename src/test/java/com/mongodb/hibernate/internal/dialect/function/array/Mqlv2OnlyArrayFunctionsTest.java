@@ -27,8 +27,8 @@ import org.junit.jupiter.api.Test;
  * LSP-guard tests for the three MQLv2-only array function descriptors.
  *
  * <p>Each class overrides {@code render()} to throw {@link FeatureNotSupportedException} — the MQLv2 translator
- * intercepts these functions by name before {@code render()} is reached, so under MQLv2 the throw is unreachable.
- * Under MQLv1 (or any non-MQLv2 path that calls {@code render()}), the exception surfaces immediately with a message
+ * intercepts these functions by name before {@code render()} is reached, so under MQLv2 the throw is unreachable. Under
+ * MQLv1 (or any non-MQLv2 path that calls {@code render()}), the exception surfaces immediately with a message
  * identifying the function as MQLv2-only.
  *
  * <p>These tests document and lock that contract at the class level.

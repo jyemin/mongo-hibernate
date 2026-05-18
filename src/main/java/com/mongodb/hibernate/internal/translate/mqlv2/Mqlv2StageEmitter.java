@@ -66,9 +66,10 @@ import org.jspecify.annotations.Nullable;
  * ({@link #translateScalarAgg}), ORDER BY ({@link #translateSort}), LIMIT ({@link #translateLimit}), SELECT projection
  * ({@link #translateFormat}), and set-operator query groups ({@link #translateQueryGroupStage}).
  *
- * <p>Stateless on purpose: all qualifier rules (joins, unnest aliases) are carried by the {@link Mqlv2TranslationContext}
- * passed to each method. Expression and predicate arguments embedded in stage construction are delegated to
- * {@link Mqlv2ExpressionEmitter}; the dependency is strictly one-way (StageEmitter → ExpressionEmitter).
+ * <p>Stateless on purpose: all qualifier rules (joins, unnest aliases) are carried by the
+ * {@link Mqlv2TranslationContext} passed to each method. Expression and predicate arguments embedded in stage
+ * construction are delegated to {@link Mqlv2ExpressionEmitter}; the dependency is strictly one-way (StageEmitter →
+ * ExpressionEmitter).
  *
  * @hidden
  */
@@ -104,25 +105,23 @@ public final class Mqlv2StageEmitter {
             return new Stage.FromStageSimple(new Expr.VarRef(collName));
         }
         var alias = ntr.getIdentificationVariable();
-        return new Stage.FromStageNested(List.of(Map.entry(alias, (Expr) new Expr.VarRef(collName))));
+        return new Stage.FromStageNested(List.of(Map.entry(alias, new Expr.VarRef(collName))));
     }
 
     /**
-     * Traverses the table-group-join list and builds a chain of {@link Stage} nodes
-     * ({@link Stage.UnwindComplexStage} for unnest joins, {@link Stage.JoinStage} for regular joins).
+     * Traverses the table-group-join list and builds a chain of {@link Stage} nodes ({@link Stage.UnwindComplexStage}
+     * for unnest joins, {@link Stage.JoinStage} for regular joins).
      *
-     * <p>Populates {@code unnestAliasToFieldPath} (via {@link Mqlv2TranslationContext#unnestAliasToFieldPath()}) so that
-     * subsequent column-reference rendering resolves unnest aliases correctly.
+     * <p>Populates {@code unnestAliasToFieldPath} (via {@link Mqlv2TranslationContext#unnestAliasToFieldPath()}) so
+     * that subsequent column-reference rendering resolves unnest aliases correctly.
      */
-    public static Stage translateJoins(
-            Stage prev, TableGroup root, QuerySpec querySpec, Mqlv2TranslationContext ctx) {
+    public static Stage translateJoins(Stage prev, TableGroup root, QuerySpec querySpec, Mqlv2TranslationContext ctx) {
         var s = prev;
         for (var tgj : root.getTableGroupJoins()) {
             var joinedGroup = tgj.getJoinedGroup();
             var primaryRef = joinedGroup.getPrimaryTableReference();
             if (isUnnestFunctionTable(primaryRef)) {
-                var rootAlias =
-                        ((NamedTableReference) root.getPrimaryTableReference()).getIdentificationVariable();
+                var rootAlias = root.getPrimaryTableReference().getIdentificationVariable();
                 s = buildUnnestJoinStage(s, tgj, (FunctionTableReference) primaryRef, querySpec, rootAlias, ctx);
             } else {
                 var joinNtr = (NamedTableReference) primaryRef;
@@ -283,7 +282,7 @@ public final class Mqlv2StageEmitter {
                 key = cr.getColumnExpression();
                 // After a group stage the key field is addressed directly; otherwise translate normally.
                 var rawValue = aggNames != null
-                        ? (Expr) new Expr.FieldAccess(new Expr.CurrentValue(), key)
+                        ? new Expr.FieldAccess(new Expr.CurrentValue(), key)
                         : Mqlv2ExpressionEmitter.translateExpression(selExpr, ctx);
                 // Re-wrap unnest array fields.
                 valueExpr = (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key))
@@ -292,7 +291,7 @@ public final class Mqlv2StageEmitter {
             } else if (selExpr instanceof BasicValuedPathInterpretation<?> bvpi) {
                 key = bvpi.getColumnReference().getColumnExpression();
                 var rawValue = aggNames != null
-                        ? (Expr) new Expr.FieldAccess(new Expr.CurrentValue(), key)
+                        ? new Expr.FieldAccess(new Expr.CurrentValue(), key)
                         : Mqlv2ExpressionEmitter.translateExpression(selExpr, ctx);
                 valueExpr = (!unnestArrayFields.isEmpty() && unnestArrayFields.contains(key))
                         ? new Expr.ArrayConstructor(List.of(rawValue))
@@ -314,8 +313,8 @@ public final class Mqlv2StageEmitter {
     /**
      * Build a {@link Stage.GroupStage} for a GROUP BY query.
      *
-     * <p>Group keys are named after the column expression (column name only, no qualifier). Aggregate keys come from (a)
-     * non-null entries in {@code aggNames} (SELECT-position aggregates) and (b) HAVING-only aggregates in
+     * <p>Group keys are named after the column expression (column name only, no qualifier). Aggregate keys come from
+     * (a) non-null entries in {@code aggNames} (SELECT-position aggregates) and (b) HAVING-only aggregates in
      * {@code havingOnlyAggs}.
      *
      * @param prev the pipeline stage to wrap.
@@ -382,7 +381,7 @@ public final class Mqlv2StageEmitter {
             var fn =
                     (SelfRenderingFunctionSqlAstExpression<?>) selections.get(i).getExpression();
             fields.add(
-                    Map.entry((Expr) new Expr.ValueLit(new Value.VString(aggName)), translateAggregateCall(fn, ctx)));
+                    Map.entry(new Expr.ValueLit(new Value.VString(aggName)), translateAggregateCall(fn, ctx)));
         }
         return new Stage.AggStage(prev, new Expr.DocumentConstructor(fields));
     }
@@ -439,14 +438,10 @@ public final class Mqlv2StageEmitter {
                 var varName = "__v" + nextCorrelatedVar.getAsInt();
                 Stage rightWithMatch = new Stage.MatchStage(
                         rightStage,
-                        new Expr.BinaryOp(
-                                BinaryOpType.EQ,
-                                new Expr.CurrentValue(),
-                                new Expr.VarRef(varName)));
+                        new Expr.BinaryOp(BinaryOpType.EQ, new Expr.CurrentValue(), new Expr.VarRef(varName)));
                 // let $__vN = $ in (right | match ...)
                 Expr letExpr = new Expr.LetExpr(
-                        List.of(Map.entry(varName, new Expr.CurrentValue())),
-                        new Expr.SubPipelineExpr(rightWithMatch));
+                        List.of(Map.entry(varName, new Expr.CurrentValue())), new Expr.SubPipelineExpr(rightWithMatch));
                 // count(let ...) > 0  or  == 0
                 Expr countExpr = new Expr.FunctionCall("count", List.of(letExpr));
                 Expr predicate = new Expr.BinaryOp(
@@ -552,8 +547,7 @@ public final class Mqlv2StageEmitter {
             @Nullable String rootAlias,
             Mqlv2TranslationContext ctx) {
         var arrayPath = Mqlv2ExpressionEmitter.extractUnnestArrayPath(ftr);
-        var alias = ((FunctionTableReference) tgj.getJoinedGroup().getPrimaryTableReference())
-                .getIdentificationVariable();
+        var alias = tgj.getJoinedGroup().getPrimaryTableReference().getIdentificationVariable();
         // Unwind targets the field on the current (outer) document without qualifier prefix.
         var arrayFieldPath = columnExpressionOf(arrayPath);
         var internalVarName = "__elem";
@@ -620,8 +614,7 @@ public final class Mqlv2StageEmitter {
      *
      * <p>Scans SELECT, WHERE, ORDER BY, GROUP BY, and HAVING clauses.
      */
-    private static void collectParentColumnNames(
-            QuerySpec querySpec, @Nullable String rootAlias, Set<String> result) {
+    private static void collectParentColumnNames(QuerySpec querySpec, @Nullable String rootAlias, Set<String> result) {
         // SELECT
         for (var sel : querySpec.getSelectClause().getSqlSelections()) {
             collectParentColsFromExpr(sel.getExpression(), rootAlias, result);
@@ -675,8 +668,7 @@ public final class Mqlv2StageEmitter {
         // are separate query scopes and don't need to contribute columns to the unwind body.
     }
 
-    private static void collectParentColsFromExpr(
-            Expression expr, @Nullable String rootAlias, Set<String> result) {
+    private static void collectParentColsFromExpr(Expression expr, @Nullable String rootAlias, Set<String> result) {
         if (expr instanceof ColumnReference cr) {
             var q = cr.getQualifier();
             if (q == null || q.isEmpty() || q.equals(rootAlias)) {

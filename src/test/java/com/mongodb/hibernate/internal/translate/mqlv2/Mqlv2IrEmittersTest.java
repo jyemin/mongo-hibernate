@@ -93,8 +93,8 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * No correlated bindings → bare {@code SubPipelineExpr} (parenthesised pipeline):
-     * {@code "(from $orders | match (...))"}.
+     * No correlated bindings → bare {@code SubPipelineExpr} (parenthesised pipeline): {@code "(from $orders | match
+     * (...))"}.
      */
     @Test
     void wrapAsSubPipeline_noBindings_yieldsBareParens() {
@@ -104,8 +104,8 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * One correlated binding without joins → unqualified field in the let clause:
-     * {@code "let $__v0 = id in (from $orders | match (...))"}.
+     * One correlated binding without joins → unqualified field in the let clause: {@code "let $__v0 = id in (from
+     * $orders | match (...))"}.
      */
     @Test
     void wrapAsSubPipeline_oneBinding_simpleQuery_yieldsLetWithUnqualifiedField() {
@@ -113,13 +113,12 @@ class Mqlv2IrEmittersTest {
         var bindings = new LinkedHashMap<String, String>();
         bindings.put("c.id", "__v0");
         var expr = Mqlv2ExpressionEmitter.wrapAsSubPipeline(stage, bindings, false);
-        assertThat(s.serialize(expr))
-                .isEqualTo("let $__v0 = id in (from $orders | match (status == \"NEW\"))");
+        assertThat(s.serialize(expr)).isEqualTo("let $__v0 = id in (from $orders | match (status == \"NEW\"))");
     }
 
     /**
-     * One correlated binding with joins → qualified {@code qualifier.column} in the let clause:
-     * {@code "let $__v0 = c.id in (from $orders | match (...))"}.
+     * One correlated binding with joins → qualified {@code qualifier.column} in the let clause: {@code "let $__v0 =
+     * c.id in (from $orders | match (...))"}.
      */
     @Test
     void wrapAsSubPipeline_oneBinding_joinQuery_yieldsLetWithQualifiedField() {
@@ -127,8 +126,7 @@ class Mqlv2IrEmittersTest {
         var bindings = new LinkedHashMap<String, String>();
         bindings.put("c.id", "__v0");
         var expr = Mqlv2ExpressionEmitter.wrapAsSubPipeline(stage, bindings, true);
-        assertThat(s.serialize(expr))
-                .isEqualTo("let $__v0 = c.id in (from $orders | match (status == \"NEW\"))");
+        assertThat(s.serialize(expr)).isEqualTo("let $__v0 = c.id in (from $orders | match (status == \"NEW\"))");
     }
 
     /**
@@ -147,29 +145,28 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * Head binding (IN/ANY/ALL pattern) with no extra correlated bindings:
-     * {@code "let $__v0 = $p0 in (from $orders | match (...))"}.
+     * Head binding (IN/ANY/ALL pattern) with no extra correlated bindings: {@code "let $__v0 = $p0 in (from $orders |
+     * match (...))"}.
      */
     @Test
     void wrapAsSubPipelineWithHead_noExtraBindings_yieldsHeadOnlyLet() {
         var stage = simpleInnerStage();
-        var expr = Mqlv2ExpressionEmitter.wrapAsSubPipelineWithHead(
-                stage, "__v0", new Expr.VarRef("p0"), Map.of(), false);
-        assertThat(s.serialize(expr))
-                .isEqualTo("let $__v0 = $p0 in (from $orders | match (status == \"NEW\"))");
+        var expr =
+                Mqlv2ExpressionEmitter.wrapAsSubPipelineWithHead(stage, "__v0", new Expr.VarRef("p0"), Map.of(), false);
+        assertThat(s.serialize(expr)).isEqualTo("let $__v0 = $p0 in (from $orders | match (status == \"NEW\"))");
     }
 
     /**
-     * Head binding plus one correlated binding. Mirrors the full IN/ANY/ALL+correlated pattern:
-     * {@code "let $__v0 = $p0, $__v1 = id in (from $orders | match (...))"}.
+     * Head binding plus one correlated binding. Mirrors the full IN/ANY/ALL+correlated pattern: {@code "let $__v0 =
+     * $p0, $__v1 = id in (from $orders | match (...))"}.
      */
     @Test
     void wrapAsSubPipelineWithHead_withExtraBinding_yieldsHeadPlusCorrelatedLet() {
         var stage = simpleInnerStage();
         var bindings = new LinkedHashMap<String, String>();
         bindings.put("c.id", "__v1");
-        var expr = Mqlv2ExpressionEmitter.wrapAsSubPipelineWithHead(
-                stage, "__v0", new Expr.VarRef("p0"), bindings, false);
+        var expr =
+                Mqlv2ExpressionEmitter.wrapAsSubPipelineWithHead(stage, "__v0", new Expr.VarRef("p0"), bindings, false);
         assertThat(s.serialize(expr))
                 .isEqualTo("let $__v0 = $p0, $__v1 = id in (from $orders | match (status == \"NEW\"))");
     }
@@ -181,9 +178,15 @@ class Mqlv2IrEmittersTest {
         return new Stage.FormatStage(
                 prev,
                 new Expr.DocumentConstructor(List.of(
-                        Map.entry(new Expr.ValueLit(new Value.VString("_id")), new Expr.FieldAccess(new Expr.CurrentValue(), "_id")),
-                        Map.entry(new Expr.ValueLit(new Value.VString("boxedScores")), new Expr.FieldAccess(new Expr.CurrentValue(), "boxedScores")),
-                        Map.entry(new Expr.ValueLit(new Value.VString("scores")), new Expr.FieldAccess(new Expr.CurrentValue(), "scores")))));
+                        Map.entry(
+                                new Expr.ValueLit(new Value.VString("_id")),
+                                new Expr.FieldAccess(new Expr.CurrentValue(), "_id")),
+                        Map.entry(
+                                new Expr.ValueLit(new Value.VString("boxedScores")),
+                                new Expr.FieldAccess(new Expr.CurrentValue(), "boxedScores")),
+                        Map.entry(
+                                new Expr.ValueLit(new Value.VString("scores")),
+                                new Expr.FieldAccess(new Expr.CurrentValue(), "scores")))));
     }
 
     /** {@code count(arr)} is the Serializer's canonical form for array_length. */
@@ -193,7 +196,8 @@ class Mqlv2IrEmittersTest {
                 new Stage.FromStageSimple(new Expr.VarRef("inventory")),
                 new Expr.BinaryOp(
                         BinaryOpType.GT,
-                        new Expr.FunctionCall("count", List.of(new Expr.FieldAccess(new Expr.CurrentValue(), "scores"))),
+                        new Expr.FunctionCall(
+                                "count", List.of(new Expr.FieldAccess(new Expr.CurrentValue(), "scores"))),
                         new Expr.ValueLit(new Value.VInt(2)))));
 
         assertThat(s.serialize(ast))
@@ -202,8 +206,8 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * array_get uses {@code arr[(i - 1)]} — the Serializer wraps the binop as a whole inside {@code []},
-     * not just the left operand.
+     * array_get uses {@code arr[(i - 1)]} — the Serializer wraps the binop as a whole inside {@code []}, not just the
+     * left operand.
      */
     @Test
     void arrayGet_serializerShape() {
@@ -225,8 +229,8 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * array_contains uses {@code arr any (…)} — {@code match} omits outer parens around the predicate;
-     * {@code any} body gets its own BinaryOp parens producing {@code any (($ == x))}.
+     * array_contains uses {@code arr any (…)} — {@code match} omits outer parens around the predicate; {@code any} body
+     * gets its own BinaryOp parens producing {@code any (($ == x))}.
      */
     @Test
     void arrayContains_serializerShape() {
@@ -235,9 +239,7 @@ class Mqlv2IrEmittersTest {
                 new Expr.Any(
                         new Expr.FieldAccess(new Expr.CurrentValue(), "scores"),
                         new Expr.BinaryOp(
-                                BinaryOpType.EQ,
-                                new Expr.CurrentValue(),
-                                new Expr.ValueLit(new Value.VInt(30))))));
+                                BinaryOpType.EQ, new Expr.CurrentValue(), new Expr.ValueLit(new Value.VInt(30))))));
 
         assertThat(s.serialize(ast))
                 .isEqualTo("from $inventory | match scores any (($ == 30))"
@@ -245,8 +247,8 @@ class Mqlv2IrEmittersTest {
     }
 
     /**
-     * array_intersects uses a nested {@code any}/let pattern; same paren rules as arrayContains applied to the
-     * inner {@code any}.
+     * array_intersects uses a nested {@code any}/let pattern; same paren rules as arrayContains applied to the inner
+     * {@code any}.
      */
     @Test
     void arrayIntersects_serializerShape() {
@@ -261,9 +263,7 @@ class Mqlv2IrEmittersTest {
                                                 new Expr.ValueLit(new Value.VInt(30)),
                                                 new Expr.ValueLit(new Value.VInt(99)))),
                                         new Expr.BinaryOp(
-                                                BinaryOpType.EQ,
-                                                new Expr.CurrentValue(),
-                                                new Expr.VarRef("__x")))))));
+                                                BinaryOpType.EQ, new Expr.CurrentValue(), new Expr.VarRef("__x")))))));
 
         assertThat(s.serialize(ast))
                 .isEqualTo("from $inventory | match scores any (let $__x = $ in [30, 99] any (($ == $__x)))"
