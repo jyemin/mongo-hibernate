@@ -120,11 +120,16 @@ public final class Mqlv2StageEmitter {
         for (var tgj : root.getTableGroupJoins()) {
             var joinedGroup = tgj.getJoinedGroup();
             var primaryRef = joinedGroup.getPrimaryTableReference();
-            if (isUnnestFunctionTable(primaryRef)) {
-                var rootAlias = root.getPrimaryTableReference().getIdentificationVariable();
-                s = buildUnnestJoinStage(s, tgj, (FunctionTableReference) primaryRef, querySpec, rootAlias, ctx);
-            } else {
-                var joinNtr = (NamedTableReference) primaryRef;
+            if (primaryRef instanceof FunctionTableReference ftr) {
+                if ("unnest".equals(ftr.getFunctionExpression().getFunctionName())) {
+                    var rootAlias = root.getPrimaryTableReference().getIdentificationVariable();
+                    s = buildUnnestJoinStage(s, tgj, ftr, querySpec, rootAlias, ctx);
+                } else {
+                    throw new FeatureNotSupportedException(
+                            "Unsupported table-valued function in join: "
+                                    + ftr.getFunctionExpression().getFunctionName());
+                }
+            } else if (primaryRef instanceof NamedTableReference joinNtr) {
                 var joinCollName = joinNtr.getTableExpression();
                 var joinAlias = joinNtr.getIdentificationVariable();
                 var joinPredicate = tgj.getPredicate();
@@ -135,6 +140,9 @@ public final class Mqlv2StageEmitter {
                 s = new Stage.JoinStage(
                         s, irJoinType(tgj.getJoinType()), joinAlias, new Expr.VarRef(joinCollName), condExpr);
                 s = translateJoins(s, joinedGroup, querySpec, ctx);
+            } else {
+                throw new FeatureNotSupportedException(
+                        "Unsupported table reference type in join: " + primaryRef.getClass().getSimpleName());
             }
         }
         return s;
@@ -584,14 +592,6 @@ public final class Mqlv2StageEmitter {
         return new Stage.UnwindComplexStage(prev, internalVarName, sourceExpr, bodyExpr);
     }
 
-    /**
-     * @return true iff the table reference is a {@link FunctionTableReference} whose function descriptor identifies as
-     *     "unnest".
-     */
-    private static boolean isUnnestFunctionTable(org.hibernate.sql.ast.tree.from.TableReference ref) {
-        return ref instanceof FunctionTableReference ftr
-                && "unnest".equals(ftr.getFunctionExpression().getFunctionName());
-    }
 
     /**
      * Maps a Hibernate {@link SqlAstJoinType} to the driver-mqlv2 {@link JoinType}. Returns {@code null} for INNER
