@@ -277,7 +277,16 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 limitJdbcParameter);
     }
 
-    private SpecTranslation translateQuerySpecToMqlv2(QuerySpec querySpec) {
+    /**
+     * Builds the MQLv2 pipeline translation for a sub-spec (UNION/INTERSECT/EXCEPT operand or correlated sub-query),
+     * isolating translator state across the call so the parent spec's {@code hasJoins}, {@code aggregateAliases}, and
+     * {@code unnestAliasToFieldPath} are preserved.
+     *
+     * <p>Inner subqueries that need outer-correlation support ({@code $__vN} bindings) should use
+     * {@link Mqlv2IrEmitters#translateInnerQuerySpec} instead — this method is for set-operator operands that have
+     * no implicit correlation with the outer scope.
+     */
+    private SpecTranslation buildSubQuerySpecTranslation(QuerySpec querySpec) {
         var savedHasJoins = this.hasJoins;
         var savedAggMap = new IdentityHashMap<SelfRenderingFunctionSqlAstExpression<?>, String>(this.aggregateAliases);
         var savedSigIndex = new LinkedHashMap<>(this.aggSignatureIndex);
@@ -303,6 +312,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * {@link com.mongodb.mqlv2.ast.Stage} chain and serializing it in one shot via {@link com.mongodb.mqlv2.Serializer}.
      * Pass non-null {@code queryOptions} at the top level to honour dynamic first/max rows; pass {@code null} for
      * sub-queries (UNION members, correlated sub-queries) where only the HQL literal LIMIT clause applies.
+     *
+     * <p>Does <em>not</em> save or restore translator state ({@code hasJoins}, {@code aggregateAliases},
+     * {@code unnestAliasToFieldPath}); intended for top-level use or as the stateful callee of
+     * {@link #buildSubQuerySpecTranslation}.
      *
      * <p>Subquery-based predicates (EXISTS, IN subquery, ANY/ALL) in WHERE/HAVING and scalar SELECT-position subqueries
      * are translated via {@link Mqlv2IrEmitters#translatePredicate} / {@link Mqlv2IrEmitters#translateExpression} when
@@ -367,7 +380,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         }
 
         var translations = parts.stream()
-                .map(p -> translateQuerySpecToMqlv2(p.getFirstQuerySpec()))
+                .map(p -> buildSubQuerySpecTranslation(p.getFirstQuerySpec()))
                 .toList();
 
         var subStages = translations.stream().map(SpecTranslation::stage).toList();
