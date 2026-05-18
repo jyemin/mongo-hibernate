@@ -33,6 +33,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import org.bson.BsonInt32;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.EntityValuedPathInterpretation;
 import org.bson.BsonArray;
@@ -134,7 +136,7 @@ import org.jspecify.annotations.Nullable;
 /** Translates a Hibernate SELECT SQL AST directly to a MQLv2 text command. */
 final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
-    private record SpecTranslation(String mqlv2, List<String> fieldNames, Stage stage) {}
+    private record QueryPartTranslation(String mqlv2, List<String> fieldNames, Stage stage) {}
 
     private final SessionFactoryImplementor sessionFactory;
     private final SelectStatement selectStatement;
@@ -225,24 +227,22 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         List<String> fieldNames;
 
         if (queryPart instanceof QuerySpec querySpec) {
-            var specTranslation = buildQuerySpecTranslation(querySpec, queryOptions);
-            mqlv2Text = specTranslation.mqlv2();
-            fieldNames = specTranslation.fieldNames();
+            var translation = buildQuerySpecTranslation(querySpec, queryOptions);
+            mqlv2Text = translation.mqlv2();
+            fieldNames = translation.fieldNames();
         } else if (queryPart instanceof QueryGroup queryGroup) {
-            var specTranslation = translateQueryGroupToMqlv2(queryGroup);
-            mqlv2Text = specTranslation.mqlv2();
-            fieldNames = specTranslation.fieldNames();
+            var translation = buildQueryGroupTranslation(queryGroup);
+            mqlv2Text = translation.mqlv2();
+            fieldNames = translation.fieldNames();
         } else {
             throw new FeatureNotSupportedException(
                     "Unsupported QueryPart: " + queryPart.getClass().getSimpleName());
         }
 
-        var fieldNamesArray =
-                new BsonArray(fieldNames.stream().map(BsonString::new).toList());
-        var commandDoc = new BsonDocument("mqlv2", new BsonString(mqlv2Text))
-                .append("_mqlv2FieldNames", fieldNamesArray)
-                .append("_mqlv2ParamCount", new org.bson.BsonInt32(parameterBinders.size()));
-        var commandJson = commandDoc.toJson();
+        var commandJson = new BsonDocument("mqlv2", new BsonString(mqlv2Text))
+                .append("_mqlv2FieldNames", new BsonArray(fieldNames.stream().map(BsonString::new).toList()))
+                .append("_mqlv2ParamCount", new BsonInt32(parameterBinders.size()))
+                .toJson();
 
         // For affected table names, walk the first QuerySpec's root
         var firstSpec = queryPart.getFirstQuerySpec();
@@ -273,7 +273,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2ExpressionEmitter} — this method is for set-operator
      * operands that have no implicit correlation with the outer scope.
      */
-    private SpecTranslation buildSubQuerySpecTranslation(QuerySpec querySpec) {
+    private QueryPartTranslation buildSubQuerySpecTranslation(QuerySpec querySpec) {
         return buildQuerySpecTranslation(querySpec, null);
     }
 
@@ -292,7 +292,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * / {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2ExpressionEmitter#translateExpression} when
      * the context has subquery support enabled.
      */
-    private SpecTranslation buildQuerySpecTranslation(QuerySpec querySpec, @Nullable QueryOptions queryOptions) {
+    private QueryPartTranslation buildQuerySpecTranslation(QuerySpec querySpec, @Nullable QueryOptions queryOptions) {
         var root = querySpec.getFromClause().getRoots().get(0);
         // Only count non-unnest joins: unnest joins translate to | unwind and don't introduce
         // a new MQLv2 alias, so they must not trigger the qualifier-prefix path in column-ref rendering.
@@ -336,10 +336,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         if (querySpec.getSelectClause().isDistinct()) {
             stage = new Stage.DistinctStage(stage);
         }
-        return new SpecTranslation(new Serializer().serialize(stage), fmt.fieldNames(), stage);
+        return new QueryPartTranslation(new Serializer().serialize(stage), fmt.fieldNames(), stage);
     }
 
-    private SpecTranslation translateQueryGroupToMqlv2(QueryGroup queryGroup) {
+    private QueryPartTranslation buildQueryGroupTranslation(QueryGroup queryGroup) {
         var operator = queryGroup.getSetOperator();
         if (operator == SetOperator.INTERSECT_ALL || operator == SetOperator.EXCEPT_ALL) {
             throw new FeatureNotSupportedException(operator + " is not supported in MQLv2");
@@ -355,9 +355,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 .map(p -> buildSubQuerySpecTranslation(p.getFirstQuerySpec()))
                 .toList();
 
-        var subStages = translations.stream().map(SpecTranslation::stage).toList();
+        var subStages = translations.stream().map(QueryPartTranslation::stage).toList();
         Stage groupStage = Mqlv2StageEmitter.translateQueryGroupStage(queryGroup, subStages, () -> correlatedVarCounter++);
-        return new SpecTranslation(new Serializer().serialize(groupStage), translations.get(0).fieldNames(), groupStage);
+        return new QueryPartTranslation(new Serializer().serialize(groupStage), translations.get(0).fieldNames(), groupStage);
     }
 
     private static Set<String> collectOuterQualifiers(QuerySpec outerSpec) {
