@@ -139,7 +139,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private final SessionFactoryImplementor sessionFactory;
     private final SelectStatement selectStatement;
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
-    private final Serializer serializer = new Serializer();
     private @Nullable LimitJdbcParameter limitJdbcParameter;
     // Intentionally global (not reset per subquery branch): $__vN names only need to be unique across
     // the whole translation, and sharing the counter avoids collisions between nested correlated bindings.
@@ -321,7 +320,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         if (querySpec.getSelectClause().isDistinct()) {
             stage = new Stage.DistinctStage(stage);
         }
-        return new SpecTranslation(serializer.serialize(stage), fmt.fieldNames(), stage);
+        return new SpecTranslation(new Serializer().serialize(stage), fmt.fieldNames(), stage);
     }
 
     private SpecTranslation translateQueryGroupToMqlv2(QueryGroup queryGroup) {
@@ -342,7 +341,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
         var subStages = translations.stream().map(SpecTranslation::stage).toList();
         Stage groupStage = Mqlv2StageEmitter.translateQueryGroupStage(queryGroup, subStages, () -> correlatedVarCounter++);
-        return new SpecTranslation(serializer.serialize(groupStage), translations.get(0).fieldNames(), groupStage);
+        return new SpecTranslation(new Serializer().serialize(groupStage), translations.get(0).fieldNames(), groupStage);
     }
 
     private static Set<String> collectOuterQualifiers(QuerySpec outerSpec) {
