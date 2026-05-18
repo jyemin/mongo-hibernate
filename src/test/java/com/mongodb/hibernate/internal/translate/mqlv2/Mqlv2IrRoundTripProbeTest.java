@@ -32,14 +32,14 @@ import org.junit.jupiter.api.Test;
 /**
  * IR migration probe (see {@code docs/superpowers/specs/2026-05-17-mqlv2-translator-ir-migration-design.md}).
  *
- * <p>For each of five distinct AST shapes, construct the driver-mqlv2 AST that would replace the current
- * hand-rolled MQLv2 string emission, then run the Serializer and lock its output as the "after migration"
- * expectation. The comment above each assertion records the current translator's emission for the same
- * shape, so the diff is visible at a glance.
+ * <p>For each of five distinct AST shapes, construct the driver-mqlv2 AST that would replace the current hand-rolled
+ * MQLv2 string emission, then run the Serializer and lock its output as the "after migration" expectation. The comment
+ * above each assertion records the current translator's emission for the same shape, so the diff is visible at a
+ * glance.
  *
- * <p>Migration go/no-go: all surfaced diffs are stylistic / semantically equivalent — no Serializer bugs.
- * The IR migration is viable; showcase verification tests will need their expected strings updated for
- * three categories of drift, summarized at the end of this file.
+ * <p>Migration go/no-go: all surfaced diffs are stylistic / semantically equivalent — no Serializer bugs. The IR
+ * migration is viable; showcase verification tests will need their expected strings updated for three categories of
+ * drift, summarized at the end of this file.
  */
 class Mqlv2IrRoundTripProbeTest {
 

@@ -187,6 +187,12 @@ Inspect output. Expected: `(scores any ($ == 30) AND (_id > 0))`. Per the preced
 
 - [ ] **Step 3: Document decision** in this plan file before C4 dispatches.
 
+**DECISION (2026-05-17, commit `541e473d5c` on driver-mqlv2):** Option A — targeted upstream Serializer fix. Empirical probe found:
+- `BinaryOp(AND/OR, Any, X)` emits correctly: `(scores any (cond) and X)` — `any`'s required parens around its second operand prevent the precedence collision, and the BinaryOp's outer parens disambiguate the overall expression.
+- `UnaryOp(NOT, Any)` emits incorrectly: `(not scores any (cond))` parses as `(not scores) any (cond)`.
+
+Serializer fix: when `UnaryOp`'s argument is an `Any`, wrap the arg in extra parens. Targeted, no over-parenthesization elsewhere. Republished `driver-mqlv2:5.8.0-SNAPSHOT` (skip-javadoc). Phase C C4 (Junction) and C5 (NegatedPredicate) can now proceed.
+
 ---
 
 ## Task C4: Junction (AND/OR) [depends on C3 decision]

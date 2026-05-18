@@ -360,8 +360,7 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
         functionRegistry.register("array_includes", new MongoArrayIncludesFunction(false, typeConfiguration));
         functionRegistry.register("array_includes_nullable", new MongoArrayIncludesFunction(true, typeConfiguration));
         if (mqlv2Enabled) {
-            functionRegistry.register(
-                    "array_length", new Mqlv2OnlyArrayLengthFunction(typeConfiguration));
+            functionRegistry.register("array_length", new Mqlv2OnlyArrayLengthFunction(typeConfiguration));
             functionRegistry.registerAlternateKey("cardinality", "array_length");
             functionRegistry.register("array_get", new Mqlv2OnlyArrayGetFunction());
             functionRegistry.register(

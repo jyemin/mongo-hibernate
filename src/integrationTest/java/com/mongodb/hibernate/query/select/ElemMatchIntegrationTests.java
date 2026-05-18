@@ -34,21 +34,19 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Integration tests for v1 translator's {@code $elemMatch} emission for HQL of shape
- * {@code WHERE EXISTS (FROM <entity>.<arrayPath> a WHERE <body>)}.
+ * Integration tests for v1 translator's {@code $elemMatch} emission for HQL of shape {@code WHERE EXISTS (FROM
+ * <entity>.<arrayPath> a WHERE <body>)}.
  */
 @DomainModel(annotatedClasses = {ElemMatchIntegrationTests.ElemMatchCart.class})
 class ElemMatchIntegrationTests extends AbstractQueryIntegrationTests {
 
     private static final List<ElemMatchCart> testingCarts = List.of(
-            new ElemMatchCart(
-                    1,
-                    0,
-                    new ElemMatchLineItem[] {new ElemMatchLineItem("WIDGET-1", 3), new ElemMatchLineItem("GIZMO-1", 1)}),
-            new ElemMatchCart(
-                    2,
-                    0,
-                    new ElemMatchLineItem[] {new ElemMatchLineItem("WIDGET-1", 0), new ElemMatchLineItem("BOLT-2", 10)}),
+            new ElemMatchCart(1, 0, new ElemMatchLineItem[] {
+                new ElemMatchLineItem("WIDGET-1", 3), new ElemMatchLineItem("GIZMO-1", 1)
+            }),
+            new ElemMatchCart(2, 0, new ElemMatchLineItem[] {
+                new ElemMatchLineItem("WIDGET-1", 0), new ElemMatchLineItem("BOLT-2", 10)
+            }),
             new ElemMatchCart(3, 0, new ElemMatchLineItem[] {new ElemMatchLineItem("GIZMO-1", 5)}));
 
     @BeforeEach

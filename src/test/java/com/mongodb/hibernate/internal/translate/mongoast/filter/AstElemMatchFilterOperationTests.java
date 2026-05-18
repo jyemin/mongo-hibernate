@@ -28,7 +28,8 @@ class AstElemMatchFilterOperationTests {
     void testRendering() {
         AstFilter body = new AstFieldOperationFilter(
                 "sku",
-                new AstComparisonFilterOperation(AstComparisonFilterOperator.EQ, new AstLiteral(new BsonString("WIDGET"))));
+                new AstComparisonFilterOperation(
+                        AstComparisonFilterOperator.EQ, new AstLiteral(new BsonString("WIDGET"))));
         assertRendering(
                 """
                 {"$elemMatch": {"sku": {"$eq": "WIDGET"}}}""",

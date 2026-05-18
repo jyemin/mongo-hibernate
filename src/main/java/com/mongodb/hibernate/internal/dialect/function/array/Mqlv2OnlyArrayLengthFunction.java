@@ -29,9 +29,9 @@ import org.hibernate.sql.ast.tree.SqlAstNode;
 import org.hibernate.type.spi.TypeConfiguration;
 
 /**
- * MQLv2-only descriptor for {@code array_length(arr)}. The MQLv2 translator intercepts this
- * function by name in {@code appendExprText} and emits {@code count(arr)}; this descriptor's
- * {@code render()} method is never called under v2 and throws under v1.
+ * MQLv2-only descriptor for {@code array_length(arr)}. The MQLv2 translator intercepts this function by name in
+ * {@code appendExprText} and emits {@code count(arr)}; this descriptor's {@code render()} method is never called under
+ * v2 and throws under v1.
  *
  * @hidden
  */
@@ -40,8 +40,7 @@ public final class Mqlv2OnlyArrayLengthFunction extends AbstractSqmSelfRendering
         super(
                 "array_length",
                 StandardArgumentsValidators.composite(
-                        StandardArgumentsValidators.exactly(1),
-                        ArrayArgumentValidator.DEFAULT_INSTANCE),
+                        StandardArgumentsValidators.exactly(1), ArrayArgumentValidator.DEFAULT_INSTANCE),
                 StandardFunctionReturnTypeResolvers.invariant(
                         typeConfiguration.standardBasicTypeForJavaType(Integer.class)),
                 null);

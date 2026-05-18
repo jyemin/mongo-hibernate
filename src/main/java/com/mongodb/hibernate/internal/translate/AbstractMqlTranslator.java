@@ -996,8 +996,8 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
             throw new FeatureNotSupportedException();
         }
         var bodyFilter = acceptAndYield(shape.body(), FILTER);
-        AstFilter filter = new AstFieldOperationFilter(
-                shape.arrayFieldName(), new AstElemMatchFilterOperation(bodyFilter));
+        AstFilter filter =
+                new AstFieldOperationFilter(shape.arrayFieldName(), new AstElemMatchFilterOperation(bodyFilter));
         if (existsPredicate.isNegated()) {
             filter = new AstLogicalFilter(NOR, List.of(filter));
         }
@@ -1172,8 +1172,8 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     }
 
     /**
-     * @return the detected shape if {@code existsPredicate}'s subquery matches the
-     *     {@code from <outerAlias>.<arrayField> li where <body>} pattern, otherwise {@code null}.
+     * @return the detected shape if {@code existsPredicate}'s subquery matches the {@code from
+     *     <outerAlias>.<arrayField> li where <body>} pattern, otherwise {@code null}.
      */
     private static @Nullable ExistsOverUnnestShape recognizeExistsOverUnnest(ExistsPredicate existsPredicate) {
         var select = existsPredicate.getExpression();
@@ -1193,7 +1193,8 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
             return null;
         }
         var root = qs.getFromClause().getRoots().get(0);
-        if (!root.getTableGroupJoins().isEmpty() || !root.getNestedTableGroupJoins().isEmpty()) {
+        if (!root.getTableGroupJoins().isEmpty()
+                || !root.getNestedTableGroupJoins().isEmpty()) {
             return null;
         }
         if (!(root.getPrimaryTableReference() instanceof FunctionTableReference ftr)
@@ -1221,10 +1222,10 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
 
     /**
      * Returns {@code true} if {@code predicate} is safe to use as an {@code $elemMatch} body — i.e., every
-     * {@link ColumnReference} inside it has the qualifier {@code innerAlias}, and every predicate type encountered
-     * is one we know how to walk. Fail-closed on unrecognized predicate types so a future translator extension can't
-     * silently produce wrong queries: v1's {@link #visitColumnReference} is qualifier-blind and would otherwise emit
-     * an unqualified field path that incorrectly resolves against the array element.
+     * {@link ColumnReference} inside it has the qualifier {@code innerAlias}, and every predicate type encountered is
+     * one we know how to walk. Fail-closed on unrecognized predicate types so a future translator extension can't
+     * silently produce wrong queries: v1's {@link #visitColumnReference} is qualifier-blind and would otherwise emit an
+     * unqualified field path that incorrectly resolves against the array element.
      */
     private static boolean isBodySafeForElemMatch(@Nullable Predicate predicate, String innerAlias) {
         if (predicate == null) {

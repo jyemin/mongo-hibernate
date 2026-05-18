@@ -26,12 +26,10 @@ import org.hibernate.sql.ast.tree.SqlAstNode;
 import org.hibernate.type.spi.TypeConfiguration;
 
 /**
- * MQLv2-only descriptor for {@code array_intersects(a, b)} and the nullable variant.
- * Intercepted by the v2 translator and emitted as
- * {@code (a any (let $__x = $ in b any ($ <eqOp> $__x)))} where {@code eqOp} is
- * {@code ==} for the non-nullable variant and {@code is} for {@code _nullable}.
- * If {@code render()} is ever invoked (it is not under v2 because the translator
- * intercepts the function by name), it throws.
+ * MQLv2-only descriptor for {@code array_intersects(a, b)} and the nullable variant. Intercepted by the v2 translator
+ * and emitted as {@code (a any (let $__x = $ in b any ($ <eqOp> $__x)))} where {@code eqOp} is {@code ==} for the
+ * non-nullable variant and {@code is} for {@code _nullable}. If {@code render()} is ever invoked (it is not under v2
+ * because the translator intercepts the function by name), it throws.
  *
  * @hidden
  */

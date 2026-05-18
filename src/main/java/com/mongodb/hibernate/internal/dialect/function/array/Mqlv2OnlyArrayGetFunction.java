@@ -25,14 +25,12 @@ import org.hibernate.sql.ast.spi.SqlAppender;
 import org.hibernate.sql.ast.tree.SqlAstNode;
 
 /**
- * MQLv2-only descriptor for {@code array_get(arr, i)}. Intercepted by the v2 translator
- * and emitted as {@code arr[(i) - 1]} (HQL is 1-based, MQLv2 is 0-based). If
- * {@code render()} is ever invoked (it is not under v2 because the translator intercepts
- * the function by name), it throws.
+ * MQLv2-only descriptor for {@code array_get(arr, i)}. Intercepted by the v2 translator and emitted as {@code arr[(i) -
+ * 1]} (HQL is 1-based, MQLv2 is 0-based). If {@code render()} is ever invoked (it is not under v2 because the
+ * translator intercepts the function by name), it throws.
  *
- * <p>Extends Hibernate's {@link ArrayGetUnnestFunction} solely to inherit its
- * argument-validator and return-type-resolver wiring; the parent's SQL-text-emitting
- * {@code render()} is not reachable under v2.
+ * <p>Extends Hibernate's {@link ArrayGetUnnestFunction} solely to inherit its argument-validator and
+ * return-type-resolver wiring; the parent's SQL-text-emitting {@code render()} is not reachable under v2.
  *
  * @hidden
  */
