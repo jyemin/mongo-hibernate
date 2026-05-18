@@ -70,6 +70,23 @@ public final class Mqlv2TranslationContext {
     @org.jspecify.annotations.Nullable
     private final IntSupplier nextCorrelatedVarIndex;
 
+    /**
+     * The set of table-reference aliases visible in this (outer) query scope. Used by
+     * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters#translatePredicate} to dispatch
+     * {@code ExistsPredicate}, {@code InSubQueryPredicate}, and {@code ComparisonPredicate} with {@code Any}/{@code
+     * Every} RHS to the appropriate subquery-predicate emitters. Non-null only when subquery-predicate translation is
+     * enabled for this context (set via {@link #withSubquerySupport}).
+     */
+    @org.jspecify.annotations.Nullable
+    private final Set<String> subqueryOuterQualifiers;
+
+    /**
+     * Supplier for the next globally-unique {@code __vN} integer index, shared with the outer translator. Non-null only
+     * when {@link #subqueryOuterQualifiers} is non-null.
+     */
+    @org.jspecify.annotations.Nullable
+    private final IntSupplier subqueryNextCorrelatedVar;
+
     public Mqlv2TranslationContext(
             List<JdbcParameterBinder> parameterBinders, Map<String, String> unnestAliasToFieldPath, boolean hasJoins) {
         this(parameterBinders, unnestAliasToFieldPath, hasJoins, Collections.emptyMap());
@@ -87,6 +104,8 @@ public final class Mqlv2TranslationContext {
         this.outerQualifiers = null;
         this.correlatedBindings = null;
         this.nextCorrelatedVarIndex = null;
+        this.subqueryOuterQualifiers = null;
+        this.subqueryNextCorrelatedVar = null;
     }
 
     private Mqlv2TranslationContext(
@@ -94,9 +113,11 @@ public final class Mqlv2TranslationContext {
             Map<String, String> unnestAliasToFieldPath,
             boolean hasJoins,
             Map<String, String> aggSignatureToName,
-            Set<String> outerQualifiers,
-            Map<String, String> correlatedBindings,
-            IntSupplier nextCorrelatedVarIndex) {
+            @org.jspecify.annotations.Nullable Set<String> outerQualifiers,
+            @org.jspecify.annotations.Nullable Map<String, String> correlatedBindings,
+            @org.jspecify.annotations.Nullable IntSupplier nextCorrelatedVarIndex,
+            @org.jspecify.annotations.Nullable Set<String> subqueryOuterQualifiers,
+            @org.jspecify.annotations.Nullable IntSupplier subqueryNextCorrelatedVar) {
         this.parameterBinders = parameterBinders;
         this.unnestAliasToFieldPath = unnestAliasToFieldPath;
         this.hasJoins = hasJoins;
@@ -104,6 +125,8 @@ public final class Mqlv2TranslationContext {
         this.outerQualifiers = outerQualifiers;
         this.correlatedBindings = correlatedBindings;
         this.nextCorrelatedVarIndex = nextCorrelatedVarIndex;
+        this.subqueryOuterQualifiers = subqueryOuterQualifiers;
+        this.subqueryNextCorrelatedVar = subqueryNextCorrelatedVar;
     }
 
     /**
@@ -134,7 +157,33 @@ public final class Mqlv2TranslationContext {
                 Collections.emptyMap(),
                 outerQualifiers,
                 correlatedBindings,
-                nextCorrelatedVarIndex);
+                nextCorrelatedVarIndex,
+                null,
+                null);
+    }
+
+    /**
+     * Return a copy of this context augmented with subquery-predicate support. The returned context can translate
+     * {@code ExistsPredicate}, {@code InSubQueryPredicate}, and {@code ComparisonPredicate} with {@code Any}/{@code
+     * Every} RHS directly within {@link Mqlv2IrEmitters#translatePredicate}.
+     *
+     * @param outerQualifiers the set of table-reference aliases visible in the outer (this) query scope.
+     * @param nextCorrelatedVar supplier of the next globally-unique integer index for {@code __vN} variable names;
+     *     shared with the outer translator.
+     * @return a new context with subquery-predicate translation enabled.
+     */
+    public Mqlv2TranslationContext withSubquerySupport(
+            Set<String> outerQualifiers, IntSupplier nextCorrelatedVar) {
+        return new Mqlv2TranslationContext(
+                parameterBinders,
+                unnestAliasToFieldPath,
+                hasJoins,
+                aggSignatureToName,
+                this.outerQualifiers,
+                this.correlatedBindings,
+                this.nextCorrelatedVarIndex,
+                outerQualifiers,
+                nextCorrelatedVar);
     }
 
     /**
@@ -196,5 +245,33 @@ public final class Mqlv2TranslationContext {
 
     public Map<String, String> aggSignatureToName() {
         return aggSignatureToName;
+    }
+
+    /**
+     * Returns {@code true} if this context has subquery-predicate support enabled (i.e., was created via
+     * {@link #withSubquerySupport}). When {@code true}, {@link Mqlv2IrEmitters#translatePredicate} can dispatch
+     * {@code ExistsPredicate}, {@code InSubQueryPredicate}, and {@code ComparisonPredicate} with {@code Any}/{@code
+     * Every} RHS to the appropriate emitters.
+     */
+    public boolean hasSubquerySupport() {
+        return subqueryOuterQualifiers != null;
+    }
+
+    /**
+     * Returns the set of outer-query aliases for subquery-predicate translation.
+     *
+     * <p>Must only be called when {@link #hasSubquerySupport()} returns {@code true}.
+     */
+    public Set<String> subqueryOuterQualifiers() {
+        return Objects.requireNonNull(subqueryOuterQualifiers, "subqueryOuterQualifiers must be non-null");
+    }
+
+    /**
+     * Returns the supplier for the next globally-unique {@code __vN} index for subquery-predicate translation.
+     *
+     * <p>Must only be called when {@link #hasSubquerySupport()} returns {@code true}.
+     */
+    public IntSupplier subqueryNextCorrelatedVar() {
+        return Objects.requireNonNull(subqueryNextCorrelatedVar, "subqueryNextCorrelatedVar must be non-null");
     }
 }

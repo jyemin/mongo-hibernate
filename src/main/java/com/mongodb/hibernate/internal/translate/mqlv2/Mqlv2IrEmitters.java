@@ -26,10 +26,12 @@ import com.mongodb.mqlv2.ast.Stage;
 import com.mongodb.mqlv2.ast.UnaryOpType;
 import com.mongodb.mqlv2.ast.Value;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.IntSupplier;
 import org.hibernate.query.common.TemporalUnit;
 import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.BinaryArithmeticOperator;
@@ -38,8 +40,10 @@ import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.EntityValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
+import org.hibernate.sql.ast.tree.expression.Any;
 import org.hibernate.sql.ast.tree.expression.BinaryArithmeticExpression;
 import org.hibernate.sql.ast.tree.expression.ColumnReference;
+import org.hibernate.sql.ast.tree.expression.Every;
 import org.hibernate.sql.ast.tree.expression.Expression;
 import org.hibernate.sql.ast.tree.expression.ExtractUnit;
 import org.hibernate.sql.ast.tree.expression.JdbcParameter;
@@ -49,8 +53,10 @@ import org.hibernate.sql.ast.tree.expression.UnparsedNumericLiteral;
 import org.hibernate.sql.ast.tree.from.NamedTableReference;
 import org.hibernate.sql.ast.tree.predicate.BooleanExpressionPredicate;
 import org.hibernate.sql.ast.tree.predicate.ComparisonPredicate;
+import org.hibernate.sql.ast.tree.predicate.ExistsPredicate;
 import org.hibernate.sql.ast.tree.predicate.GroupedPredicate;
 import org.hibernate.sql.ast.tree.predicate.InListPredicate;
+import org.hibernate.sql.ast.tree.predicate.InSubQueryPredicate;
 import org.hibernate.sql.ast.tree.predicate.Junction;
 import org.hibernate.sql.ast.tree.predicate.NegatedPredicate;
 import org.hibernate.sql.ast.tree.predicate.NullnessPredicate;
@@ -58,6 +64,7 @@ import org.hibernate.sql.ast.tree.predicate.Predicate;
 import org.hibernate.sql.ast.tree.predicate.SelfRenderingPredicate;
 import org.hibernate.sql.ast.tree.select.QuerySpec;
 import org.hibernate.sql.ast.tree.select.SelectClause;
+import org.hibernate.sql.ast.tree.select.SelectStatement;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -441,6 +448,20 @@ public final class Mqlv2IrEmitters {
         if (p instanceof NegatedPredicate np) {
             return new Expr.UnaryOp(UnaryOpType.NOT, translatePredicate(np.getPredicate(), ctx));
         }
+        // Check for ANY/ALL subquery before the generic ComparisonPredicate arm, since Any/Every
+        // are not translatable as plain expressions.
+        if (p instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr
+                && ctx.hasSubquerySupport()) {
+            return translateAnyAllSubquery(
+                    cp, anyExpr.getSubquery(), false, ctx,
+                    ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+        }
+        if (p instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Every everyExpr
+                && ctx.hasSubquerySupport()) {
+            return translateAnyAllSubquery(
+                    cp, everyExpr.getSubquery(), true, ctx,
+                    ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+        }
         if (p instanceof ComparisonPredicate cp) {
             return new Expr.BinaryOp(
                     translateComparisonOp(cp.getOperator()),
@@ -485,6 +506,24 @@ public final class Mqlv2IrEmitters {
             }
             if ("array_intersects".equals(name) || "array_intersects_nullable".equals(name)) {
                 return translateArrayIntersects(fn, ctx);
+            }
+        }
+        // Remaining subquery-based predicates (InSubQueryPredicate, non-unnest ExistsPredicate):
+        // require subquery support to be enabled in the context.
+        if (ctx.hasSubquerySupport()) {
+            if (p instanceof InSubQueryPredicate isp) {
+                return translateInSubQuery(
+                        isp, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+            }
+            if (p instanceof ExistsPredicate ep) {
+                // Unnest-EXISTS is handled by the hand-rolled appendUnnestExistsPredicate; only
+                // dispatch the non-unnest variant through the IR path here.
+                var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
+                var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+                if (!(innerRoot.getPrimaryTableReference() instanceof org.hibernate.sql.ast.tree.from.FunctionTableReference)) {
+                    return translateExists(
+                            ep, ctx, ctx.subqueryOuterQualifiers(), ctx.subqueryNextCorrelatedVar());
+                }
             }
         }
         throw new FeatureNotSupportedException(
@@ -1023,5 +1062,198 @@ public final class Mqlv2IrEmitters {
         var dotIdx = qualifiedKey.indexOf('.');
         var column = dotIdx >= 0 ? qualifiedKey.substring(dotIdx + 1) : qualifiedKey;
         return new Expr.FieldAccess(new Expr.CurrentValue(), column);
+    }
+
+    // ---- Subquery-predicate IR translation helpers (Phase D6) ----
+
+    /**
+     * Translate an {@link ExistsPredicate} (non-unnest form) into a driver-mqlv2 {@link Expr}.
+     *
+     * <ul>
+     *   <li>Normal: {@code (count(<subpipeline>) > 0)}
+     *   <li>Negated (via {@code ExistsPredicate.isNegated()}): {@code (count(<subpipeline>) == 0)}
+     * </ul>
+     *
+     * <p>Correlated outer-column references inside the inner subquery are captured as {@code $__vN} let bindings and
+     * wrapped via {@link #wrapAsSubPipeline}.
+     *
+     * @param ep the EXISTS predicate.
+     * @param outerCtx the outer translation context (provides parameter binders and hasJoins state).
+     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
+     * @param nextCorrelatedVar supplier of the next globally-unique integer index for {@code $__vN} names; shared with
+     *     the outer translator to avoid collisions.
+     * @return the translated {@link Expr}.
+     */
+    public static Expr translateExists(
+            ExistsPredicate ep,
+            Mqlv2TranslationContext outerCtx,
+            Set<String> outerQualifiers,
+            IntSupplier nextCorrelatedVar) {
+        var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
+        var correlatedBindings = new LinkedHashMap<String, String>();
+        var innerCtx = outerCtx.forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar);
+        Stage innerStage = translateInnerQuerySpec(innerSpec, innerCtx);
+        Expr wrapped = wrapAsSubPipeline(innerStage, correlatedBindings, outerCtx.hasJoins());
+        Expr countExpr = new Expr.FunctionCall("count", List.of(wrapped));
+        return new Expr.BinaryOp(
+                ep.isNegated() ? BinaryOpType.EQ : BinaryOpType.GT,
+                countExpr,
+                new Expr.ValueLit(new Value.VInt(0)));
+    }
+
+    /**
+     * Translate an {@link InSubQueryPredicate} into a driver-mqlv2 {@link Expr}.
+     *
+     * <ul>
+     *   <li>Normal: {@code (count(let $__vN = testExpr in (<inner> | match (projectedCol == $__vN))) > 0)}
+     *   <li>Negated: same with {@code == 0}.
+     * </ul>
+     *
+     * <p>The head binding binds the outer test expression to {@code $__vN}; an additional {@code | match} stage tests
+     * whether the projected inner column equals that variable. Correlated outer-column references (beyond the head
+     * binding) are captured as further {@code $__vN} let bindings.
+     *
+     * @param isp the IN-subquery predicate.
+     * @param outerCtx the outer translation context.
+     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
+     * @param nextCorrelatedVar supplier of the next globally-unique integer index; shared with the outer translator.
+     * @return the translated {@link Expr}.
+     */
+    public static Expr translateInSubQuery(
+            InSubQueryPredicate isp,
+            Mqlv2TranslationContext outerCtx,
+            Set<String> outerQualifiers,
+            IntSupplier nextCorrelatedVar) {
+        var innerSpec = isp.getSubQuery().getQueryPart().getFirstQuerySpec();
+        var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .findFirst()
+                .orElseThrow(() -> new FeatureNotSupportedException("IN subquery must project at least one column"))
+                .getExpression();
+        var projectedColName = simpleColumnName(projectedExpr);
+
+        // Allocate the head variable BEFORE creating the inner context so that variable ordering
+        // matches the hand-rolled path ($__v0 for the head, then higher indices for outer refs).
+        String headVarName = "__v" + nextCorrelatedVar.getAsInt();
+
+        var correlatedBindings = new LinkedHashMap<String, String>();
+        var innerCtx = outerCtx.forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar);
+        Stage innerStage = translateInnerQuerySpec(innerSpec, innerCtx);
+
+        // Append match stage: projectedCol == $headVar
+        innerStage = new Stage.MatchStage(
+                innerStage,
+                new Expr.BinaryOp(
+                        BinaryOpType.EQ,
+                        new Expr.FieldAccess(new Expr.CurrentValue(), projectedColName),
+                        new Expr.VarRef(headVarName)));
+
+        Expr testExpr = translateExpression(isp.getTestExpression(), outerCtx);
+        Expr wrapped = wrapAsSubPipelineWithHead(innerStage, headVarName, testExpr, correlatedBindings,
+                outerCtx.hasJoins());
+        Expr countExpr = new Expr.FunctionCall("count", List.of(wrapped));
+        return new Expr.BinaryOp(
+                isp.isNegated() ? BinaryOpType.EQ : BinaryOpType.GT,
+                countExpr,
+                new Expr.ValueLit(new Value.VInt(0)));
+    }
+
+    /**
+     * Translate {@code x op ANY(subquery)} or {@code x op ALL(subquery)} into a driver-mqlv2 {@link Expr}.
+     *
+     * <ul>
+     *   <li>ANY ({@code isAll=false}): {@code (count(let $__vN = x in (<inner> | match (col swapOp $__vN))) > 0)}
+     *   <li>ALL ({@code isAll=true}): same shape but with the inverse swap operator and {@code == 0}.
+     * </ul>
+     *
+     * <p>The swap operator follows the same convention as the hand-rolled {@code anyMatchOp}/{@code allMatchOp}: the
+     * inner {@code | match} stage places the projected column on the left and the test variable on the right, requiring
+     * operand-order swapping (and for ALL also negation) of the original operator.
+     *
+     * @param cp the comparison predicate whose RHS is the {@link org.hibernate.sql.ast.tree.expression.Any}/{@link
+     *     org.hibernate.sql.ast.tree.expression.Every} expression.
+     * @param subquery the subquery carried by the ANY/ALL expression.
+     * @param isAll {@code true} for ALL, {@code false} for ANY.
+     * @param outerCtx the outer translation context.
+     * @param outerQualifiers the set of table-reference aliases visible in the outer query scope.
+     * @param nextCorrelatedVar supplier of the next globally-unique integer index; shared with the outer translator.
+     * @return the translated {@link Expr}.
+     */
+    public static Expr translateAnyAllSubquery(
+            ComparisonPredicate cp,
+            SelectStatement subquery,
+            boolean isAll,
+            Mqlv2TranslationContext outerCtx,
+            Set<String> outerQualifiers,
+            IntSupplier nextCorrelatedVar) {
+        var innerSpec = subquery.getQueryPart().getFirstQuerySpec();
+        var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
+                .filter(s -> !s.isVirtual())
+                .findFirst()
+                .orElseThrow(
+                        () -> new FeatureNotSupportedException("ANY/ALL subquery must project at least one column"))
+                .getExpression();
+        var projectedColName = simpleColumnName(projectedExpr);
+
+        // Allocate head variable BEFORE creating the inner context to preserve ordering.
+        String headVarName = "__v" + nextCorrelatedVar.getAsInt();
+
+        var correlatedBindings = new LinkedHashMap<String, String>();
+        var innerCtx = outerCtx.forInnerSubquery(outerQualifiers, correlatedBindings, nextCorrelatedVar);
+        Stage innerStage = translateInnerQuerySpec(innerSpec, innerCtx);
+
+        // Append match stage: projectedCol matchOp $headVar (with swapped/inverted operator).
+        BinaryOpType matchOp = isAll ? allMatchOpIr(cp.getOperator()) : anyMatchOpIr(cp.getOperator());
+        innerStage = new Stage.MatchStage(
+                innerStage,
+                new Expr.BinaryOp(
+                        matchOp,
+                        new Expr.FieldAccess(new Expr.CurrentValue(), projectedColName),
+                        new Expr.VarRef(headVarName)));
+
+        Expr leftExpr = translateExpression(cp.getLeftHandExpression(), outerCtx);
+        Expr wrapped = wrapAsSubPipelineWithHead(innerStage, headVarName, leftExpr, correlatedBindings,
+                outerCtx.hasJoins());
+        Expr countExpr = new Expr.FunctionCall("count", List.of(wrapped));
+        // ANY: count > 0; ALL: count == 0 (no row where NOT condition holds)
+        return new Expr.BinaryOp(
+                isAll ? BinaryOpType.EQ : BinaryOpType.GT,
+                countExpr,
+                new Expr.ValueLit(new Value.VInt(0)));
+    }
+
+    /**
+     * IR counterpart of {@code anyMatchOp}: returns the {@link BinaryOpType} for the {@code | match} inside an ANY
+     * subquery. Swaps operand order so that {@code col op $__vN} is semantically equivalent to {@code $__vN op col}
+     * (i.e., {@code x op ANY(col)} counts rows where {@code col} satisfies the predicate with {@code x}).
+     */
+    private static BinaryOpType anyMatchOpIr(ComparisonOperator op) {
+        return switch (op) {
+            case EQUAL -> BinaryOpType.EQ;
+            case NOT_EQUAL -> BinaryOpType.NE;
+            case LESS_THAN -> BinaryOpType.GT;
+            case LESS_THAN_OR_EQUAL -> BinaryOpType.GE;
+            case GREATER_THAN -> BinaryOpType.LT;
+            case GREATER_THAN_OR_EQUAL -> BinaryOpType.LE;
+            default ->
+                throw new FeatureNotSupportedException("Unsupported comparison operator in ANY subquery: " + op);
+        };
+    }
+
+    /**
+     * IR counterpart of {@code allMatchOp}: returns the {@link BinaryOpType} for the {@code | match} inside an ALL
+     * subquery. Negates and swaps operand order so that ALL counts rows where the condition does NOT hold.
+     */
+    private static BinaryOpType allMatchOpIr(ComparisonOperator op) {
+        return switch (op) {
+            case EQUAL -> BinaryOpType.NE;
+            case NOT_EQUAL -> BinaryOpType.EQ;
+            case LESS_THAN -> BinaryOpType.LE;
+            case LESS_THAN_OR_EQUAL -> BinaryOpType.LT;
+            case GREATER_THAN -> BinaryOpType.GE;
+            case GREATER_THAN_OR_EQUAL -> BinaryOpType.GT;
+            default ->
+                throw new FeatureNotSupportedException("Unsupported comparison operator in ALL subquery: " + op);
+        };
     }
 }

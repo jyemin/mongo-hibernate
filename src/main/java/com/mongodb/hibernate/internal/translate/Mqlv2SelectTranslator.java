@@ -300,12 +300,16 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         this.hasJoins = root.getTableGroupJoins().stream()
                 .anyMatch(tgj -> !isUnnestFunctionTable(tgj.getJoinedGroup().getPrimaryTableReference()));
 
-        // Phase D2/D3/D4: route query shapes through the full IR path.
+        // Phase D2/D3/D4/D6: route query shapes through the full IR path.
         // Guard: the IR path handles only shapes that Mqlv2IrEmitters.translatePredicate and
-        // translateExpression cover. Subquery-based predicates (EXISTS, IN subquery, ANY/ALL) and
-        // scalar subqueries in SELECT still require the hand-rolled path.
-        boolean canUseIr = !whereHasSubqueryPredicates(querySpec.getWhereClauseRestrictions())
-                && !selectHasSubqueryExpressions(querySpec.getSelectClause());
+        // translateExpression cover. Two shapes still require the hand-rolled path:
+        //  - Scalar subqueries in SELECT (Task D7).
+        //  - Unnest-EXISTS predicates (appendUnnestExistsPredicate), whose any-body translation
+        //    uses the hand-rolled resolver machinery; left for Task D9 final cleanup.
+        // All other subquery-based predicates (non-unnest EXISTS, IN subquery, ANY/ALL) are
+        // handled by the IR path via Mqlv2IrEmitters (Task D6).
+        boolean canUseIr = !selectHasSubqueryExpressions(querySpec.getSelectClause())
+                && !whereHasUnnestExistsPredicates(querySpec.getWhereClauseRestrictions());
         if (canUseIr) {
             return buildQuerySpecTranslationViaIr(querySpec, queryOptions, root);
         }
@@ -338,15 +342,21 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * IR-path implementation of {@link #buildQuerySpecTranslation} for query shapes handled by the IR path (no subquery
-     * predicates, no scalar subqueries in SELECT). Builds a full driver-mqlv2 {@link com.mongodb.mqlv2.ast.Stage} chain
-     * — FROM → optional MATCH → optional GROUP/AGG → optional HAVING → optional SORT → optional LIMIT → FORMAT →
-     * optional DISTINCT — and serializes it in one shot via the {@link com.mongodb.mqlv2.Serializer}.
+     * IR-path implementation of {@link #buildQuerySpecTranslation} for query shapes handled by the IR path (no scalar
+     * subqueries in SELECT). Builds a full driver-mqlv2 {@link com.mongodb.mqlv2.ast.Stage} chain — FROM → optional
+     * MATCH → optional GROUP/AGG → optional HAVING → optional SORT → optional LIMIT → FORMAT → optional DISTINCT — and
+     * serializes it in one shot via the {@link com.mongodb.mqlv2.Serializer}.
+     *
+     * <p>Subquery-based predicates (EXISTS, IN subquery, ANY/ALL) in WHERE/HAVING are handled via
+     * {@link Mqlv2IrEmitters#translateExists}, {@link Mqlv2IrEmitters#translateInSubQuery}, and
+     * {@link Mqlv2IrEmitters#translateAnyAllSubquery}, dispatched from {@link Mqlv2IrEmitters#translatePredicate} when
+     * the context has subquery support enabled.
      */
     private SpecTranslation buildQuerySpecTranslationViaIr(
             QuerySpec querySpec, @Nullable QueryOptions queryOptions, TableGroup root) {
         var ntr = (NamedTableReference) root.getPrimaryTableReference();
-        var ctx = newContext();
+        var outerQualifiers = collectOuterQualifiers(querySpec);
+        var ctx = newContext().withSubquerySupport(outerQualifiers, () -> correlatedVarCounter++);
         var stage = Mqlv2IrEmitters.translateFromStage(ntr, hasJoins);
         stage = buildJoinsStage(stage, root, querySpec, ctx);
         stage = Mqlv2IrEmitters.translateMatch(stage, querySpec, ctx);
@@ -974,20 +984,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Wraps innerPipeline with a head binding followed by correlated bindings (IN/ANY/ALL pattern). Produces:
-     * {@code let headVarName = headValueText[, $__vN = field, ...] in (innerPipeline)}.
-     */
-    private String wrapWithLet(
-            String innerPipeline, String headVarName, String headValueText, Map<String, String> correlatedBindings) {
-        var sb = new StringBuilder("let ").append(headVarName).append(" = ").append(headValueText);
-        for (var entry : correlatedBindings.entrySet()) {
-            sb.append(", ").append(entry.getValue()).append(" = ").append(correlatedFieldExpr(entry.getKey()));
-        }
-        sb.append(" in (").append(innerPipeline).append(")");
-        return sb.toString();
-    }
-
-    /**
      * Returns the MQLv2 field expression for a correlated outer binding key ("qualifier.column"). Uses the qualified
      * form in a join context so the reference is unambiguous.
      */
@@ -1012,8 +1008,12 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     private static void collectGroupQualifiers(TableGroup group, Set<String> result) {
-        var alias = ((NamedTableReference) group.getPrimaryTableReference()).getIdentificationVariable();
-        if (alias != null) result.add(alias);
+        var primaryRef = group.getPrimaryTableReference();
+        if (primaryRef instanceof NamedTableReference ntr) {
+            var alias = ntr.getIdentificationVariable();
+            if (alias != null) result.add(alias);
+        }
+        // FunctionTableReference (unnest join) has no alias to contribute — skip it.
         for (var tgj : group.getTableGroupJoins()) {
             collectGroupQualifiers(tgj.getJoinedGroup(), result);
         }
@@ -1157,32 +1157,27 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Returns true if the predicate tree contains any subquery-based predicate ({@link ExistsPredicate},
-     * {@link InSubQueryPredicate}, or {@link ComparisonPredicate} with an {@link Any}/{@link Every} RHS) that requires
-     * the hand-rolled path. Called by the Phase D2 guard to fall back gracefully.
+     * Returns {@code true} if the predicate tree contains an unnest-EXISTS predicate — i.e., an {@link ExistsPredicate}
+     * whose inner FROM root is a {@link FunctionTableReference} (an unnest join). These still require the hand-rolled
+     * {@link #appendUnnestExistsPredicate} path (Task D9 final cleanup).
      */
-    private static boolean whereHasSubqueryPredicates(@Nullable Predicate predicate) {
+    private static boolean whereHasUnnestExistsPredicates(@Nullable Predicate predicate) {
         if (predicate == null || predicate.isEmpty()) {
             return false;
         }
-        if (predicate instanceof ExistsPredicate) {
-            return true;
-        }
-        if (predicate instanceof InSubQueryPredicate) {
-            return true;
-        }
-        if (predicate instanceof ComparisonPredicate cp
-                && (cp.getRightHandExpression() instanceof Any || cp.getRightHandExpression() instanceof Every)) {
-            return true;
+        if (predicate instanceof ExistsPredicate ep) {
+            var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
+            var innerRoot = innerSpec.getFromClause().getRoots().get(0);
+            return isUnnestFunctionTable(innerRoot.getPrimaryTableReference());
         }
         if (predicate instanceof Junction j) {
-            return j.getPredicates().stream().anyMatch(Mqlv2SelectTranslator::whereHasSubqueryPredicates);
+            return j.getPredicates().stream().anyMatch(Mqlv2SelectTranslator::whereHasUnnestExistsPredicates);
         }
         if (predicate instanceof NegatedPredicate np) {
-            return whereHasSubqueryPredicates(np.getPredicate());
+            return whereHasUnnestExistsPredicates(np.getPredicate());
         }
         if (predicate instanceof GroupedPredicate gp) {
-            return whereHasSubqueryPredicates(gp.getSubPredicate());
+            return whereHasUnnestExistsPredicates(gp.getSubPredicate());
         }
         return false;
     }
@@ -1327,49 +1322,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     }
 
     /**
-     * Translates {@code x op ANY(subquery)} (isAll=false) or {@code x op ALL(subquery)} (isAll=true).
-     *
-     * <ul>
-     *   <li>ANY: {@code count(let $__vN = x in (inner | match (col op $__vN))) > 0}
-     *   <li>ALL: {@code count(let $__vN = x in (inner | match (col inverse_op $__vN))) == 0}
-     * </ul>
-     */
-    private void appendAnyAllPredicate(
-            StringBuilder sb, ComparisonPredicate cp, SelectStatement subquery, boolean isAll) {
-        var innerSpec = subquery.getQueryPart().getFirstQuerySpec();
-        var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
-                .filter(s -> !s.isVirtual())
-                .findFirst()
-                .orElseThrow(
-                        () -> new FeatureNotSupportedException("ANY/ALL subquery must project at least one column"))
-                .getExpression();
-        var projectedColName = simpleColumnName(projectedExpr);
-
-        var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-        var outerQualifiers = collectOuterQualifiers(outerSpec);
-        var correlatedBindings = new LinkedHashMap<String, String>();
-
-        var testVarName = "$__v" + correlatedVarCounter++;
-        var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
-
-        String matchOp;
-        String countCmp;
-        if (isAll) {
-            matchOp = allMatchOp(cp.getOperator());
-            countCmp = " == 0)";
-        } else {
-            matchOp = anyMatchOp(cp.getOperator());
-            countCmp = " > 0)";
-        }
-        innerPipeline = innerPipeline + " | match (" + projectedColName + " " + matchOp + " " + testVarName + ")";
-
-        var headSb = new StringBuilder();
-        appendExprText(headSb, cp.getLeftHandExpression());
-        var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
-        sb.append("(count(").append(letExpr).append(")").append(countCmp);
-    }
-
-    /**
      * Translates {@code exists (select 1 from o.array a where <body>)} into MQLv2 {@code (<arrayPath> any
      * (<body-rewritten>))}, with outer-correlated references captured into a {@code let} wrapper around the {@code any}
      * expression. Negation wraps the whole thing in {@code (not …)}.
@@ -1457,10 +1409,16 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
     private void appendPredicateText(StringBuilder sb, Predicate predicate) {
         if (predicate instanceof ComparisonPredicate cp && cp.getRightHandExpression() instanceof Any anyExpr) {
-            appendAnyAllPredicate(sb, cp, anyExpr.getSubquery(), false);
+            var outerQualifiers = collectOuterQualifiers(selectStatement.getQueryPart().getFirstQuerySpec());
+            sb.append(serializer.serialize(Mqlv2IrEmitters.translateAnyAllSubquery(
+                    cp, anyExpr.getSubquery(), false, newContext(), outerQualifiers,
+                    () -> correlatedVarCounter++)));
         } else if (predicate instanceof ComparisonPredicate cp
                 && cp.getRightHandExpression() instanceof Every everyExpr) {
-            appendAnyAllPredicate(sb, cp, everyExpr.getSubquery(), true);
+            var outerQualifiers = collectOuterQualifiers(selectStatement.getQueryPart().getFirstQuerySpec());
+            sb.append(serializer.serialize(Mqlv2IrEmitters.translateAnyAllSubquery(
+                    cp, everyExpr.getSubquery(), true, newContext(), outerQualifiers,
+                    () -> correlatedVarCounter++)));
         } else if (predicate instanceof ComparisonPredicate
                 || predicate instanceof Junction
                 || predicate instanceof GroupedPredicate
@@ -1476,47 +1434,18 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             // inference in visitInSubQueryPredicate). The AST never reaches us, so no
             // dispatch hook is needed here. See Mqlv2UnnestSubqueryIntegrationTests for the
             // negative tests that lock the contract.
-            var innerSpec = isp.getSubQuery().getQueryPart().getFirstQuerySpec();
-            var projectedExpr = innerSpec.getSelectClause().getSqlSelections().stream()
-                    .filter(s -> !s.isVirtual())
-                    .findFirst()
-                    .orElseThrow(() -> new FeatureNotSupportedException("IN subquery must project at least one column"))
-                    .getExpression();
-            var projectedColName = simpleColumnName(projectedExpr);
-
-            var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-            var outerQualifiers = collectOuterQualifiers(outerSpec);
-            var correlatedBindings = new LinkedHashMap<String, String>();
-
-            // Bind the test expression as the first $__vN variable
-            var testVarName = "$__v" + correlatedVarCounter++;
-
-            var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
-            // Add match stage: projected column == test variable
-            innerPipeline = innerPipeline + " | match (" + projectedColName + " == " + testVarName + ")";
-
-            var headSb = new StringBuilder();
-            appendExprText(headSb, isp.getTestExpression());
-            var letExpr = wrapWithLet(innerPipeline, testVarName, headSb.toString(), correlatedBindings);
-            var countExpr = "count(" + letExpr + ")";
-            if (isp.isNegated()) {
-                sb.append("(").append(countExpr).append(" == 0)");
-            } else {
-                sb.append("(").append(countExpr).append(" > 0)");
-            }
+            var outerQualifiers = collectOuterQualifiers(selectStatement.getQueryPart().getFirstQuerySpec());
+            sb.append(serializer.serialize(Mqlv2IrEmitters.translateInSubQuery(
+                    isp, newContext(), outerQualifiers, () -> correlatedVarCounter++)));
         } else if (predicate instanceof ExistsPredicate ep) {
             var innerSpec = ep.getExpression().getQueryPart().getFirstQuerySpec();
             var innerRoot = innerSpec.getFromClause().getRoots().get(0);
             if (isUnnestFunctionTable(innerRoot.getPrimaryTableReference())) {
                 appendUnnestExistsPredicate(sb, ep);
             } else {
-                var outerSpec = selectStatement.getQueryPart().getFirstQuerySpec();
-                var outerQualifiers = collectOuterQualifiers(outerSpec);
-                var correlatedBindings = new LinkedHashMap<String, String>();
-                var innerPipeline = appendQuerySpecPipeline(innerSpec, outerQualifiers, correlatedBindings);
-                var wrapped = wrapWithLet(innerPipeline, correlatedBindings);
-                var countOp = ep.isNegated() ? " == 0)" : " > 0)";
-                sb.append("(count(").append(wrapped).append(")").append(countOp);
+                var outerQualifiers = collectOuterQualifiers(selectStatement.getQueryPart().getFirstQuerySpec());
+                sb.append(serializer.serialize(Mqlv2IrEmitters.translateExists(
+                        ep, newContext(), outerQualifiers, () -> correlatedVarCounter++)));
             }
         } else {
             throw new FeatureNotSupportedException(
@@ -1614,46 +1543,6 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
             case LESS_THAN_OR_EQUAL -> "<=";
             case GREATER_THAN -> ">";
             case GREATER_THAN_OR_EQUAL -> ">=";
-            default -> throw new FeatureNotSupportedException("Unsupported comparison operator: " + op);
-        };
-    }
-
-    /**
-     * Returns the operator string for {@code col matchOp $__v0} in an ANY match stage.
-     *
-     * <p>For {@code x op ANY(subquery)} we want to count rows {@code e} in the subquery where {@code x op e}, i.e.,
-     * {@code $__v0 op col}. Written with the column on the left: {@code col swapOp $__v0}, where swapOp reverses the
-     * operand order.
-     */
-    private static String anyMatchOp(ComparisonOperator op) {
-        // swap operand order: a > b becomes b < a
-        return switch (op) {
-            case EQUAL -> "==";
-            case NOT_EQUAL -> "!=";
-            case LESS_THAN -> ">";
-            case LESS_THAN_OR_EQUAL -> ">=";
-            case GREATER_THAN -> "<";
-            case GREATER_THAN_OR_EQUAL -> "<=";
-            default -> throw new FeatureNotSupportedException("Unsupported comparison operator: " + op);
-        };
-    }
-
-    /**
-     * Returns the operator string for {@code col matchOp $__v0} in an ALL match stage.
-     *
-     * <p>For {@code x op ALL(subquery)} we count rows {@code e} in the subquery where {@code NOT (x op e)}, i.e.,
-     * {@code x inverseOp e}, i.e., {@code $__v0 inverseOp col}. Written with the column on the left: {@code col
-     * swapInverseOp $__v0}.
-     */
-    private static String allMatchOp(ComparisonOperator op) {
-        // negate then swap operand order
-        return switch (op) {
-            case EQUAL -> "!=";
-            case NOT_EQUAL -> "==";
-            case LESS_THAN -> "<=";
-            case LESS_THAN_OR_EQUAL -> "<";
-            case GREATER_THAN -> ">=";
-            case GREATER_THAN_OR_EQUAL -> ">";
             default -> throw new FeatureNotSupportedException("Unsupported comparison operator: " + op);
         };
     }
