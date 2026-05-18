@@ -138,7 +138,23 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
 
     private final SessionFactoryImplementor sessionFactory;
     private final SelectStatement selectStatement;
+    /**
+     * Globally-ordered list of JDBC parameter binders, indexed by the {@code $pN} position in the emitted MQLv2 text.
+     * Owned by the translator (its lifetime matches the translation) and shared by reference into every
+     * {@link Mqlv2TranslationContext} so a single global ordering is preserved across nested subqueries.
+     *
+     * <p>Writes:
+     * <ul>
+     *   <li>{@link Mqlv2TranslationContext#allocateParameter(JdbcParameterBinder)} — appends one binder per
+     *       {@code JdbcParameter} AST node encountered during expression translation. This is the main writer.
+     *   <li>The {@code onSetMaxResults} callback below ({@code translateLimit} invokes it when {@code setMaxResults}
+     *       binds a dynamic limit) — appends the translator-owned {@link LimitJdbcParameter}'s binder.
+     * </ul>
+     *
+     * <p>Reads: {@link #translate} consumes the list when constructing the {@link JdbcOperationQuerySelect} return.
+     */
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
+
     private @Nullable LimitJdbcParameter limitJdbcParameter;
     // Intentionally global (not reset per subquery branch): $__vN names only need to be unique across
     // the whole translation, and sharing the counter avoids collisions between nested correlated bindings.
