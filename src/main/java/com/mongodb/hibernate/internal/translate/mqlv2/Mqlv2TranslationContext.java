@@ -17,6 +17,7 @@
 package com.mongodb.hibernate.internal.translate.mqlv2;
 
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -24,6 +25,7 @@ import java.util.Set;
 import java.util.function.IntSupplier;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Immutable (copy-on-write) translation state threaded through {@link Mqlv2IrEmitters} during IR construction.
@@ -63,7 +65,7 @@ public final class Mqlv2TranslationContext {
      *       {@code $__vN} variable references rather than field accesses.
      * </ul>
      */
-    @org.jspecify.annotations.Nullable
+    @Nullable
     private final Set<String> outerQualifiers;
 
     /**
@@ -71,7 +73,7 @@ public final class Mqlv2TranslationContext {
      * correlated outer column references encountered during inner-subquery IR translation. Mutated lazily as new outer
      * columns are encountered. Non-null only for inner-subquery contexts created via {@link #forInnerSubquery}.
      */
-    @org.jspecify.annotations.Nullable
+    @Nullable
     private final Map<String, String> correlatedBindings;
 
     /**
@@ -79,7 +81,7 @@ public final class Mqlv2TranslationContext {
      * that variable names are globally unique across nested subqueries. Non-null once {@link #withOuterScope} has been
      * called, and preserved into inner-subquery contexts.
      */
-    @org.jspecify.annotations.Nullable
+    @Nullable
     private final IntSupplier nextCorrelatedVar;
 
     /**
@@ -115,9 +117,9 @@ public final class Mqlv2TranslationContext {
             Map<String, String> unnestAliasToFieldPath,
             boolean hasJoins,
             Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases,
-            @org.jspecify.annotations.Nullable Set<String> outerQualifiers,
-            @org.jspecify.annotations.Nullable Map<String, String> correlatedBindings,
-            @org.jspecify.annotations.Nullable IntSupplier nextCorrelatedVar,
+            @Nullable Set<String> outerQualifiers,
+            @Nullable Map<String, String> correlatedBindings,
+            @Nullable IntSupplier nextCorrelatedVar,
             Set<String> currentValueAliases) {
         this.parameterBinders = parameterBinders;
         this.unnestAliasToFieldPath = unnestAliasToFieldPath;
@@ -171,7 +173,7 @@ public final class Mqlv2TranslationContext {
      *     previously-registered current-value aliases).
      */
     public Mqlv2TranslationContext forArrayElement(Set<String> newAliases) {
-        var merged = new java.util.LinkedHashSet<>(this.currentValueAliases);
+        var merged = new LinkedHashSet<>(this.currentValueAliases);
         merged.addAll(newAliases);
         return new Mqlv2TranslationContext(
                 parameterBinders,

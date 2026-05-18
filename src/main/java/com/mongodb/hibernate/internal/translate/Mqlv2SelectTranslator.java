@@ -141,8 +141,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private final SelectStatement selectStatement;
     private final List<JdbcParameterBinder> parameterBinders = new ArrayList<>();
     private final Serializer serializer = new Serializer();
-    private @Nullable LimitJdbcParameter limitJdbcParameter = null;
-    private boolean hasJoins = false;
+    private @Nullable LimitJdbcParameter limitJdbcParameter;
+    private boolean hasJoins;
     /**
      * Maps join-alias → array field path for unnest joins (struct arrays). Populated by
      * {@link Mqlv2IrEmitters#translateJoins} when emitting an unwind stage; consulted by
