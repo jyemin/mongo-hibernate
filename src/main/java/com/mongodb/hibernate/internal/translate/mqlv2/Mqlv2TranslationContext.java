@@ -17,6 +17,8 @@
 package com.mongodb.hibernate.internal.translate.mqlv2;
 
 import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +54,11 @@ public final class Mqlv2TranslationContext {
      * function references in HAVING clauses. Empty when not translating a HAVING predicate.
      */
     private final Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases;
+    /**
+     * Secondary signature-keyed index of already-assigned aggregate aliases. Used as a fallback dedup key when
+     * Hibernate produces two distinct node instances for the same aggregate expression in SELECT and HAVING.
+     */
+    private final Map<String, String> aggSignatureIndex;
 
     /**
      * Set of table-reference aliases that are "outer" relative to the current translation scope. Non-null once
@@ -92,31 +99,12 @@ public final class Mqlv2TranslationContext {
      */
     private final Set<String> currentValueAliases;
 
-    public Mqlv2TranslationContext(
-            List<JdbcParameterBinder> parameterBinders, Map<String, String> unnestAliasToFieldPath, boolean hasJoins) {
-        this(parameterBinders, unnestAliasToFieldPath, hasJoins, Collections.emptyMap());
-    }
-
-    public Mqlv2TranslationContext(
-            List<JdbcParameterBinder> parameterBinders,
-            Map<String, String> unnestAliasToFieldPath,
-            boolean hasJoins,
-            Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases) {
-        this.parameterBinders = parameterBinders;
-        this.unnestAliasToFieldPath = unnestAliasToFieldPath;
-        this.hasJoins = hasJoins;
-        this.aggregateAliases = aggregateAliases;
-        this.outerQualifiers = null;
-        this.correlatedBindings = null;
-        this.nextCorrelatedVar = null;
-        this.currentValueAliases = Collections.emptySet();
-    }
-
     private Mqlv2TranslationContext(
             List<JdbcParameterBinder> parameterBinders,
             Map<String, String> unnestAliasToFieldPath,
             boolean hasJoins,
             Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases,
+            Map<String, String> aggSignatureIndex,
             @Nullable Set<String> outerQualifiers,
             @Nullable Map<String, String> correlatedBindings,
             @Nullable IntSupplier nextCorrelatedVar,
@@ -125,10 +113,47 @@ public final class Mqlv2TranslationContext {
         this.unnestAliasToFieldPath = unnestAliasToFieldPath;
         this.hasJoins = hasJoins;
         this.aggregateAliases = aggregateAliases;
+        this.aggSignatureIndex = aggSignatureIndex;
         this.outerQualifiers = outerQualifiers;
         this.correlatedBindings = correlatedBindings;
         this.nextCorrelatedVar = nextCorrelatedVar;
         this.currentValueAliases = currentValueAliases;
+    }
+
+    /**
+     * Creates a root context that holds the shared (translator-global) parameter-binder list. Call {@link
+     * #forSpec(boolean)} on this instance to obtain a fresh per-spec context for each {@link
+     * org.hibernate.sql.ast.tree.select.QuerySpec} build.
+     */
+    public static Mqlv2TranslationContext root(List<JdbcParameterBinder> parameterBinders) {
+        return new Mqlv2TranslationContext(
+                parameterBinders,
+                Collections.emptyMap(),
+                false,
+                Collections.emptyMap(),
+                Collections.emptyMap(),
+                null,
+                null,
+                null,
+                Collections.emptySet());
+    }
+
+    /**
+     * Constructs a fresh per-spec context, sharing the translator-global parameter-binder list but giving the new spec
+     * its own per-spec state ({@code hasJoins}, unnest aliases, aggregate aliases, agg-signature index). Used at the
+     * start of each {@link org.hibernate.sql.ast.tree.select.QuerySpec} build to give the spec a clean state slate.
+     */
+    public Mqlv2TranslationContext forSpec(boolean hasJoins) {
+        return new Mqlv2TranslationContext(
+                this.parameterBinders,
+                new LinkedHashMap<>(),
+                hasJoins,
+                new IdentityHashMap<>(),
+                new LinkedHashMap<>(),
+                null,
+                null,
+                null,
+                Collections.emptySet());
     }
 
     /**
@@ -153,6 +178,7 @@ public final class Mqlv2TranslationContext {
                 parameterBinders,
                 Collections.emptyMap(),
                 false,
+                Collections.emptyMap(),
                 Collections.emptyMap(),
                 Objects.requireNonNull(outerQualifiers, "outerQualifiers must be set before calling forInnerSubquery"),
                 correlatedBindings,
@@ -180,6 +206,7 @@ public final class Mqlv2TranslationContext {
                 unnestAliasToFieldPath,
                 hasJoins,
                 aggregateAliases,
+                aggSignatureIndex,
                 outerQualifiers,
                 correlatedBindings,
                 nextCorrelatedVar,
@@ -212,6 +239,7 @@ public final class Mqlv2TranslationContext {
                 unnestAliasToFieldPath,
                 hasJoins,
                 aggregateAliases,
+                aggSignatureIndex,
                 outerQualifiers,
                 this.correlatedBindings,
                 nextCorrelatedVar,
@@ -276,6 +304,10 @@ public final class Mqlv2TranslationContext {
 
     public Map<SelfRenderingFunctionSqlAstExpression<?>, String> aggregateAliases() {
         return aggregateAliases;
+    }
+
+    public Map<String, String> aggSignatureIndex() {
+        return aggSignatureIndex;
     }
 
     /**
