@@ -31,7 +31,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for {@link Mqlv2IrEmitters}.
+ * Unit tests for {@link Mqlv2ExpressionEmitter} (and Serializer canonical shapes).
  *
  * <p>These tests lock the Serializer's output for canonical {@link Expr} shapes used in IR translation. The full
  * Hibernate-AST → IR dispatch path is exercised through the integration tests.
@@ -99,7 +99,7 @@ class Mqlv2IrEmittersTest {
     @Test
     void wrapAsSubPipeline_noBindings_yieldsBareParens() {
         var stage = simpleInnerStage();
-        var expr = Mqlv2IrEmitters.wrapAsSubPipeline(stage, Map.of(), false);
+        var expr = Mqlv2ExpressionEmitter.wrapAsSubPipeline(stage, Map.of(), false);
         assertThat(s.serialize(expr)).isEqualTo("(from $orders | match (status == \"NEW\"))");
     }
 
@@ -112,7 +112,7 @@ class Mqlv2IrEmittersTest {
         var stage = simpleInnerStage();
         var bindings = new LinkedHashMap<String, String>();
         bindings.put("c.id", "__v0");
-        var expr = Mqlv2IrEmitters.wrapAsSubPipeline(stage, bindings, false);
+        var expr = Mqlv2ExpressionEmitter.wrapAsSubPipeline(stage, bindings, false);
         assertThat(s.serialize(expr))
                 .isEqualTo("let $__v0 = id in (from $orders | match (status == \"NEW\"))");
     }
@@ -126,7 +126,7 @@ class Mqlv2IrEmittersTest {
         var stage = simpleInnerStage();
         var bindings = new LinkedHashMap<String, String>();
         bindings.put("c.id", "__v0");
-        var expr = Mqlv2IrEmitters.wrapAsSubPipeline(stage, bindings, true);
+        var expr = Mqlv2ExpressionEmitter.wrapAsSubPipeline(stage, bindings, true);
         assertThat(s.serialize(expr))
                 .isEqualTo("let $__v0 = c.id in (from $orders | match (status == \"NEW\"))");
     }
@@ -141,7 +141,7 @@ class Mqlv2IrEmittersTest {
         var bindings = new LinkedHashMap<String, String>();
         bindings.put("c.id", "__v0");
         bindings.put("c.region", "__v1");
-        var expr = Mqlv2IrEmitters.wrapAsSubPipeline(stage, bindings, false);
+        var expr = Mqlv2ExpressionEmitter.wrapAsSubPipeline(stage, bindings, false);
         assertThat(s.serialize(expr))
                 .isEqualTo("let $__v0 = id, $__v1 = region in (from $orders | match (status == \"NEW\"))");
     }
@@ -153,7 +153,7 @@ class Mqlv2IrEmittersTest {
     @Test
     void wrapAsSubPipelineWithHead_noExtraBindings_yieldsHeadOnlyLet() {
         var stage = simpleInnerStage();
-        var expr = Mqlv2IrEmitters.wrapAsSubPipelineWithHead(
+        var expr = Mqlv2ExpressionEmitter.wrapAsSubPipelineWithHead(
                 stage, "__v0", new Expr.VarRef("p0"), Map.of(), false);
         assertThat(s.serialize(expr))
                 .isEqualTo("let $__v0 = $p0 in (from $orders | match (status == \"NEW\"))");
@@ -168,7 +168,7 @@ class Mqlv2IrEmittersTest {
         var stage = simpleInnerStage();
         var bindings = new LinkedHashMap<String, String>();
         bindings.put("c.id", "__v1");
-        var expr = Mqlv2IrEmitters.wrapAsSubPipelineWithHead(
+        var expr = Mqlv2ExpressionEmitter.wrapAsSubPipelineWithHead(
                 stage, "__v0", new Expr.VarRef("p0"), bindings, false);
         assertThat(s.serialize(expr))
                 .isEqualTo("let $__v0 = $p0, $__v1 = id in (from $orders | match (status == \"NEW\"))");

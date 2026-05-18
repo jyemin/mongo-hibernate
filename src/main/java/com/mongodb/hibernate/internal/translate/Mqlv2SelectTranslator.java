@@ -21,7 +21,7 @@ import static java.util.Collections.emptyMap;
 import static org.hibernate.sql.exec.spi.JdbcLockStrategy.NONE;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
-import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2IrEmitters;
+import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2StageEmitter;
 import com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2TranslationContext;
 import com.mongodb.mqlv2.Serializer;
 import com.mongodb.mqlv2.ast.Stage;
@@ -145,9 +145,10 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
     private boolean hasJoins;
     /**
      * Maps join-alias → array field path for unnest joins (struct arrays). Populated by
-     * {@link Mqlv2IrEmitters#translateJoins} when emitting an unwind stage; consulted by
-     * {@link Mqlv2IrEmitters#translateExpression} (via the shared map in {@link Mqlv2TranslationContext})
-     * so that column references qualified by the unnest alias resolve to {@code <arrayPath>.<column>}.
+     * {@link Mqlv2StageEmitter#translateJoins} when emitting an unwind stage; consulted by
+     * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2ExpressionEmitter#translateExpression} (via the
+     * shared map in {@link Mqlv2TranslationContext}) so that column references qualified by the unnest alias resolve to
+     * {@code <arrayPath>.<column>}.
      */
     private final Map<String, String> unnestAliasToFieldPath = new LinkedHashMap<>();
     /**
@@ -282,9 +283,9 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * isolating translator state across the call so the parent spec's {@code hasJoins}, {@code aggregateAliases}, and
      * {@code unnestAliasToFieldPath} are preserved.
      *
-     * <p>Inner subqueries that need outer-correlation support ({@code $__vN} bindings) should use
-     * {@link Mqlv2IrEmitters#translateInnerQuerySpec} instead — this method is for set-operator operands that have
-     * no implicit correlation with the outer scope.
+     * <p>Inner subqueries that need outer-correlation support ({@code $__vN} bindings) are handled internally by
+     * {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2ExpressionEmitter} — this method is for set-operator
+     * operands that have no implicit correlation with the outer scope.
      */
     private SpecTranslation buildSubQuerySpecTranslation(QuerySpec querySpec) {
         var savedHasJoins = this.hasJoins;
@@ -318,7 +319,8 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
      * {@link #buildSubQuerySpecTranslation}.
      *
      * <p>Subquery-based predicates (EXISTS, IN subquery, ANY/ALL) in WHERE/HAVING and scalar SELECT-position subqueries
-     * are translated via {@link Mqlv2IrEmitters#translatePredicate} / {@link Mqlv2IrEmitters#translateExpression} when
+     * are translated via {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2ExpressionEmitter#translatePredicate}
+     * / {@link com.mongodb.hibernate.internal.translate.mqlv2.Mqlv2ExpressionEmitter#translateExpression} when
      * the context has subquery support enabled.
      */
     private SpecTranslation buildQuerySpecTranslation(QuerySpec querySpec, @Nullable QueryOptions queryOptions) {
@@ -332,34 +334,34 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
         var ntr = (NamedTableReference) root.getPrimaryTableReference();
         var outerQualifiers = collectOuterQualifiers(querySpec);
         var ctx = newContext().withOuterScope(outerQualifiers, () -> correlatedVarCounter++);
-        var stage = Mqlv2IrEmitters.translateFromStage(ntr, hasJoins);
-        stage = Mqlv2IrEmitters.translateJoins(stage, root, querySpec, ctx);
-        stage = Mqlv2IrEmitters.translateMatch(stage, querySpec, ctx);
+        var stage = Mqlv2StageEmitter.translateFromStage(ntr, hasJoins);
+        stage = Mqlv2StageEmitter.translateJoins(stage, root, querySpec, ctx);
+        stage = Mqlv2StageEmitter.translateMatch(stage, querySpec, ctx);
 
         List<@Nullable String> aggNames = null;
         if (!querySpec.getGroupByClauseExpressions().isEmpty()) {
             aggNames = buildAggNames(querySpec.getSelectClause());
             var havingOnlyAggs = collectHavingOnlyAggs(querySpec.getHavingClauseRestrictions());
-            stage = Mqlv2IrEmitters.translateGroup(
+            stage = Mqlv2StageEmitter.translateGroup(
                     stage,
                     querySpec.getGroupByClauseExpressions(),
                     querySpec.getSelectClause(),
                     aggNames,
                     havingOnlyAggs,
                     ctx);
-            stage = Mqlv2IrEmitters.translateHaving(stage, querySpec, ctx);
+            stage = Mqlv2StageEmitter.translateHaving(stage, querySpec, ctx);
         } else if (selectHasAggregates(querySpec.getSelectClause())) {
             aggNames = buildAggNames(querySpec.getSelectClause());
-            stage = Mqlv2IrEmitters.translateScalarAgg(stage, querySpec.getSelectClause(), aggNames, ctx);
+            stage = Mqlv2StageEmitter.translateScalarAgg(stage, querySpec.getSelectClause(), aggNames, ctx);
         }
 
-        stage = Mqlv2IrEmitters.translateSort(stage, querySpec, ctx);
-        stage = Mqlv2IrEmitters.translateLimit(stage, querySpec, queryOptions, ctx, () -> {
+        stage = Mqlv2StageEmitter.translateSort(stage, querySpec, ctx);
+        stage = Mqlv2StageEmitter.translateLimit(stage, querySpec, queryOptions, ctx, () -> {
             var basicIntegerType = sessionFactory.getTypeConfiguration().getBasicTypeForJavaType(Integer.class);
             limitJdbcParameter = new LimitJdbcParameter(basicIntegerType);
             parameterBinders.add(limitJdbcParameter.getParameterBinder());
         });
-        var fmt = Mqlv2IrEmitters.translateFormat(stage, querySpec.getSelectClause(), aggNames, ctx);
+        var fmt = Mqlv2StageEmitter.translateFormat(stage, querySpec.getSelectClause(), aggNames, ctx);
         stage = fmt.stage();
         if (querySpec.getSelectClause().isDistinct()) {
             stage = new Stage.DistinctStage(stage);
@@ -384,7 +386,7 @@ final class Mqlv2SelectTranslator implements SqlAstTranslator<JdbcSelect> {
                 .toList();
 
         var subStages = translations.stream().map(SpecTranslation::stage).toList();
-        Stage groupStage = Mqlv2IrEmitters.translateQueryGroupStage(queryGroup, subStages, () -> correlatedVarCounter++);
+        Stage groupStage = Mqlv2StageEmitter.translateQueryGroupStage(queryGroup, subStages, () -> correlatedVarCounter++);
         return new SpecTranslation(serializer.serialize(groupStage), translations.get(0).fieldNames(), groupStage);
     }
 
