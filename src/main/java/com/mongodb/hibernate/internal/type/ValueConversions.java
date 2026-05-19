@@ -189,9 +189,9 @@ public final class ValueConversions {
         } else if (value instanceof BsonInt32 v) {
             return toDomainValue(v);
         } else if (value instanceof BsonInt64 v) {
-            return toDomainValue(v);
+            return v.longValue();
         } else if (value instanceof BsonDouble v) {
-            return toDomainValue(v);
+            return v.getValue();
         } else if (value instanceof BsonDecimal128 v) {
             return toDomainValue(v);
         } else if (value instanceof BsonString v) {
@@ -237,19 +237,28 @@ public final class ValueConversions {
     }
 
     public static long toLongDomainValue(BsonValue value) {
-        return toDomainValue(value.asInt64());
+        return switch (value.getBsonType()) {
+            case INT32 -> value.asInt32().intValue();
+            case INT64 -> value.asInt64().longValue();
+            default -> throw new IllegalArgumentException("Cannot convert " + value.getBsonType() + " to long");
+        };
     }
 
-    private static long toDomainValue(BsonInt64 value) {
-        return value.longValue();
+    public static float toFloatDomainValue(BsonValue value) {
+        return switch (value.getBsonType()) {
+            case INT32 -> (float) value.asInt32().intValue();
+            case DOUBLE -> (float) value.asDouble().getValue();
+            default -> throw new IllegalArgumentException("Cannot convert " + value.getBsonType() + " to float");
+        };
     }
 
     public static double toDoubleDomainValue(BsonValue value) {
-        return toDomainValue(value.asDouble());
-    }
-
-    private static double toDomainValue(BsonDouble value) {
-        return value.getValue();
+        return switch (value.getBsonType()) {
+            case DOUBLE -> value.asDouble().getValue();
+            case INT32 -> value.asInt32().intValue();
+            case INT64 -> value.asInt64().longValue();
+            default -> throw new IllegalArgumentException("Cannot convert " + value.getBsonType() + " to double");
+        };
     }
 
     public static BigDecimal toBigDecimalDomainValue(BsonValue value) {

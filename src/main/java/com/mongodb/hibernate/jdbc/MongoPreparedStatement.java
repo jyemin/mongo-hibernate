@@ -52,6 +52,8 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
     private final BsonDocument command;
     private final List<BsonDocument> commandBatch;
     private final List<ParameterValueSetter> parameterValueSetters;
+    // Non-null only for MQLv2 commands; indexed by $pN parameter index.
+    private final BsonValue @org.jspecify.annotations.Nullable [] mqlv2ParamValues;
 
     MongoPreparedStatement(
             MongoDatabase mongoDatabase, ClientSession clientSession, MongoConnection mongoConnection, String mql)
@@ -61,7 +63,17 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
         this.command = MongoStatement.parse(mql);
         this.commandBatch = new ArrayList<>();
         this.parameterValueSetters = new ArrayList<>();
-        parseParameters(command, parameterValueSetters);
+        if (command.containsKey("mqlv2")) {
+            var paramCount = command.getInt32("_mqlv2ParamCount").getValue();
+            this.mqlv2ParamValues = new BsonValue[paramCount];
+            for (var i = 0; i < paramCount; i++) {
+                final var idx = i;
+                parameterValueSetters.add(new ParameterValueSetter(v -> mqlv2ParamValues[idx] = v));
+            }
+        } else {
+            this.mqlv2ParamValues = null;
+            parseParameters(command, parameterValueSetters);
+        }
     }
 
     @Override
@@ -70,6 +82,15 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
         closeLastOpenResultSet();
         checkAllParametersSet();
         checkSupportedQueryCommand(command);
+        if (mqlv2ParamValues != null) {
+            var letDoc = new BsonDocument();
+            for (var i = 0; i < mqlv2ParamValues.length; i++) {
+                letDoc.put("p" + i, mqlv2ParamValues[i]);
+            }
+            var commandWithLet = command.clone();
+            commandWithLet.put("let", letDoc);
+            return executeQuery(commandWithLet);
+        }
         return executeQuery(command);
     }
 
@@ -88,7 +109,9 @@ final class MongoPreparedStatement extends MongoStatement implements PreparedSta
                 throw new SQLException(format("Parameter with index [%d] is not set", i + 1));
             }
         }
-        checkComparatorNotComparingWithNullValues(command);
+        if (mqlv2ParamValues == null) {
+            checkComparatorNotComparingWithNullValues(command);
+        }
     }
 
     @Override

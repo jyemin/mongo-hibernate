@@ -48,7 +48,7 @@ import static com.mongodb.hibernate.internal.translate.mongoast.filter.AstLogica
 import static com.mongodb.hibernate.internal.translate.mongoast.filter.AstLogicalFilterOperator.NOR;
 import static com.mongodb.hibernate.internal.translate.mongoast.filter.AstLogicalFilterOperator.OR;
 import static java.lang.String.format;
-import static org.hibernate.query.sqm.FetchClauseType.ROWS_ONLY;
+import static org.hibernate.query.common.FetchClauseType.ROWS_ONLY;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.internal.service.StandardServiceRegistryScopedState;
@@ -74,11 +74,13 @@ import com.mongodb.hibernate.internal.translate.mongoast.command.aggregate.AstSo
 import com.mongodb.hibernate.internal.translate.mongoast.command.aggregate.AstStage;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstComparisonFilterOperation;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstComparisonFilterOperator;
+import com.mongodb.hibernate.internal.translate.mongoast.filter.AstElemMatchFilterOperation;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstEmptyFilter;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstFieldOperationFilter;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstFilter;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstLogicalFilter;
 import com.mongodb.hibernate.internal.type.ValueConversions;
+import jakarta.persistence.criteria.Nulls;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.sql.PreparedStatement;
@@ -95,7 +97,6 @@ import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.internal.util.collections.Stack;
 import org.hibernate.persister.entity.EntityPersister;
 import org.hibernate.persister.internal.SqlFragmentPredicate;
-import org.hibernate.query.NullPrecedence;
 import org.hibernate.query.spi.Limit;
 import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.ComparisonOperator;
@@ -238,7 +239,23 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     }
 
     @Override
-    public boolean supportsFilterClause() {
+    @SuppressWarnings("TypeParameterUnusedInFormals")
+    public <X> X getLiteralValue(Expression expression) {
+        throw new FeatureNotSupportedException();
+    }
+
+    @Override
+    public Statement getSqlAst() {
+        throw new FeatureNotSupportedException();
+    }
+
+    @Override
+    public void renderNamedSetReturningFunction(
+            String functionName,
+            java.util.List<? extends SqlAstNode> sqlAstArguments,
+            org.hibernate.query.sqm.tuple.internal.AnonymousTupleTableGroupProducer tupleType,
+            String tableIdentifierVariable,
+            SqlAstNodeRenderingMode argumentRenderingMode) {
         throw new FeatureNotSupportedException();
     }
 
@@ -254,6 +271,11 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
 
     @Override
     public Set<String> getAffectedTableNames() {
+        throw fail();
+    }
+
+    @Override
+    public void addAffectedTableName(String tableName) {
         throw fail();
     }
 
@@ -621,10 +643,10 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     @Override
     public void visitSortSpecification(SortSpecification sortSpecification) {
         var nullPrecedence = sortSpecification.getNullPrecedence();
-        if (nullPrecedence == null || nullPrecedence == NullPrecedence.NONE) {
+        if (nullPrecedence == null || nullPrecedence == Nulls.NONE) {
             nullPrecedence = sessionFactory.getSessionFactoryOptions().getDefaultNullPrecedence();
         }
-        if (nullPrecedence != null && nullPrecedence != NullPrecedence.NONE) {
+        if (nullPrecedence != null && nullPrecedence != Nulls.NONE) {
             throw new FeatureNotSupportedException(
                     format("%s does not support null precedence: NULLS %s", MONGO_DBMS_NAME, nullPrecedence));
         }
@@ -969,7 +991,17 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
 
     @Override
     public void visitExistsPredicate(ExistsPredicate existsPredicate) {
-        throw new FeatureNotSupportedException();
+        var shape = recognizeExistsOverUnnest(existsPredicate);
+        if (shape == null || shape.body() == null || !isBodySafeForElemMatch(shape.body(), shape.innerAlias())) {
+            throw new FeatureNotSupportedException();
+        }
+        var bodyFilter = acceptAndYield(shape.body(), FILTER);
+        AstFilter filter =
+                new AstFieldOperationFilter(shape.arrayFieldName(), new AstElemMatchFilterOperation(bodyFilter));
+        if (existsPredicate.isNegated()) {
+            filter = new AstLogicalFilter(NOR, List.of(filter));
+        }
+        astVisitorValueHolder.yield(FILTER, filter);
     }
 
     @Override
@@ -1137,6 +1169,113 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
         if (mutationStatement instanceof AbstractUpdateOrDeleteStatement updateOrDeleteStatement) {
             checkFromClauseSupportability(updateOrDeleteStatement.getFromClause());
         }
+    }
+
+    /**
+     * @return the detected shape if {@code existsPredicate}'s subquery matches the {@code from
+     *     <outerAlias>.<arrayField> li where <body>} pattern, otherwise {@code null}.
+     */
+    private static @Nullable ExistsOverUnnestShape recognizeExistsOverUnnest(ExistsPredicate existsPredicate) {
+        var select = existsPredicate.getExpression();
+        if (select == null) {
+            return null;
+        }
+        if (!(select.getQueryPart() instanceof QuerySpec qs)) {
+            return null;
+        }
+        if (qs.getFromClause().getRoots().size() != 1
+                || (qs.getGroupByClauseExpressions() != null
+                        && !qs.getGroupByClauseExpressions().isEmpty())
+                || (qs.getSortSpecifications() != null
+                        && !qs.getSortSpecifications().isEmpty())
+                || qs.getOffsetClauseExpression() != null
+                || qs.getFetchClauseExpression() != null) {
+            return null;
+        }
+        var root = qs.getFromClause().getRoots().get(0);
+        if (!root.getTableGroupJoins().isEmpty()
+                || !root.getNestedTableGroupJoins().isEmpty()) {
+            return null;
+        }
+        if (!(root.getPrimaryTableReference() instanceof FunctionTableReference ftr)
+                || !"unnest".equals(ftr.getFunctionExpression().getFunctionName())) {
+            return null;
+        }
+        var args = ftr.getFunctionExpression().getArguments();
+        if (args.size() != 1) {
+            return null;
+        }
+        var arg = args.get(0);
+        String arrayFieldName;
+        if (arg instanceof ColumnReference colRef) {
+            arrayFieldName = colRef.getColumnExpression();
+        } else if (arg instanceof BasicValuedPathInterpretation<?> bvpi) {
+            arrayFieldName = bvpi.getColumnReference().getColumnExpression();
+        } else {
+            return null;
+        }
+        return new ExistsOverUnnestShape(
+                arrayFieldName, ftr.getIdentificationVariable(), qs.getWhereClauseRestrictions());
+    }
+
+    private record ExistsOverUnnestShape(String arrayFieldName, String innerAlias, @Nullable Predicate body) {}
+
+    /**
+     * Returns {@code true} if {@code predicate} is safe to use as an {@code $elemMatch} body — i.e., every
+     * {@link ColumnReference} inside it has the qualifier {@code innerAlias}, and every predicate type encountered is
+     * one we know how to walk. Fail-closed on unrecognized predicate types so a future translator extension can't
+     * silently produce wrong queries: v1's {@link #visitColumnReference} is qualifier-blind and would otherwise emit an
+     * unqualified field path that incorrectly resolves against the array element.
+     */
+    private static boolean isBodySafeForElemMatch(@Nullable Predicate predicate, String innerAlias) {
+        if (predicate == null) {
+            return true;
+        }
+        if (predicate instanceof ComparisonPredicate cp) {
+            return isExpressionSafeForElemMatch(cp.getLeftHandExpression(), innerAlias)
+                    && isExpressionSafeForElemMatch(cp.getRightHandExpression(), innerAlias);
+        }
+        if (predicate instanceof Junction j) {
+            for (var p : j.getPredicates()) {
+                if (!isBodySafeForElemMatch(p, innerAlias)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (predicate instanceof NegatedPredicate np) {
+            return isBodySafeForElemMatch(np.getPredicate(), innerAlias);
+        }
+        if (predicate instanceof GroupedPredicate gp) {
+            return isBodySafeForElemMatch(gp.getSubPredicate(), innerAlias);
+        }
+        if (predicate instanceof BooleanExpressionPredicate bep) {
+            return isExpressionSafeForElemMatch(bep.getExpression(), innerAlias);
+        }
+        // Unrecognized predicate type -> fail-closed.
+        return false;
+    }
+
+    private static boolean isExpressionSafeForElemMatch(Expression expression, String innerAlias) {
+        if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
+            expression = bvpi.getColumnReference();
+        } else if (expression instanceof SqlSelectionExpression sse) {
+            return isExpressionSafeForElemMatch(sse.getSelection().getExpression(), innerAlias);
+        }
+        if (expression instanceof ColumnReference cr) {
+            var qualifier = cr.getQualifier();
+            return qualifier == null || qualifier.equals(innerAlias);
+        }
+        // TODO: fail-open hazard. Anything that isn't a ColumnReference is currently treated as safe —
+        // correct for literals and parameters, but WRONG for any expression that *contains* a
+        // ColumnReference (e.g., BinaryArithmeticExpression, function-call args, CASE expressions).
+        // An HQL body like `where li.qty + c.minQty > 5` would slip past this check and emit a
+        // $elemMatch body that silently references the outer field. Latent today because v1's visitor
+        // throws FeatureNotSupportedException on those expression types before we get here — but the
+        // first time someone extends visitor coverage to one of them, this will produce wrong queries.
+        // Fix: recursively walk the Expression with an SqlAstWalker looking for ColumnReference nodes,
+        // mirroring the discipline of isBodySafeForElemMatch above.
+        return true;
     }
 
     private static void checkFromClauseSupportability(FromClause fromClause) {

@@ -25,7 +25,11 @@ import com.mongodb.hibernate.internal.dialect.TestMongoDialect;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayConstructorFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayContainsFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayIncludesFunction;
+import com.mongodb.hibernate.internal.dialect.function.array.Mqlv2OnlyArrayGetFunction;
+import com.mongodb.hibernate.internal.dialect.function.array.Mqlv2OnlyArrayIntersectsFunction;
+import com.mongodb.hibernate.internal.dialect.function.array.Mqlv2OnlyArrayLengthFunction;
 import com.mongodb.hibernate.internal.translate.MongoTranslatorFactory;
+import com.mongodb.hibernate.internal.translate.Mqlv2TranslatorFactory;
 import com.mongodb.hibernate.internal.type.MongoArrayJdbcType;
 import com.mongodb.hibernate.internal.type.MongoStructJdbcType;
 import com.mongodb.hibernate.internal.type.ObjectIdJavaType;
@@ -47,6 +51,7 @@ import org.hibernate.cfg.AvailableSettings;
 import org.hibernate.dialect.DatabaseVersion;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.dialect.aggregate.AggregateSupport;
+import org.hibernate.dialect.function.array.UnnestFunction;
 import org.hibernate.engine.jdbc.dialect.spi.DialectResolutionInfo;
 import org.hibernate.engine.jdbc.mutation.JdbcValueBindings;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
@@ -155,23 +160,23 @@ import org.jspecify.annotations.Nullable;
 public sealed class MongoDialect extends Dialect permits TestMongoDialect {
     private static final DatabaseVersion MINIMUM_DBMS_VERSION = DatabaseVersion.make(7);
 
+    private final boolean mqlv2Enabled;
+
     public MongoDialect(DialectResolutionInfo info) {
         super(info);
+        var configValues = info.getConfigurationValues();
+        var flag = configValues.get("mongo.hibernate.mqlv2.enabled");
+        mqlv2Enabled = Boolean.parseBoolean(flag instanceof String s ? s : String.valueOf(flag));
     }
 
     /**
-     * This constructor is called only if Hibernate ORM falls back to it due to a failure of
-     * {@link MongoDialect#MongoDialect(DialectResolutionInfo)}.
-     *
-     * @deprecated Exists only to avoid the confusing {@link NoSuchMethodException} thrown by Hibernate ORM when
-     *     {@link MongoDialect#MongoDialect(DialectResolutionInfo)} fails.
-     * @throws RuntimeException Always.
+     * Hibernate 7's {@link org.hibernate.engine.jdbc.env.internal.JdbcEnvironmentInitiator JdbcEnvironmentInitiator}
+     * invokes this no-arg form when it builds a default {@code JdbcEnvironment} (test bootstrap without a real JDBC
+     * connection). The {@link DialectResolutionInfo} variant is still preferred when JDBC metadata is available.
      */
-    @Deprecated
     public MongoDialect() {
-        throw new RuntimeException(format(
-                "Could not instantiate [%s], see the earlier exceptions to find out why",
-                MongoDialect.class.getName()));
+        super(MINIMUM_DBMS_VERSION);
+        mqlv2Enabled = false;
     }
 
     @Override
@@ -195,7 +200,7 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
 
     @Override
     public SqlAstTranslatorFactory getSqlAstTranslatorFactory() {
-        return new MongoTranslatorFactory();
+        return mqlv2Enabled ? new Mqlv2TranslatorFactory() : new MongoTranslatorFactory();
     }
 
     @Override
@@ -245,6 +250,13 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
 
     @Override
     public boolean supportsStandardArrays() {
+        return true;
+    }
+
+    // Hibernate 7's `AggregateComponentSecondPass` rejects `@Struct` mappings unless this returns `true`.
+    // MQL supports embedded documents as user-defined struct types via `MongoStructJdbcType`.
+    @Override
+    public boolean supportsUserDefinedTypes() {
         return true;
     }
 
@@ -347,6 +359,21 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
         functionRegistry.register("array_contains_nullable", new MongoArrayContainsFunction(true, typeConfiguration));
         functionRegistry.register("array_includes", new MongoArrayIncludesFunction(false, typeConfiguration));
         functionRegistry.register("array_includes_nullable", new MongoArrayIncludesFunction(true, typeConfiguration));
+        if (mqlv2Enabled) {
+            functionRegistry.register("array_length", new Mqlv2OnlyArrayLengthFunction(typeConfiguration));
+            functionRegistry.registerAlternateKey("cardinality", "array_length");
+            functionRegistry.register("array_get", new Mqlv2OnlyArrayGetFunction());
+            functionRegistry.register(
+                    "array_intersects", new Mqlv2OnlyArrayIntersectsFunction(false, typeConfiguration));
+            functionRegistry.register(
+                    "array_intersects_nullable", new Mqlv2OnlyArrayIntersectsFunction(true, typeConfiguration));
+            functionRegistry.registerAlternateKey("array_overlaps", "array_intersects");
+            functionRegistry.registerAlternateKey("array_overlaps_nullable", "array_intersects_nullable");
+        }
+        // Standard Hibernate `unnest` set-returning function — used by HQL patterns like
+        // `from O o join lateral unnest(o.array) a`; the MQLv2 translator
+        // (`Mqlv2SelectTranslator.buildUnnestJoinStage`) renders it as `UnwindComplexStage`.
+        functionRegistry.register("unnest", new UnnestFunction("value", "ordinality"));
     }
 
     @Override

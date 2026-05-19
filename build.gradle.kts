@@ -30,7 +30,10 @@ plugins {
     alias(libs.plugins.nexus.publish)
 }
 
-repositories { mavenCentral() }
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
 
 java {
     toolchain { languageVersion = JavaLanguageVersion.of(17) } // Remember to update javadoc links
@@ -65,7 +68,7 @@ tasks.withType<Javadoc> {
             listOf(
                 "https://docs.oracle.com/en/java/javase/17/docs/api/",
                 "https://jakarta.ee/specifications/persistence/3.1/apidocs/",
-                "https://docs.hibernate.org/orm/6.6/javadocs/",
+                "https://docs.hibernate.org/orm/7.3/javadocs/",
                 "https://mongodb.github.io/mongo-java-driver/5.3/apidocs/bson/",
                 "https://mongodb.github.io/mongo-java-driver/5.3/apidocs/mongodb-driver-core/",
                 "https://mongodb.github.io/mongo-java-driver/5.3/apidocs/mongodb-driver-sync/",
@@ -199,6 +202,7 @@ dependencies {
 
     api(libs.hibernate.core)
     api(libs.mongo.java.driver.sync)
+    implementation(libs.mongo.java.driver.mqlv2)
     // We need the `libs.findbugs.jsr` dependency to stop `javadoc` from emitting
     // `warning: unknown enum constant When.MAYBE`
     //   `reason: class file for javax.annotation.meta.When not found`.
