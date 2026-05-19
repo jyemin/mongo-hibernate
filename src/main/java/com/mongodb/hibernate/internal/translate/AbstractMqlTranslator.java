@@ -246,7 +246,7 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
 
     @Override
     public Statement getSqlAst() {
-        throw fail();
+        throw new FeatureNotSupportedException();
     }
 
     @Override
