@@ -498,16 +498,26 @@ class Mqlv2SelectIntegrationTests implements SessionFactoryScopeAware, ServiceRe
 
     @Test
     void testLeftOuterJoin() {
+        // Add a customer with no orders; the left join must include them with null order fields.
+        sessionFactoryScope.inTransaction(session -> session.persist(new Customer(4, "Dave", 40, true)));
+        MqlCapture.LAST.remove();
+
         sessionFactoryScope.inSession(session -> {
             var result = session.createSelectionQuery(
-                            "select distinct c from Customer c left join Order o on c.id = o.customerId",
-                            Customer.class)
+                            "select c.id, o.total from Customer c left join Order o on c.id = o.customerId"
+                                    + " where c.id in (1, 4) order by c.id, o.total",
+                            Object[].class)
                     .getResultList();
-            assertThat(result).hasSize(3);
-            assertThat(result.stream().map(c -> c.name)).containsExactlyInAnyOrder("Alice", "Bob", "Carol");
+            assertThat(result)
+                    .extracting(r -> r[0], r -> r[1])
+                    .containsExactly(tuple(1, 80.0), tuple(1, 150.0), tuple(4, null));
         });
         assertThat(BsonDocument.parse(MqlCapture.LAST.get()).getString("mqlv2").getValue())
-                .isEqualTo("from c1_0=$customers | join leftOuter o1_0=$orders ((c1_0._id == o1_0.customerId)) | format {_id: c1_0._id, active: c1_0.active, age: c1_0.age, name: c1_0.name} | distinct");
+                .isEqualTo(
+                        "from c1_0=$customers | join leftOuter o1_0=$orders ((c1_0._id == o1_0.customerId))"
+                                + " | match ((c1_0._id == 1) or (c1_0._id == 4))"
+                                + " | sort c1_0._id, o1_0.total"
+                                + " | format {_id: c1_0._id, total: o1_0.total}");
     }
 
     @Test
