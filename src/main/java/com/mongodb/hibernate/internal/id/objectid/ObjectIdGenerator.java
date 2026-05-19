@@ -46,8 +46,10 @@ public final class ObjectIdGenerator implements BeforeExecutionGenerator {
             Member annotatedMember,
             GeneratorCreationContext context) {
         // Hibernate 7 unified the creation-context type for both `@IdGeneratorType` and `@ValueGenerationType`
-        // (previously these used distinct types `CustomIdGeneratorCreationContext` vs `GeneratorCreationContext`),
-        // so we disambiguate by checking whether the property being generated is the entity identifier.
+        // (previously distinct: `CustomIdGeneratorCreationContext` vs `GeneratorCreationContext`),
+        // so we disambiguate by checking whether the generated property is the entity identifier.
+        // `getRootClass()` is non-null for mapped entities; the null guard is defensive for edge cases
+        // such as generators instantiated outside the normal entity-mapping lifecycle.
         this(context.getRootClass() != null && context.getRootClass().getIdentifierProperty() == context.getProperty());
     }
 

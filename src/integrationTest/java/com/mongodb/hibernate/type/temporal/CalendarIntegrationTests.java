@@ -70,10 +70,8 @@ class CalendarIntegrationTests {
     }
 
     static void assertNotSupported(Class<?> entityClass) {
-        // Hibernate 7's PropertyContainer rejects unbound generic types with AnnotationException
-        // before our type contributor sees them. The test entities use the
-        // `new ItemWith…<UnsupportedType>() {}` pattern, which trips that pre-check. Either rejection
-        // is acceptable here — both prove bootstrap fails for entities containing an unsupported type.
+        // Hibernate may reject generic-typed entities with AnnotationException before our type
+        // contributor sees them; either exception proves bootstrap fails for unsupported types.
         assertThatThrownBy(() ->
                         new MetadataSources().addAnnotatedClass(entityClass).buildMetadata())
                 .isInstanceOfAny(FeatureNotSupportedException.class, org.hibernate.AnnotationException.class);

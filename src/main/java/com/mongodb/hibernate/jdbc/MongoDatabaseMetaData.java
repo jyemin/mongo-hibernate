@@ -123,6 +123,8 @@ final class MongoDatabaseMetaData implements DatabaseMetaDataAdapter {
         return DatabaseMetaData.sqlStateSQL;
     }
 
+    // `MongoDatabaseMetaData` has no access to the connection URL; Hibernate reads this only for
+    // logging and diagnostics, so an empty string is harmless (null is also permitted by JDBC).
     @Override
     public String getURL() {
         return "";
