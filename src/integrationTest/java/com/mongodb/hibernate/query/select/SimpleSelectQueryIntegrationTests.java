@@ -23,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import com.mongodb.hibernate.embeddable.StructAggregateEmbeddableIntegrationTests;
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.internal.dialect.MongoAggregateSupport;
+import com.mongodb.hibernate.junit.MongoServiceRegistryProducer;
 import com.mongodb.hibernate.query.AbstractQueryIntegrationTests;
 import com.mongodb.hibernate.query.Book;
 import jakarta.persistence.Entity;
@@ -59,7 +60,7 @@ class SimpleSelectQueryIntegrationTests extends AbstractQueryIntegrationTests {
     }
 
     @Nested
-    class QueryTests {
+    class QueryTests implements MongoServiceRegistryProducer {
 
         private static final List<Contact> testingContacts = List.of(
                 new Contact(1, "Bob", 18, Country.USA),
@@ -661,7 +662,7 @@ class SimpleSelectQueryIntegrationTests extends AbstractQueryIntegrationTests {
     }
 
     @Nested
-    class Unsupported {
+    class Unsupported implements MongoServiceRegistryProducer {
         @Test
         void testComparisonBetweenFieldAndNonValueNotSupported1() {
             assertSelectQueryFailure(
@@ -757,7 +758,7 @@ class SimpleSelectQueryIntegrationTests extends AbstractQueryIntegrationTests {
     }
 
     @Nested
-    class QueryLiteralTests {
+    class QueryLiteralTests implements MongoServiceRegistryProducer {
 
         private Book testingBook;
 
