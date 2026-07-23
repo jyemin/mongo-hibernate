@@ -658,6 +658,46 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     // A field-vs-value comparison uses the compact `{field: {$op: value}}` form;
     // anything else wraps the comparison expression in `$expr`.
     private AstFilter toFilter(ComparisonPredicate comparisonPredicate) {
+        var lhsTuple = SqlTupleContainer.getSqlTuple(comparisonPredicate.getLeftHandExpression());
+        if (lhsTuple != null) {
+            var operator = comparisonPredicate.getOperator();
+            if (operator != ComparisonOperator.EQUAL && operator != ComparisonOperator.NOT_EQUAL) {
+                throw new FeatureNotSupportedException(
+                        "TODO-HIBERNATE-211 https://jira.mongodb.org/browse/HIBERNATE-211");
+            }
+            var rhsTuple = assertNotNull(SqlTupleContainer.getSqlTuple(comparisonPredicate.getRightHandExpression()));
+            var lhsComponents = lhsTuple.getExpressions();
+            var rhsComponents = rhsTuple.getExpressions();
+            assertTrue(lhsComponents.size() == rhsComponents.size());
+            var compact = true;
+            for (var i = 0; i < lhsComponents.size(); i++) {
+                var left = lhsComponents.get(i);
+                var right = rhsComponents.get(i);
+                if (!isFieldValuePair(left, right)) {
+                    compact = false;
+                    break;
+                }
+            }
+            if (!compact) {
+                // All-or-nothing: if any component is not a field-vs-value pair (e.g. field-to-field), the whole
+                // comparison renders via $expr rather than compacting per component (unlike BETWEEN). Correct
+                // either way; mixed tuples are rare, so this keeps the translation simple.
+                return new AstExprFilter(toComparisonExpression(comparisonPredicate));
+            }
+            var componentFilters = new ArrayList<AstFilter>(lhsComponents.size());
+            for (var i = 0; i < lhsComponents.size(); i++) {
+                var left = lhsComponents.get(i);
+                var right = rhsComponents.get(i);
+                var fieldOnLeft = isFieldPathExpression(left);
+                componentFilters.add(new AstFieldOperationFilter(
+                        acceptAndYield(fieldOnLeft ? left : right, FIELD_PATH),
+                        new AstComparisonFilterOperation(EQ, acceptAndYield(fieldOnLeft ? right : left, VALUE))));
+            }
+            var conjunction = new AstLogicalFilter(AstLogicalFilterOperator.AND, componentFilters);
+            return operator == ComparisonOperator.EQUAL
+                    ? conjunction
+                    : new AstLogicalFilter(AstLogicalFilterOperator.NOR, List.of(conjunction));
+        }
         return isComparingFieldWithValue(comparisonPredicate)
                 ? toFieldValueFilter(comparisonPredicate)
                 : new AstExprFilter(toComparisonExpression(comparisonPredicate));
@@ -681,7 +721,30 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
                 new AstComparisonFilterOperation(createAstComparisonFilterOperator(operator), comparisonValue));
     }
 
-    private AstBinaryOperatorExpression toComparisonExpression(ComparisonPredicate comparisonPredicate) {
+    private AstExpression toComparisonExpression(ComparisonPredicate comparisonPredicate) {
+        var lhsTuple = SqlTupleContainer.getSqlTuple(comparisonPredicate.getLeftHandExpression());
+        if (lhsTuple != null) {
+            var operator = comparisonPredicate.getOperator();
+            if (operator != ComparisonOperator.EQUAL && operator != ComparisonOperator.NOT_EQUAL) {
+                throw new FeatureNotSupportedException(
+                        "TODO-HIBERNATE-211 https://jira.mongodb.org/browse/HIBERNATE-211");
+            }
+            var rhsTuple = assertNotNull(SqlTupleContainer.getSqlTuple(comparisonPredicate.getRightHandExpression()));
+            var lhsComponents = lhsTuple.getExpressions();
+            var rhsComponents = rhsTuple.getExpressions();
+            assertTrue(lhsComponents.size() == rhsComponents.size());
+            var componentEqualities = new ArrayList<AstExpression>(lhsComponents.size());
+            for (var i = 0; i < lhsComponents.size(); i++) {
+                componentEqualities.add(new AstBinaryOperatorExpression(
+                        toExprComparisonOperator(ComparisonOperator.EQUAL),
+                        acceptAndYieldExpression(lhsComponents.get(i)),
+                        acceptAndYieldExpression(rhsComponents.get(i))));
+            }
+            var conjunction = new AstLogicalOperatorExpression(AstLogicalOperator.AND, componentEqualities);
+            return operator == ComparisonOperator.EQUAL
+                    ? conjunction
+                    : new AstLogicalOperatorExpression(AstLogicalOperator.NOT, List.of(conjunction));
+        }
         var lhsExpr = acceptAndYieldExpression(comparisonPredicate.getLeftHandExpression());
         var rhsExpr = acceptAndYieldExpression(comparisonPredicate.getRightHandExpression());
         return new AstBinaryOperatorExpression(
@@ -1398,33 +1461,111 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     @Override
     public void visitInListPredicate(InListPredicate inListPredicate) {
         if (astVisitorValueHolder.expects(EXPRESSION)) {
-            var value = acceptAndYieldExpression(inListPredicate.getTestExpression());
-            var options = new ArrayList<AstExpression>(
-                    inListPredicate.getListExpressions().size());
-            for (var item : inListPredicate.getListExpressions()) {
-                options.add(acceptAndYieldExpression(item));
+            var testTuple = SqlTupleContainer.getSqlTuple(inListPredicate.getTestExpression());
+            if (testTuple != null) {
+                astVisitorValueHolder.yield(EXPRESSION, toTupleInListExpression(inListPredicate, testTuple));
+            } else {
+                var value = acceptAndYieldExpression(inListPredicate.getTestExpression());
+                var options = new ArrayList<AstExpression>(
+                        inListPredicate.getListExpressions().size());
+                for (var item : inListPredicate.getListExpressions()) {
+                    options.add(acceptAndYieldExpression(item));
+                }
+                AstExpression in = new AstInExpression(value, options);
+                astVisitorValueHolder.yield(
+                        EXPRESSION,
+                        inListPredicate.isNegated()
+                                ? new AstLogicalOperatorExpression(AstLogicalOperator.NOT, List.of(in))
+                                : in);
             }
-            AstExpression in = new AstInExpression(value, options);
-            astVisitorValueHolder.yield(
-                    EXPRESSION,
-                    inListPredicate.isNegated()
-                            ? new AstLogicalOperatorExpression(AstLogicalOperator.NOT, List.of(in))
-                            : in);
         } else {
             var expression = inListPredicate.getTestExpression();
-            if (!isFieldPathExpression(expression)) {
+            var testTuple = SqlTupleContainer.getSqlTuple(expression);
+            if (testTuple != null) {
+                astVisitorValueHolder.yield(FILTER, createTupleInListFilter(inListPredicate, testTuple));
+            } else if (isFieldPathExpression(expression)) {
+                var fieldPath = acceptAndYield(expression, FIELD_PATH);
+                var operator = inListPredicate.isNegated() ? NIN : IN;
+                var operation = new AstListComparisonFilterOperation(
+                        operator,
+                        inListPredicate.getListExpressions().stream()
+                                .map(item -> acceptAndYield(item, VALUE))
+                                .toList());
+                astVisitorValueHolder.yield(FILTER, new AstFieldOperationFilter(fieldPath, operation));
+            } else {
                 throw new FeatureNotSupportedException(
                         "Only the following list predicates are supported: field in [not] (...)");
             }
-            var fieldPath = acceptAndYield(expression, FIELD_PATH);
-            var operator = inListPredicate.isNegated() ? NIN : IN;
-            var operation = new AstListComparisonFilterOperation(
-                    operator,
-                    inListPredicate.getListExpressions().stream()
-                            .map(item -> acceptAndYield(item, VALUE))
-                            .toList());
-            astVisitorValueHolder.yield(FILTER, new AstFieldOperationFilter(fieldPath, operation));
         }
+    }
+
+    // Row-value IN in aggregation-expression position: OR of per-row (AND of per-component $eq); a single-row
+    // list collapses to the bare AND; a negated list is wrapped in $not. Shared by visitInListPredicate's
+    // expression branch and by createTupleInListFilter's $expr fallback, and called directly (never via a second
+    // visit of the predicate) so any parameter it contains is bound exactly once.
+    private AstExpression toTupleInListExpression(InListPredicate inListPredicate, SqlTuple testTuple) {
+        var keyExpressions = testTuple.getExpressions();
+        var rowExpressions = new ArrayList<AstExpression>(
+                inListPredicate.getListExpressions().size());
+        for (var rowExpression : inListPredicate.getListExpressions()) {
+            var rowValues =
+                    assertNotNull(SqlTupleContainer.getSqlTuple(rowExpression)).getExpressions();
+            assertTrue(keyExpressions.size() == rowValues.size());
+            var componentEqualities = new ArrayList<AstExpression>(keyExpressions.size());
+            for (var i = 0; i < keyExpressions.size(); i++) {
+                componentEqualities.add(new AstBinaryOperatorExpression(
+                        toExprComparisonOperator(ComparisonOperator.EQUAL),
+                        acceptAndYieldExpression(keyExpressions.get(i)),
+                        acceptAndYieldExpression(rowValues.get(i))));
+            }
+            rowExpressions.add(new AstLogicalOperatorExpression(AstLogicalOperator.AND, componentEqualities));
+        }
+        var disjunction = rowExpressions.size() == 1
+                ? rowExpressions.get(0)
+                : new AstLogicalOperatorExpression(AstLogicalOperator.OR, rowExpressions);
+        return inListPredicate.isNegated()
+                ? new AstLogicalOperatorExpression(AstLogicalOperator.NOT, List.of(disjunction))
+                : disjunction;
+    }
+
+    // A row-value IN-list `(k1, k2) IN ((v1a, v2a), (v1b, v2b))` becomes an OR of per-row per-component AND
+    // equality (order-independent). A single-row list collapses to the AND; a negated list is wrapped in NOR.
+    private AstFilter createTupleInListFilter(InListPredicate inListPredicate, SqlTuple testTuple) {
+        var keyExpressions = testTuple.getExpressions();
+        var compact = keyExpressions.stream().allMatch(AbstractMqlTranslator::isFieldPathExpression);
+        if (compact) {
+            for (var rowExpression : inListPredicate.getListExpressions()) {
+                var rowValues = assertNotNull(SqlTupleContainer.getSqlTuple(rowExpression))
+                        .getExpressions();
+                if (!rowValues.stream().allMatch(AbstractMqlTranslator::isValueExpression)) {
+                    compact = false;
+                    break;
+                }
+            }
+        }
+        if (!compact) {
+            return new AstExprFilter(toTupleInListExpression(inListPredicate, testTuple));
+        }
+        var rowFilters =
+                new ArrayList<AstFilter>(inListPredicate.getListExpressions().size());
+        for (var rowExpression : inListPredicate.getListExpressions()) {
+            var rowValues =
+                    assertNotNull(SqlTupleContainer.getSqlTuple(rowExpression)).getExpressions();
+            assertTrue(keyExpressions.size() == rowValues.size());
+            var componentFilters = new ArrayList<AstFilter>(keyExpressions.size());
+            for (var i = 0; i < keyExpressions.size(); i++) {
+                componentFilters.add(new AstFieldOperationFilter(
+                        acceptAndYield(keyExpressions.get(i), FIELD_PATH),
+                        new AstComparisonFilterOperation(EQ, acceptAndYield(rowValues.get(i), VALUE))));
+            }
+            rowFilters.add(new AstLogicalFilter(AstLogicalFilterOperator.AND, componentFilters));
+        }
+        var disjunction = rowFilters.size() == 1
+                ? rowFilters.get(0)
+                : new AstLogicalFilter(AstLogicalFilterOperator.OR, rowFilters);
+        return inListPredicate.isNegated()
+                ? new AstLogicalFilter(AstLogicalFilterOperator.NOR, List.of(disjunction))
+                : disjunction;
     }
 
     @Override
@@ -1708,10 +1849,13 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     }
 
     private static boolean isComparingFieldWithValue(ComparisonPredicate comparisonPredicate) {
-        var lhs = comparisonPredicate.getLeftHandExpression();
-        var rhs = comparisonPredicate.getRightHandExpression();
-        return (isFieldPathExpression(lhs) && isValueExpression(rhs))
-                || (isFieldPathExpression(rhs) && isValueExpression(lhs));
+        return isFieldValuePair(
+                comparisonPredicate.getLeftHandExpression(), comparisonPredicate.getRightHandExpression());
+    }
+
+    private static boolean isFieldValuePair(Expression left, Expression right) {
+        return (isFieldPathExpression(left) && isValueExpression(right))
+                || (isValueExpression(left) && isFieldPathExpression(right));
     }
 
     private static BsonValue toBsonValue(@Nullable Object value) {
