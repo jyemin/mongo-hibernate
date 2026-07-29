@@ -46,6 +46,7 @@ import org.hibernate.AnnotationException;
 import org.hibernate.Session;
 import org.hibernate.boot.MetadataSources;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -77,6 +78,28 @@ class IndexIntegrationTests {
 
     @InjectCommandHistory
     private CommandHistory commandHistory;
+
+    /**
+     * Drops the collections this class asserts on.
+     *
+     * <p>{@link MongoExtension} empties collections between tests but leaves collections and their indexes standing,
+     * which is right for the document-level tests that make up the rest of the suite and not enough here: a test that
+     * asserts a complete index set has to establish that precondition itself. Relying on the drop half of
+     * {@code create-drop} having run is not sufficient, because it does not run when a {@code SessionFactory} fails to
+     * open, which is exactly what the negative tests below provoke.
+     */
+    @BeforeEach
+    void dropAssertedCollections() {
+        List.of(
+                        ascendingCollection,
+                        descendingCollection,
+                        constrainedCollection,
+                        uniqueDescendingCollection,
+                        columnUniqueCollection,
+                        unnamedCollection,
+                        qualifiedCollection)
+                .forEach(MongoCollection::drop);
+    }
 
     /**
      * The indexes this extension declared on the collection, as {@code name -> ordered key}, where each key entry is
