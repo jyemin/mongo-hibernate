@@ -402,11 +402,8 @@ class IndexIntegrationTests {
      * over a field no document has.
      *
      * <p>The expected exception type follows Hibernate's own disabled check, which threw {@link AnnotationException}.
-     * The message names only the table and the column, deliberately. Hibernate's version named the annotation, and that
-     * is not always recoverable: if {@code supportsUniqueConstraints()} is overridden to return false,
-     * {@code @UniqueConstraint} and {@code @Index} both bind to an {@code Index}, so by the time any of our code sees
-     * the mapping the annotation it came from is gone. Naming the annotation here would make these tests quietly depend
-     * on that decision going one way.
+     * The message names only the table and the column. Naming the annotation, as that check did, would require knowing
+     * which annotation the mapping came from, which is not always available.
      */
     @Nested
     class InvalidMappings {
