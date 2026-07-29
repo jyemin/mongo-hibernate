@@ -35,10 +35,13 @@ import jakarta.persistence.UniqueConstraint;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.bson.BsonArray;
 import org.bson.BsonBoolean;
 import org.bson.BsonDocument;
+import org.bson.BsonInt32;
+import org.bson.BsonString;
 import org.hibernate.AnnotationException;
 import org.hibernate.Session;
 import org.hibernate.boot.MetadataSources;
@@ -113,7 +116,19 @@ class IndexIntegrationTests {
      * itself. That is what points the {@code SessionFactory} at this class's own database, the one that
      * {@link InjectMongoCollection} reads, and what installs that database's command listener.
      */
-    private List<BsonDocument> inRegistry(Class<?> entityClass, Consumer<Session> body) {
+    /**
+     * What one schema export produced: the commands sent, and whatever {@code observer} looked at while it was open.
+     */
+    private record Export<T>(List<BsonDocument> commands, T observed) {}
+
+    /** Every index on the collection and which of them are unique, captured together. */
+    private record Indexes(Map<String, List<String>> keys, List<String> unique) {}
+
+    private static Indexes indexesAndUniqueness(MongoCollection<BsonDocument> collection) {
+        return new Indexes(indexesOf(collection), uniqueIndexesOf(collection));
+    }
+
+    private <T> Export<T> inRegistry(Class<?> entityClass, Function<Session, T> observer) {
         try (var registry = new StandardServiceRegistryBuilder()
                 .applySettings(Map.of(
                         "jakarta.persistence.schema-generation.database.action",
@@ -124,46 +139,75 @@ class IndexIntegrationTests {
                         MONGO_CONFIGURATION_CONTRIBUTOR_KEY,
                         MongoExtension.configurationContributorForClass(IndexIntegrationTests.class))
                 .build()) {
+            T observed;
             try (var sessionFactory = new MetadataSources()
                             .addAnnotatedClass(entityClass)
                             .buildMetadata(registry)
                             .buildSessionFactory();
                     var session = sessionFactory.openSession()) {
-                body.accept(session);
+                observed = observer.apply(session);
             }
-            return commandHistory.getCommands();
+            return new Export<>(commandHistory.getCommands(), observed);
         }
+    }
+
+    /**
+     * The {@code createIndexes} commands that were sent, as JSON, with the session and cluster metadata the driver adds
+     * stripped off.
+     *
+     * <p>Compared as strings rather than as {@link BsonDocument}s because {@code BsonDocument} implements {@link Map},
+     * so equality ignores field order, and the order of the fields in a compound key is significant.
+     */
+    private static List<String> createIndexesCommands(List<BsonDocument> commands) {
+        return commands.stream()
+                .filter(command -> command.containsKey("createIndexes"))
+                .map(command -> new BsonDocument("createIndexes", command.get("createIndexes"))
+                        .append("indexes", command.get("indexes"))
+                        .toJson())
+                .toList();
+    }
+
+    /**
+     * The {@code createIndexes} command that should be emitted for one index, where each {@code key} entry is
+     * {@code field:direction}.
+     *
+     * <p>{@code unique} is only present when true, because the driver omits it otherwise. One index per command, so
+     * comparing against the full list also asserts that indexes are not batched together.
+     */
+    private static String createIndexes(String collection, String name, boolean unique, String... key) {
+        var keys = new BsonDocument();
+        for (var entry : key) {
+            var field = entry.split(":");
+            keys.append(field[0], new BsonInt32(Integer.parseInt(field[1])));
+        }
+        var index = new BsonDocument("key", keys).append("name", new BsonString(name));
+        if (unique) {
+            index.append("unique", BsonBoolean.TRUE);
+        }
+        return new BsonDocument("createIndexes", new BsonString(collection))
+                .append("indexes", new BsonArray(List.of(index)))
+                .toJson();
     }
 
     @InjectMongoCollection("ascending")
     private MongoCollection<BsonDocument> ascendingCollection;
 
-    /**
-     * {@code @Index} with the direction left out and spelled out, over one field and over several.
-     *
-     * <p>This one asserts the emitted commands as well as the resulting server state, since the two say different
-     * things. One {@code createIndexes} per index and four batched into one command produce identical server state, so
-     * the shape of the commands is only visible here. The other tests assert server state alone, which is the stronger
-     * claim about correctness, and rely on this one for the command shape.
-     */
+    /** {@code @Index} with the direction left out and spelled out, over one field and over several. */
     @Test
     void ascendingIndexes() {
-        var commands = inRegistry(Ascending.class, session -> {
-            assertThat(indexesOf(ascendingCollection))
-                    .containsOnly(
-                            Map.entry("idx_implicit", List.of("publishYear:1")),
-                            Map.entry("idx_explicit_asc", List.of("edition:1")),
-                            Map.entry("idx_compound", List.of("publisher:1", "author:1")));
-            assertThat(uniqueIndexesOf(ascendingCollection)).isEmpty();
-        });
+        var export = inRegistry(Ascending.class, session -> indexesAndUniqueness(ascendingCollection));
 
-        var indexCommands = commands.stream()
-                .filter(command -> command.containsKey("createIndexes"))
-                .toList();
-        assertThat(indexCommands).hasSize(3).allSatisfy(command -> {
-            assertThat(command.getString("createIndexes").getValue()).isEqualTo("ascending");
-            assertThat(command.getArray("indexes")).hasSize(1);
-        });
+        assertThat(createIndexesCommands(export.commands()))
+                .containsExactlyInAnyOrder(
+                        createIndexes("ascending", "idx_implicit", false, "publishYear:1"),
+                        createIndexes("ascending", "idx_explicit_asc", false, "edition:1"),
+                        createIndexes("ascending", "idx_compound", false, "publisher:1", "author:1"));
+        assertThat(export.observed().keys())
+                .containsOnly(
+                        Map.entry("idx_implicit", List.of("publishYear:1")),
+                        Map.entry("idx_explicit_asc", List.of("edition:1")),
+                        Map.entry("idx_compound", List.of("publisher:1", "author:1")));
+        assertThat(export.observed().unique()).isEmpty();
     }
 
     @InjectMongoCollection("descending")
@@ -172,13 +216,17 @@ class IndexIntegrationTests {
     /** {@code @Index} carrying {@code desc}, alone and mixed with {@code asc} in a compound key. */
     @Test
     void descendingIndexes() {
-        inRegistry(Descending.class, session -> {
-            assertThat(indexesOf(descendingCollection))
-                    .containsOnly(
-                            Map.entry("idx_desc", List.of("pageCount:-1")),
-                            Map.entry("idx_compound_mixed", List.of("language:-1", "translator:1")));
-            assertThat(uniqueIndexesOf(descendingCollection)).isEmpty();
-        });
+        var export = inRegistry(Descending.class, session -> indexesAndUniqueness(descendingCollection));
+
+        assertThat(createIndexesCommands(export.commands()))
+                .containsExactlyInAnyOrder(
+                        createIndexes("descending", "idx_desc", false, "pageCount:-1"),
+                        createIndexes("descending", "idx_compound_mixed", false, "language:-1", "translator:1"));
+        assertThat(export.observed().keys())
+                .containsOnly(
+                        Map.entry("idx_desc", List.of("pageCount:-1")),
+                        Map.entry("idx_compound_mixed", List.of("language:-1", "translator:1")));
+        assertThat(export.observed().unique()).isEmpty();
     }
 
     @InjectMongoCollection("constrained")
@@ -190,13 +238,17 @@ class IndexIntegrationTests {
      */
     @Test
     void uniqueConstraints() {
-        inRegistry(Constrained.class, session -> {
-            assertThat(indexesOf(constrainedCollection))
-                    .containsOnly(
-                            Map.entry("uk_single", List.of("sku:1")),
-                            Map.entry("uk_compound", List.of("subtitle:1", "imprint:1")));
-            assertThat(uniqueIndexesOf(constrainedCollection)).containsExactly("uk_compound", "uk_single");
-        });
+        var export = inRegistry(Constrained.class, session -> indexesAndUniqueness(constrainedCollection));
+
+        assertThat(createIndexesCommands(export.commands()))
+                .containsExactlyInAnyOrder(
+                        createIndexes("constrained", "uk_single", true, "sku:1"),
+                        createIndexes("constrained", "uk_compound", true, "subtitle:1", "imprint:1"));
+        assertThat(export.observed().keys())
+                .containsOnly(
+                        Map.entry("uk_single", List.of("sku:1")),
+                        Map.entry("uk_compound", List.of("subtitle:1", "imprint:1")));
+        assertThat(export.observed().unique()).containsExactly("uk_compound", "uk_single");
     }
 
     @InjectMongoCollection("unique_descending")
@@ -209,13 +261,17 @@ class IndexIntegrationTests {
      */
     @Test
     void uniqueDescendingIndexes() {
-        inRegistry(UniqueDescending.class, session -> {
-            assertThat(indexesOf(uniqueDescendingCollection))
-                    .containsOnly(
-                            Map.entry("uk_desc", List.of("isbn:-1")),
-                            Map.entry("uk_compound_mixed", List.of("series:-1", "volume:1")));
-            assertThat(uniqueIndexesOf(uniqueDescendingCollection)).containsExactly("uk_compound_mixed", "uk_desc");
-        });
+        var export = inRegistry(UniqueDescending.class, session -> indexesAndUniqueness(uniqueDescendingCollection));
+
+        assertThat(createIndexesCommands(export.commands()))
+                .containsExactlyInAnyOrder(
+                        createIndexes("unique_descending", "uk_desc", true, "isbn:-1"),
+                        createIndexes("unique_descending", "uk_compound_mixed", true, "series:-1", "volume:1"));
+        assertThat(export.observed().keys())
+                .containsOnly(
+                        Map.entry("uk_desc", List.of("isbn:-1")),
+                        Map.entry("uk_compound_mixed", List.of("series:-1", "volume:1")));
+        assertThat(export.observed().unique()).containsExactly("uk_compound_mixed", "uk_desc");
     }
 
     @InjectMongoCollection("column_unique")
@@ -228,11 +284,12 @@ class IndexIntegrationTests {
      */
     @Test
     void columnLevelUnique() {
-        inRegistry(ColumnUnique.class, session -> {
-            assertThat(indexesOf(columnUniqueCollection))
-                    .containsOnly(Map.entry(COLUMN_UNIQUE_NAME, List.of("shelfCode:1")));
-            assertThat(uniqueIndexesOf(columnUniqueCollection)).containsExactly(COLUMN_UNIQUE_NAME);
-        });
+        var export = inRegistry(ColumnUnique.class, session -> indexesAndUniqueness(columnUniqueCollection));
+
+        assertThat(createIndexesCommands(export.commands()))
+                .containsExactlyInAnyOrder(createIndexes("column_unique", COLUMN_UNIQUE_NAME, true, "shelfCode:1"));
+        assertThat(export.observed().keys()).containsOnly(Map.entry(COLUMN_UNIQUE_NAME, List.of("shelfCode:1")));
+        assertThat(export.observed().unique()).containsExactly(COLUMN_UNIQUE_NAME);
     }
 
     @InjectMongoCollection("unnamed")
@@ -241,10 +298,11 @@ class IndexIntegrationTests {
     /** An unnamed declaration takes its name from Hibernate's implicit naming strategy, never from the extension. */
     @Test
     void unnamedDeclarationsAreNamedByHibernate() {
-        inRegistry(Unnamed.class, session -> assertThat(indexesOf(unnamedCollection))
+        assertThat(inRegistry(Unnamed.class, session -> indexesOf(unnamedCollection))
+                        .observed())
                 .containsOnly(
                         Map.entry(UNNAMED_INDEX_NAME, List.of("title:1")),
-                        Map.entry(UNNAMED_UNIQUE_NAME, List.of("code:1"))));
+                        Map.entry(UNNAMED_UNIQUE_NAME, List.of("code:1")));
     }
 
     @InjectMongoCollection("lib.tomes")
@@ -257,19 +315,17 @@ class IndexIntegrationTests {
      */
     @Test
     void indexesFollowTheQualifiedCollectionName() {
-        var commands = inRegistry(Qualified.class, session -> assertThat(indexesOf(qualifiedCollection))
-                .containsOnly(Map.entry("idx_title", List.of("title:1"))));
+        var export = inRegistry(Qualified.class, session -> indexesOf(qualifiedCollection));
 
-        assertThat(commands.stream()
-                        .filter(command -> command.containsKey("createIndexes"))
-                        .map(command -> command.getString("createIndexes").getValue()))
-                .containsOnly("lib.tomes");
+        assertThat(createIndexesCommands(export.commands()))
+                .containsExactly(createIndexes("lib.tomes", "idx_title", false, "title:1"));
+        assertThat(export.observed()).containsOnly(Map.entry("idx_title", List.of("title:1")));
     }
 
     /** {@code create-drop} creates the collection when the {@code SessionFactory} opens and drops it when it closes. */
     @Test
     void createDropLifecycle() {
-        var commands = inRegistry(Ascending.class, session -> {});
+        var commands = inRegistry(Ascending.class, session -> null).commands();
         assertThat(commands.stream()
                         .filter(command -> command.containsKey("create"))
                         .map(command -> command.getString("create").getValue()))
@@ -286,7 +342,7 @@ class IndexIntegrationTests {
         /** MongoDB has no equivalent of a trailing DDL fragment. */
         @Test
         void indexOptions() {
-            assertThatThrownBy(() -> inRegistry(WithOptions.class, session -> {}))
+            assertThatThrownBy(() -> inRegistry(WithOptions.class, session -> null))
                     .isInstanceOf(FeatureNotSupportedException.class)
                     .hasMessage("Index idx_options on with_options has options, which is not supported");
         }
@@ -298,7 +354,7 @@ class IndexIntegrationTests {
          */
         @Test
         void formulaIndex() {
-            assertThatThrownBy(() -> inRegistry(WithFormulaIndex.class, session -> {}))
+            assertThatThrownBy(() -> inRegistry(WithFormulaIndex.class, session -> null))
                     .isInstanceOf(FeatureNotSupportedException.class)
                     .hasMessage(
                             "Index idx_formula on with_formula_index uses a formula column, which is not supported");
@@ -307,7 +363,7 @@ class IndexIntegrationTests {
         /** The same, for the one mapping in which {@code Index.isUnique()} is ever true. */
         @Test
         void uniqueFormulaIndex() {
-            assertThatThrownBy(() -> inRegistry(WithUniqueFormulaIndex.class, session -> {}))
+            assertThatThrownBy(() -> inRegistry(WithUniqueFormulaIndex.class, session -> null))
                     .isInstanceOf(FeatureNotSupportedException.class)
                     .hasMessage("Index idx_unique_formula on with_unique_formula_index uses a formula column, which is"
                             + " not supported");
@@ -331,7 +387,7 @@ class IndexIntegrationTests {
         /** {@code columnList} naming a column that is not mapped. */
         @Test
         void indexOnUnmappedColumn() {
-            assertThatThrownBy(() -> inRegistry(UnmappedIndexColumn.class, session -> {}))
+            assertThatThrownBy(() -> inRegistry(UnmappedIndexColumn.class, session -> null))
                     .isInstanceOf(AnnotationException.class)
                     .hasMessage("Table 'unmapped_index' has no column named 'noSuchColumn' matching the column"
                             + " specified in '@Index'");
@@ -340,7 +396,7 @@ class IndexIntegrationTests {
         /** {@code columnNames} naming a column that is not mapped. A different Hibernate code path from the above. */
         @Test
         void uniqueConstraintOnUnmappedColumn() {
-            assertThatThrownBy(() -> inRegistry(UnmappedConstraintColumn.class, session -> {}))
+            assertThatThrownBy(() -> inRegistry(UnmappedConstraintColumn.class, session -> null))
                     .isInstanceOf(AnnotationException.class)
                     .hasMessage("Table 'unmapped_constraint' has no column named 'noSuchColumn' matching the column"
                             + " specified in '@UniqueConstraint'");
