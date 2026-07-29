@@ -401,8 +401,12 @@ class IndexIntegrationTests {
      * column which does not exist; MongoDB accepts any field name, so nothing reports an error and the index is built
      * over a field no document has.
      *
-     * <p>The expected exception type and message follow Hibernate's own disabled check, which threw
-     * {@link AnnotationException} with exactly this wording.
+     * <p>The expected exception type follows Hibernate's own disabled check, which threw {@link AnnotationException}.
+     * The message names only the table and the column, deliberately. Hibernate's version named the annotation, and that
+     * is not always recoverable: if {@code supportsUniqueConstraints()} is overridden to return false,
+     * {@code @UniqueConstraint} and {@code @Index} both bind to an {@code Index}, so by the time any of our code sees
+     * the mapping the annotation it came from is gone. Naming the annotation here would make these tests quietly depend
+     * on that decision going one way.
      */
     @Nested
     class InvalidMappings {
@@ -412,8 +416,7 @@ class IndexIntegrationTests {
         void indexOnUnmappedColumn() {
             assertThatThrownBy(() -> inRegistry(UnmappedIndexColumn.class, session -> null))
                     .isInstanceOf(AnnotationException.class)
-                    .hasMessage("Table 'unmapped_index' has no column named 'noSuchColumn' matching the column"
-                            + " specified in '@Index'");
+                    .hasMessage("Table 'unmapped_index' has no column named 'noSuchColumn'");
         }
 
         /** {@code columnNames} naming a column that is not mapped. A different Hibernate code path from the above. */
@@ -421,8 +424,7 @@ class IndexIntegrationTests {
         void uniqueConstraintOnUnmappedColumn() {
             assertThatThrownBy(() -> inRegistry(UnmappedConstraintColumn.class, session -> null))
                     .isInstanceOf(AnnotationException.class)
-                    .hasMessage("Table 'unmapped_constraint' has no column named 'noSuchColumn' matching the column"
-                            + " specified in '@UniqueConstraint'");
+                    .hasMessage("Table 'unmapped_constraint' has no column named 'noSuchColumn'");
         }
     }
 
