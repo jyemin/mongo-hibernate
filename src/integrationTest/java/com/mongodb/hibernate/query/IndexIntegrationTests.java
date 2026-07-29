@@ -138,16 +138,31 @@ class IndexIntegrationTests {
     @InjectMongoCollection("ascending")
     private MongoCollection<BsonDocument> ascendingCollection;
 
-    /** {@code @Index} with the direction left out and spelled out, over one field and over several. */
+    /**
+     * {@code @Index} with the direction left out and spelled out, over one field and over several.
+     *
+     * <p>This one asserts the emitted commands as well as the resulting server state, since the two say different
+     * things. One {@code createIndexes} per index and four batched into one command produce identical server state, so
+     * the shape of the commands is only visible here. The other tests assert server state alone, which is the stronger
+     * claim about correctness, and rely on this one for the command shape.
+     */
     @Test
     void ascendingIndexes() {
-        inRegistry(Ascending.class, session -> {
+        var commands = inRegistry(Ascending.class, session -> {
             assertThat(indexesOf(ascendingCollection))
                     .containsOnly(
                             Map.entry("idx_implicit", List.of("publishYear:1")),
                             Map.entry("idx_explicit_asc", List.of("edition:1")),
                             Map.entry("idx_compound", List.of("publisher:1", "author:1")));
             assertThat(uniqueIndexesOf(ascendingCollection)).isEmpty();
+        });
+
+        var indexCommands = commands.stream()
+                .filter(command -> command.containsKey("createIndexes"))
+                .toList();
+        assertThat(indexCommands).hasSize(3).allSatisfy(command -> {
+            assertThat(command.getString("createIndexes").getValue()).isEqualTo("ascending");
+            assertThat(command.getArray("indexes")).hasSize(1);
         });
     }
 
