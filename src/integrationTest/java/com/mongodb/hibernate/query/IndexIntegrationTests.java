@@ -16,193 +16,475 @@
 
 package com.mongodb.hibernate.query;
 
+import static com.mongodb.hibernate.internal.MongoConstants.MONGO_CONFIGURATION_CONTRIBUTOR_KEY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.mongodb.client.MongoCollection;
-import com.mongodb.hibernate.TestCommandListener;
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
+import com.mongodb.hibernate.junit.CommandHistory;
+import com.mongodb.hibernate.junit.InjectCommandHistory;
 import com.mongodb.hibernate.junit.InjectMongoCollection;
 import com.mongodb.hibernate.junit.MongoExtension;
-import com.mongodb.hibernate.junit.MongoServiceRegistryProducer;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import org.bson.BsonBoolean;
 import org.bson.BsonDocument;
+import org.hibernate.AnnotationException;
 import org.hibernate.Session;
-import org.hibernate.annotations.Formula;
 import org.hibernate.boot.MetadataSources;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+/**
+ * Schema export of {@link Index} and {@link UniqueConstraint} declarations to MongoDB {@code createIndexes}.
+ *
+ * <p>MongoDB has no constraint objects, so a unique constraint is a unique index. Every assertion here is therefore of
+ * one form: which indexes exist on the collection, over which fields, in which order, and which of them are unique.
+ *
+ * <p>Field order and per-field direction are both asserted because both are load-bearing in MQL: on a compound index
+ * they together decide which sorts and which prefix queries the index can serve. Note that {@link BsonDocument}
+ * implements {@link Map}, so comparing key documents with {@code equals} would silently ignore order.
+ * {@link #indexesOf} flattens each key document to an ordered list to avoid that.
+ *
+ * <p>Each group of declarations gets its own entity and collection, one per test, for two reasons. Every test asserts
+ * the complete index set for its collection, so bundling unrelated declarations would let one defect hide the state of
+ * everything else. And MongoDB rejects a second index with the same key pattern under a different name
+ * ({@code IndexOptionsConflict}), so declarations that overlap on fields cannot share a collection.
+ */
 @ExtendWith(MongoExtension.class)
-public class IndexIntegrationTests {
-    @InjectMongoCollection("books")
-    private static MongoCollection<BsonDocument> booksCollection;
+class IndexIntegrationTests {
 
-    private static List<BsonDocument> inRegistry(Class<?> itemClass, Consumer<Session> body) {
+    // Hibernate's implicit naming strategy derives these from the table and column names, so renaming either changes
+    // them. They are asserted rather than ignored so that a change in Hibernate's naming is visible here.
+    private static final String COLUMN_UNIQUE_NAME = "UK58wdc0id5yrcr2hgn1fis4txl";
+    private static final String UNNAMED_INDEX_NAME = "IDX6eej5imjx4n2hikl5yyt8d14u";
+    private static final String UNNAMED_UNIQUE_NAME = "UK4ut95qgekorog9ebigpnhjwa2";
+
+    @InjectCommandHistory
+    private CommandHistory commandHistory;
+
+    /**
+     * The indexes this extension declared on the collection, as {@code name -> ordered key}, where each key entry is
+     * {@code field:direction}. Ordered, so a reordered compound key or a flipped direction fails.
+     *
+     * <p>{@code _id_} is excluded. MongoDB creates it for every collection regardless of the mapping, so it says
+     * nothing about schema export.
+     */
+    private static Map<String, List<String>> indexesOf(MongoCollection<BsonDocument> collection) {
+        return collection.listIndexes(BsonDocument.class).into(new ArrayList<>()).stream()
+                .filter(index -> !index.getString("name").getValue().equals("_id_"))
+                .collect(Collectors.toMap(
+                        index -> index.getString("name").getValue(),
+                        index -> index.getDocument("key").entrySet().stream()
+                                .map(field -> field.getKey() + ":"
+                                        + field.getValue().asNumber().intValue())
+                                .toList()));
+    }
+
+    /**
+     * The names of the unique indexes on the collection, sorted. Note that {@code _id_} never appears: it is implicitly
+     * unique, but MongoDB does not set the {@code unique} flag on it.
+     */
+    private static List<String> uniqueIndexesOf(MongoCollection<BsonDocument> collection) {
+        return collection.listIndexes(BsonDocument.class).into(new ArrayList<>()).stream()
+                .filter(index -> index.getBoolean("unique", BsonBoolean.FALSE).getValue())
+                .map(index -> index.getString("name").getValue())
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * Boots a {@code SessionFactory} for {@code entityClass} with {@code create-drop}, runs {@code body} while it is
+     * still open so the collection can be inspected before the drop half runs, and returns the commands sent.
+     *
+     * <p>The registry is built by hand rather than through Hibernate's testing framework, so it applies the contributor
+     * itself. That is what points the {@code SessionFactory} at this class's own database, the one that
+     * {@link InjectMongoCollection} reads, and what installs that database's command listener.
+     */
+    private List<BsonDocument> inRegistry(Class<?> entityClass, Consumer<Session> body) {
         try (var registry = new StandardServiceRegistryBuilder()
                 .applySettings(Map.of(
                         "jakarta.persistence.schema-generation.database.action",
                         "create-drop",
                         "hibernate.hbm2ddl.halt_on_error",
                         "true"))
+                .applySetting(
+                        MONGO_CONFIGURATION_CONTRIBUTOR_KEY,
+                        MongoExtension.configurationContributorForClass(IndexIntegrationTests.class))
                 .build()) {
-            var testCommandListener = registry.requireService(TestCommandListener.class);
             try (var sessionFactory = new MetadataSources()
-                            .addAnnotatedClass(itemClass)
+                            .addAnnotatedClass(entityClass)
                             .buildMetadata(registry)
                             .buildSessionFactory();
                     var session = sessionFactory.openSession()) {
                 body.accept(session);
             }
-            return testCommandListener.getStartedCommands();
+            return commandHistory.getCommands();
         }
     }
 
+    @InjectMongoCollection("ascending")
+    private MongoCollection<BsonDocument> ascendingCollection;
+
+    /** {@code @Index} with the direction left out and spelled out, over one field and over several. */
     @Test
-    void testIndexCreated() {
-        var commands = inRegistry(Book.class, session -> {
-            var indexNames = new TreeSet<String>();
-            booksCollection.listIndexes().forEach(index -> indexNames.add(index.getString("name")));
-            assertEquals(
-                    Set.of(
-                            "IDXbeyw7jm8ev66e1mbr0hggy13e",
-                            "_id_",
-                            "idx_on_multi_cols",
-                            "idx_on_single_col",
-                            "uniq_idx_on_single_col"),
-                    indexNames);
+    void ascendingIndexes() {
+        inRegistry(Ascending.class, session -> {
+            assertThat(indexesOf(ascendingCollection))
+                    .containsOnly(
+                            Map.entry("idx_implicit", List.of("publishYear:1")),
+                            Map.entry("idx_explicit_asc", List.of("edition:1")),
+                            Map.entry("idx_compound", List.of("publisher:1", "author:1")));
+            assertThat(uniqueIndexesOf(ascendingCollection)).isEmpty();
         });
-
-        var createCommands = commands.stream()
-                .filter(command -> command.containsKey("create"))
-                .toList();
-        var indexCommands = commands.stream()
-                .filter(command -> command.containsKey("createIndexes"))
-                .toList();
-        var dropCommands =
-                commands.stream().filter(command -> command.containsKey("drop")).toList();
-        assertFalse(createCommands.isEmpty());
-        assertEquals(4, indexCommands.size());
-        assertFalse(dropCommands.isEmpty());
-
-        assertThat(createCommands)
-                .allSatisfy(command ->
-                        assertThat(command.getString("create").getValue()).isEqualTo("books"));
-        assertThat(indexCommands).allSatisfy(command -> assertThat(
-                        command.getString("createIndexes").getValue())
-                .isEqualTo("books"));
-        assertThat(dropCommands)
-                .allSatisfy(command ->
-                        assertThat(command.getString("drop").getValue()).isEqualTo("books"));
-        assertThat(indexCommands)
-                .extracting(command -> command.getArray("indexes"))
-                .allSatisfy(indexes -> assertThat(indexes).hasSize(1));
-        // Note that the driver drops unique=false properties
-        assertThat(indexCommands)
-                .flatExtracting(command -> command.getArray("indexes"))
-                .contains(
-                        BsonDocument.parse("{ name: \"idx_on_single_col\", key: {publishYear: 1}}"),
-                        BsonDocument.parse("{ name: \"idx_on_multi_cols\", key: {publisher: 1, author: 1}}"),
-                        BsonDocument.parse("{ name: \"uniq_idx_on_single_col\", key: {isbn: -1}, unique: true}"),
-                        BsonDocument.parse(
-                                "{ name: \"IDXbeyw7jm8ev66e1mbr0hggy13e\", key: {publisher: 1, title: 1}, unique: true}"));
     }
 
+    @InjectMongoCollection("descending")
+    private MongoCollection<BsonDocument> descendingCollection;
+
+    /** {@code @Index} carrying {@code desc}, alone and mixed with {@code asc} in a compound key. */
     @Test
-    void testGarbageDirection() {
-        assertThatThrownBy(() -> inRegistry(InvalidDirection.class, session -> {}))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Invalid index entry format: publishYear sideways");
+    void descendingIndexes() {
+        inRegistry(Descending.class, session -> {
+            assertThat(indexesOf(descendingCollection))
+                    .containsOnly(
+                            Map.entry("idx_desc", List.of("pageCount:-1")),
+                            Map.entry("idx_compound_mixed", List.of("language:-1", "translator:1")));
+            assertThat(uniqueIndexesOf(descendingCollection)).isEmpty();
+        });
     }
 
-    @Entity(name = "Book")
+    @InjectMongoCollection("constrained")
+    private MongoCollection<BsonDocument> constrainedCollection;
+
+    /**
+     * {@code @UniqueConstraint} over one column and over several. {@code columnNames} has no direction grammar, so
+     * these are always ascending, and field order follows the array.
+     */
+    @Test
+    void uniqueConstraints() {
+        inRegistry(Constrained.class, session -> {
+            assertThat(indexesOf(constrainedCollection))
+                    .containsOnly(
+                            Map.entry("uk_single", List.of("sku:1")),
+                            Map.entry("uk_compound", List.of("subtitle:1", "imprint:1")));
+            assertThat(uniqueIndexesOf(constrainedCollection)).containsExactly("uk_compound", "uk_single");
+        });
+    }
+
+    @InjectMongoCollection("unique_descending")
+    private MongoCollection<BsonDocument> uniqueDescendingCollection;
+
+    /**
+     * {@code @Index(unique = true)} carrying {@code desc}. This is the only way to ask for a descending unique index,
+     * since {@code @UniqueConstraint} cannot express direction. It binds to a {@code UniqueKey} rather than an
+     * {@code Index}.
+     */
+    @Test
+    void uniqueDescendingIndexes() {
+        inRegistry(UniqueDescending.class, session -> {
+            assertThat(indexesOf(uniqueDescendingCollection))
+                    .containsOnly(
+                            Map.entry("uk_desc", List.of("isbn:-1")),
+                            Map.entry("uk_compound_mixed", List.of("series:-1", "volume:1")));
+            assertThat(uniqueIndexesOf(uniqueDescendingCollection)).containsExactly("uk_compound_mixed", "uk_desc");
+        });
+    }
+
+    @InjectMongoCollection("column_unique")
+    private MongoCollection<BsonDocument> columnUniqueCollection;
+
+    /**
+     * {@code @Column(unique = true)}, which carries no name of its own, so Hibernate generates one. It needs a field no
+     * other uniqueness declaration touches, because two declarations over one column resolve to a single MongoDB key
+     * pattern under two names, which the server rejects.
+     */
+    @Test
+    void columnLevelUnique() {
+        inRegistry(ColumnUnique.class, session -> {
+            assertThat(indexesOf(columnUniqueCollection))
+                    .containsOnly(Map.entry(COLUMN_UNIQUE_NAME, List.of("shelfCode:1")));
+            assertThat(uniqueIndexesOf(columnUniqueCollection)).containsExactly(COLUMN_UNIQUE_NAME);
+        });
+    }
+
+    @InjectMongoCollection("unnamed")
+    private MongoCollection<BsonDocument> unnamedCollection;
+
+    /** An unnamed declaration takes its name from Hibernate's implicit naming strategy, never from the extension. */
+    @Test
+    void unnamedDeclarationsAreNamedByHibernate() {
+        inRegistry(Unnamed.class, session -> assertThat(indexesOf(unnamedCollection))
+                .containsOnly(
+                        Map.entry(UNNAMED_INDEX_NAME, List.of("title:1")),
+                        Map.entry(UNNAMED_UNIQUE_NAME, List.of("code:1"))));
+    }
+
+    @InjectMongoCollection("lib.tomes")
+    private MongoCollection<BsonDocument> qualifiedCollection;
+
+    /**
+     * A schema qualifier folds into the collection name, so every command in the export has to name the same
+     * collection. Indexes created against the unqualified name would land on an auto-created sibling collection that
+     * holds none of the data, and nothing would report an error.
+     */
+    @Test
+    void indexesFollowTheQualifiedCollectionName() {
+        var commands = inRegistry(Qualified.class, session -> assertThat(indexesOf(qualifiedCollection))
+                .containsOnly(Map.entry("idx_title", List.of("title:1"))));
+
+        assertThat(commands.stream()
+                        .filter(command -> command.containsKey("createIndexes"))
+                        .map(command -> command.getString("createIndexes").getValue()))
+                .containsOnly("lib.tomes");
+    }
+
+    /** {@code create-drop} creates the collection when the {@code SessionFactory} opens and drops it when it closes. */
+    @Test
+    void createDropLifecycle() {
+        var commands = inRegistry(Ascending.class, session -> {});
+        assertThat(commands.stream()
+                        .filter(command -> command.containsKey("create"))
+                        .map(command -> command.getString("create").getValue()))
+                .containsOnly("ascending");
+        assertThat(commands.stream()
+                        .filter(command -> command.containsKey("drop"))
+                        .map(command -> command.getString("drop").getValue()))
+                .containsOnly("ascending");
+    }
+
+    @Nested
+    class Unsupported {
+
+        /** MongoDB has no equivalent of a trailing DDL fragment. */
+        @Test
+        void indexOptions() {
+            assertThatThrownBy(() -> inRegistry(WithOptions.class, session -> {}))
+                    .isInstanceOf(FeatureNotSupportedException.class)
+                    .hasMessage("Index idx_options on with_options has options, which is not supported");
+        }
+
+        /**
+         * A parenthesized {@code columnList} entry binds as a {@code Formula}, which is the only way to reach the
+         * exporter's formula guard. Naming a {@code @Formula} property in {@code columnList} does not reach it, because
+         * that resolves to a plain column.
+         */
+        @Test
+        void formulaIndex() {
+            assertThatThrownBy(() -> inRegistry(WithFormulaIndex.class, session -> {}))
+                    .isInstanceOf(FeatureNotSupportedException.class)
+                    .hasMessage(
+                            "Index idx_formula on with_formula_index uses a formula column, which is not supported");
+        }
+
+        /** The same, for the one mapping in which {@code Index.isUnique()} is ever true. */
+        @Test
+        void uniqueFormulaIndex() {
+            assertThatThrownBy(() -> inRegistry(WithUniqueFormulaIndex.class, session -> {}))
+                    .isInstanceOf(FeatureNotSupportedException.class)
+                    .hasMessage("Index idx_unique_formula on with_unique_formula_index uses a formula column, which is"
+                            + " not supported");
+        }
+    }
+
+    /**
+     * Mappings that are not merely unsupported but wrong, so the failure is an invalid mapping rather than a missing
+     * feature. Hibernate itself has the check for these, in {@code IndexBinder.selectable()} (`:66`) and
+     * {@code IndexBinder.column()} (`:86`), but it is commented out in 7.4, so an unresolvable entry becomes a
+     * {@code Column} carrying that literal name. A relational dialect is saved by the server rejecting DDL that names a
+     * column which does not exist; MongoDB accepts any field name, so nothing reports an error and the index is built
+     * over a field no document has.
+     *
+     * <p>The expected exception type and message follow Hibernate's own disabled check, which threw
+     * {@link AnnotationException} with exactly this wording.
+     */
+    @Nested
+    class InvalidMappings {
+
+        /** {@code columnList} naming a column that is not mapped. */
+        @Test
+        void indexOnUnmappedColumn() {
+            assertThatThrownBy(() -> inRegistry(UnmappedIndexColumn.class, session -> {}))
+                    .isInstanceOf(AnnotationException.class)
+                    .hasMessage("Table 'unmapped_index' has no column named 'noSuchColumn' matching the column"
+                            + " specified in '@Index'");
+        }
+
+        /** {@code columnNames} naming a column that is not mapped. A different Hibernate code path from the above. */
+        @Test
+        void uniqueConstraintOnUnmappedColumn() {
+            assertThatThrownBy(() -> inRegistry(UnmappedConstraintColumn.class, session -> {}))
+                    .isInstanceOf(AnnotationException.class)
+                    .hasMessage("Table 'unmapped_constraint' has no column named 'noSuchColumn' matching the column"
+                            + " specified in '@UniqueConstraint'");
+        }
+    }
+
+    @Entity(name = "UnmappedIndexColumn")
+    @Table(name = "unmapped_index", indexes = @Index(name = "idx_unmapped", columnList = "noSuchColumn"))
+    static class UnmappedIndexColumn {
+        @Id
+        int id;
+
+        String title;
+    }
+
+    @Entity(name = "UnmappedConstraintColumn")
     @Table(
-            name = "books",
+            name = "unmapped_constraint",
+            uniqueConstraints =
+                    @UniqueConstraint(
+                            name = "uk_unmapped",
+                            columnNames = {"noSuchColumn"}))
+    static class UnmappedConstraintColumn {
+        @Id
+        int id;
+
+        String title;
+    }
+
+    @Entity(name = "Ascending")
+    @Table(
+            name = "ascending",
+            indexes = {
+                @Index(name = "idx_implicit", columnList = "publishYear"),
+                @Index(name = "idx_explicit_asc", columnList = "edition asc"),
+                @Index(name = "idx_compound", columnList = "publisher,author")
+            })
+    static class Ascending {
+        @Id
+        int id;
+
+        int publishYear;
+        int edition;
+        String publisher;
+        String author;
+    }
+
+    @Entity(name = "Descending")
+    @Table(
+            name = "descending",
+            indexes = {
+                @Index(name = "idx_desc", columnList = "pageCount desc"),
+                @Index(name = "idx_compound_mixed", columnList = "language desc,translator asc")
+            })
+    static class Descending {
+        @Id
+        int id;
+
+        int pageCount;
+        String language;
+        String translator;
+    }
+
+    @Entity(name = "Constrained")
+    @Table(
+            name = "constrained",
             uniqueConstraints = {
                 @UniqueConstraint(
-                        name = "uniq_idx_on_single_col",
-                        columnNames = {"isbn desc"}),
-            },
-            indexes = {
-                @Index(name = "idx_on_single_col", columnList = "publishYear asc"),
-                @Index(name = "idx_on_multi_cols", columnList = "publisher,author"),
-                @Index(columnList = "publisher,title", unique = true)
+                        name = "uk_single",
+                        columnNames = {"sku"}),
+                @UniqueConstraint(
+                        name = "uk_compound",
+                        columnNames = {"subtitle", "imprint"})
             })
-    static class Book {
+    static class Constrained {
+        @Id
+        int id;
+
+        String sku;
+        String subtitle;
+        String imprint;
+    }
+
+    @Entity(name = "UniqueDescending")
+    @Table(
+            name = "unique_descending",
+            indexes = {
+                @Index(name = "uk_desc", columnList = "isbn desc", unique = true),
+                @Index(name = "uk_compound_mixed", columnList = "series desc,volume asc", unique = true)
+            })
+    static class UniqueDescending {
+        @Id
+        int id;
+
+        String isbn;
+        String series;
+        int volume;
+    }
+
+    @Entity(name = "ColumnUnique")
+    @Table(name = "column_unique")
+    static class ColumnUnique {
         @Id
         int id;
 
         @Column(unique = true)
-        String isbn;
+        String shelfCode;
+    }
 
-        String author;
+    @Entity(name = "Unnamed")
+    @Table(
+            name = "unnamed",
+            uniqueConstraints = @UniqueConstraint(columnNames = {"code"}),
+            indexes = @Index(columnList = "title"))
+    static class Unnamed {
+        @Id
+        int id;
+
         String title;
-        String publisher;
-        int publishYear;
+        String code;
     }
 
-    @Entity(name = "InvalidDirection")
+    @Entity(name = "Qualified")
+    @Table(schema = "lib", name = "tomes", indexes = @Index(name = "idx_title", columnList = "title"))
+    static class Qualified {
+        @Id
+        int id;
+
+        String title;
+    }
+
+    @Entity(name = "WithOptions")
     @Table(
-            name = "invalid_direction",
-            indexes = {@Index(name = "idx_invalid_options", columnList = "publishYear sideways")})
-    static class InvalidDirection {
+            name = "with_options",
+            indexes = @Index(name = "idx_options", columnList = "publishYear", options = "something"))
+    static class WithOptions {
         @Id
         int id;
 
         int publishYear;
     }
 
-    @Entity(name = "InvalidOptions")
-    @Table(
-            name = "invalid_options",
-            indexes = {@Index(name = "idx_invalid_options", columnList = "publishYear", options = "something")})
-    static class InvalidOptions {
+    @Entity(name = "WithFormulaIndex")
+    @Table(name = "with_formula_index", indexes = @Index(name = "idx_formula", columnList = "(publishYear + 1)"))
+    static class WithFormulaIndex {
         @Id
         int id;
 
         int publishYear;
     }
 
-    @Entity(name = "InvalidFormula")
+    @Entity(name = "WithUniqueFormulaIndex")
     @Table(
-            name = "invalid_formula",
-            indexes = {@Index(name = "idx_invalid_options", columnList = "publishYear")})
-    static class InvalidFormula {
+            name = "with_unique_formula_index",
+            indexes = @Index(name = "idx_unique_formula", columnList = "(publishYear + 1)", unique = true))
+    static class WithUniqueFormulaIndex {
         @Id
         int id;
 
-        @Formula(value = "3*x")
         int publishYear;
-    }
-
-    @Nested
-    class Unsupported implements MongoServiceRegistryProducer {
-        @Test
-        void testForbiddenOptions() {
-            assertThatThrownBy(() -> inRegistry(InvalidOptions.class, session -> {}))
-                    .isInstanceOf(FeatureNotSupportedException.class)
-                    .hasMessage("Index idx_invalid_options on invalid_options has options, which is not supported");
-        }
-
-        @Test
-        void testForbiddenFormula() {
-            assertThatThrownBy(() -> inRegistry(InvalidFormula.class, session -> {}))
-                    .isInstanceOf(FeatureNotSupportedException.class)
-                    .hasMessage("Formula is not supported");
-        }
     }
 }
