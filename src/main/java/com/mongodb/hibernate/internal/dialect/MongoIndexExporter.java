@@ -43,7 +43,7 @@ public abstract class MongoIndexExporter<T extends Exportable> implements Export
         this.unique = unique;
     }
 
-    static String createIndex(String collectionName, BsonValue keys, String indexName, boolean unique) {
+    private static String createIndex(String collectionName, BsonValue keys, String indexName, boolean unique) {
         var command = new BsonDocument(List.of(
                 new BsonElement("createIndexes", new BsonString(collectionName)),
                 new BsonElement(
