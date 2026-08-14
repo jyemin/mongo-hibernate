@@ -29,6 +29,7 @@ import com.mongodb.hibernate.internal.dialect.function.MongoExpressionNamedFunct
 import com.mongodb.hibernate.internal.dialect.function.MongoExpressionPositionalFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoExpressionUnaryFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoExpressionVariadicFunction;
+import com.mongodb.hibernate.internal.dialect.function.MongoExtractFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoPadFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoRepeatFunction;
 import com.mongodb.hibernate.internal.dialect.function.MongoSubstringFunction;
@@ -38,6 +39,8 @@ import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayContainsF
 import com.mongodb.hibernate.internal.dialect.function.array.MongoArrayIncludesFunction;
 import com.mongodb.hibernate.internal.dialect.function.array.MongoUnnestFunction;
 import com.mongodb.hibernate.internal.translate.MongoTranslatorFactory;
+import com.mongodb.hibernate.internal.translate.mongoast.AstLiteral;
+import com.mongodb.hibernate.internal.translate.mongoast.AstLiteralExpression;
 import com.mongodb.hibernate.internal.translate.mongoast.AstUnaryOperatorExpression;
 import com.mongodb.hibernate.internal.type.MongoArrayJdbcType;
 import com.mongodb.hibernate.internal.type.MongoStructJdbcType;
@@ -47,8 +50,10 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.Calendar;
 import java.util.Collection;
+import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import org.bson.BsonDocument;
@@ -324,6 +329,21 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
                         Function.identity(),
                         FunctionParameterType.ANY,
                         input -> new AstUnaryOperatorExpression("$toString", input)));
+        functionRegistry.register("extract", new MongoExtractFunction(typeConfiguration));
+        functionRegistry.register(
+                "format",
+                new MongoExpressionNamedFunction(
+                        "format",
+                        "$dateToString",
+                        typeConfiguration,
+                        Map.of(
+                                "timezone",
+                                new AstLiteralExpression(new AstLiteral(
+                                        new BsonString(ZoneId.systemDefault().getId())))),
+                        StandardBasicTypes.STRING,
+                        Function.identity(),
+                        required("date", FunctionParameterType.TEMPORAL),
+                        required("format", FunctionParameterType.STRING)));
         functionRegistry.register(
                 "locate",
                 new MongoExpressionPositionalFunction(
