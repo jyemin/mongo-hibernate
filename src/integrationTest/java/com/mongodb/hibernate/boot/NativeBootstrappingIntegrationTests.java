@@ -28,7 +28,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import jakarta.persistence.Version;
 import java.time.Instant;
 import org.bson.BsonDocument;
 import org.hibernate.annotations.CurrentTimestamp;
@@ -99,9 +98,8 @@ class NativeBootstrappingIntegrationTests extends AbstractQueryIntegrationTests
 
             String string;
 
-            @Version
             @CurrentTimestamp(source = SourceType.DB)
-            Instant version;
+            Instant timestamp;
         }
 
         @Entity(name = "ItemWithGenerated")
@@ -112,9 +110,8 @@ class NativeBootstrappingIntegrationTests extends AbstractQueryIntegrationTests
 
             String string;
 
-            @Version
             @Generated(sql = "does not matter")
-            Instant version;
+            Instant timestamp;
         }
 
         @Entity(name = "ItemWithGeneratedColumn")
@@ -125,9 +122,8 @@ class NativeBootstrappingIntegrationTests extends AbstractQueryIntegrationTests
 
             String string;
 
-            @Version
             @GeneratedColumn(value = "does not matter")
-            Instant version;
+            Instant timestamp;
         }
 
         @Entity(name = "ItemWithGeneratedValue")
@@ -149,7 +145,7 @@ class NativeBootstrappingIntegrationTests extends AbstractQueryIntegrationTests
                             .buildSessionFactory())
                     .isInstanceOf(FeatureNotSupportedException.class)
                     .hasMessage(
-                            "Field version of class com.mongodb.hibernate.boot.NativeBootstrappingIntegrationTests.Unsupported.ItemWithDbTimestamp is not supported: Annotation @CurrentTimestamp(source=DB) is forbidden");
+                            "Field timestamp of class com.mongodb.hibernate.boot.NativeBootstrappingIntegrationTests.Unsupported.ItemWithDbTimestamp is not supported: Annotation @CurrentTimestamp(source=DB) is forbidden");
         }
 
         @Test
@@ -160,7 +156,7 @@ class NativeBootstrappingIntegrationTests extends AbstractQueryIntegrationTests
                             .buildSessionFactory())
                     .isInstanceOf(FeatureNotSupportedException.class)
                     .hasMessage(
-                            "Field version of class com.mongodb.hibernate.boot.NativeBootstrappingIntegrationTests.Unsupported.ItemWithGenerated is not supported: Annotation org.hibernate.annotations.Generated is forbidden");
+                            "Field timestamp of class com.mongodb.hibernate.boot.NativeBootstrappingIntegrationTests.Unsupported.ItemWithGenerated is not supported: Annotation org.hibernate.annotations.Generated is forbidden");
         }
 
         @Test
@@ -184,7 +180,7 @@ class NativeBootstrappingIntegrationTests extends AbstractQueryIntegrationTests
                             .buildSessionFactory())
                     .isInstanceOf(FeatureNotSupportedException.class)
                     .hasMessage(
-                            "Field version of class com.mongodb.hibernate.boot.NativeBootstrappingIntegrationTests.Unsupported.ItemWithGeneratedColumn is not supported: Annotation org.hibernate.annotations.GeneratedColumn is forbidden");
+                            "Field timestamp of class com.mongodb.hibernate.boot.NativeBootstrappingIntegrationTests.Unsupported.ItemWithGeneratedColumn is not supported: Annotation org.hibernate.annotations.GeneratedColumn is forbidden");
         }
     }
 }

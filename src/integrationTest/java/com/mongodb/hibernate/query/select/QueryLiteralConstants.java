@@ -18,6 +18,8 @@ package com.mongodb.hibernate.query.select;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import org.bson.types.ObjectId;
 
 /**
@@ -36,6 +38,8 @@ public final class QueryLiteralConstants {
     public static final BigDecimal BIG_DECIMAL = new BigDecimal("4.25");
     public static final ObjectId OBJECT_ID = new ObjectId("000000000000000000000001");
     public static final Instant INSTANT = Instant.parse("2025-01-04T10:05:01Z");
+    public static final OffsetDateTime OFFSET_DATE_TIME = OffsetDateTime.parse("2025-01-04T10:05:01Z");
+    public static final ZonedDateTime ZONED_DATE_TIME = ZonedDateTime.parse("2025-01-04T10:05:01Z");
 
     private QueryLiteralConstants() {}
 }

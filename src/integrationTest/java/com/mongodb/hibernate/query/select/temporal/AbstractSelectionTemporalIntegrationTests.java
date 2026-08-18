@@ -38,6 +38,119 @@ abstract class AbstractSelectionTemporalIntegrationTests<I, T> extends AbstractQ
 
     abstract Class<I> getItemClass();
 
+    abstract Class<T> getTemporalClass();
+
+    @ParameterizedTest(name = "testProjection: expectedTemporals={0}")
+    @MethodSource
+    void testProjection(List<T> expectedTemporals) {
+        assertSelectionQuery(
+                "select temporal from Item",
+                getTemporalClass(),
+                """
+                {
+                  "aggregate": "items",
+                  "pipeline": [
+                    {
+                      "$project": {
+                        "temporal": true
+                      }
+                    }
+                  ]
+                }""",
+                expectedTemporals,
+                Set.of(COLLECTION_NAME));
+    }
+
+    @ParameterizedTest(name = "testIsNull: expectedItems={0}")
+    @MethodSource
+    void testIsNull(List<I> expectedItems) {
+        assertSelectionQuery(
+                "from Item where temporal is null",
+                getItemClass(),
+                """
+                {
+                  "aggregate": "items",
+                  "pipeline": [
+                    {
+                      "$match": {
+                        "temporal": {
+                          "$eq": null
+                        }
+                      }
+                    },
+                    {
+                      "$project": {
+                        "_id": true,
+                        "temporal": true
+                      }
+                    }
+                  ]
+                }""",
+                expectedItems,
+                Set.of(COLLECTION_NAME));
+    }
+
+    @ParameterizedTest(name = "testIsNotNull: expectedItems={0}")
+    @MethodSource
+    void testIsNotNull(List<I> expectedItems) {
+        assertSelectionQuery(
+                "from Item where temporal is not null",
+                getItemClass(),
+                """
+                {
+                  "aggregate": "items",
+                  "pipeline": [
+                    {
+                      "$match": {
+                        "temporal": {
+                          "$ne": null
+                        }
+                      }
+                    },
+                    {
+                      "$project": {
+                        "_id": true,
+                        "temporal": true
+                      }
+                    }
+                  ]
+                }""",
+                expectedItems,
+                Set.of(COLLECTION_NAME));
+    }
+
+    @ParameterizedTest(name = "testComparisonByIn: temporals={0}, expectedItems={1}, expectedRenderResult={2}")
+    @MethodSource
+    void testComparisonByIn(List<T> temporals, List<I> expectedItems, String expectedRenderResult) {
+        assertSelectionQuery(
+                "from Item where temporal in (:t)",
+                getItemClass(),
+                q -> q.setParameterList("t", temporals),
+                format(
+                        """
+                        {
+                          "aggregate": "items",
+                          "pipeline": [
+                            {
+                              "$match": {
+                                "temporal": {
+                                  "$in": %s
+                                }
+                              }
+                            },
+                            {
+                              "$project": {
+                                "_id": true,
+                                "temporal": true
+                              }
+                            }
+                          ]
+                        }""",
+                        expectedRenderResult),
+                expectedItems,
+                Set.of(COLLECTION_NAME));
+    }
+
     @ParameterizedTest(name = "testComparisonByEq: temporal={0}, expectedItems={1}, expectedRenderResult={2}")
     @MethodSource
     void testComparisonByEq(T temporal, List<I> expectedItems, String expectedRenderResult) {

@@ -23,7 +23,6 @@ import static java.lang.String.format;
 import static org.hibernate.cfg.AvailableSettings.DIALECT_RESOLVERS;
 import static org.hibernate.cfg.AvailableSettings.JAKARTA_JDBC_URL;
 import static org.hibernate.cfg.AvailableSettings.JAVA_TIME_USE_DIRECT_JDBC;
-import static org.hibernate.cfg.AvailableSettings.PREFERRED_INSTANT_JDBC_TYPE;
 
 import com.mongodb.hibernate.cfg.spi.MongoConfigurationContributor;
 import com.mongodb.hibernate.internal.VisibleForTesting;
@@ -36,7 +35,6 @@ import java.io.NotSerializableException;
 import java.io.ObjectOutputStream;
 import java.io.Serial;
 import java.util.Map;
-import java.util.Set;
 import org.hibernate.HibernateException;
 import org.hibernate.boot.registry.BootstrapServiceRegistry;
 import org.hibernate.boot.registry.StandardServiceInitiator;
@@ -205,12 +203,11 @@ public final class StandardServiceRegistryScopedState implements Service {
         }
 
         private static void forbidTemporalConfiguration(Map<String, Object> configurationValues) {
-            var forbiddenConfigurationPropertyNames = Set.of(JAVA_TIME_USE_DIRECT_JDBC, PREFERRED_INSTANT_JDBC_TYPE);
-            for (var forbiddenConfigurationPropertyName : forbiddenConfigurationPropertyNames) {
-                if (configurationValues.containsKey(forbiddenConfigurationPropertyName)) {
-                    throw new HibernateException(
-                            format("Configuration property [%s] is not supported", JAVA_TIME_USE_DIRECT_JDBC));
-                }
+            // `PREFERRED_INSTANT_JDBC_TYPE` is not forbidden here: `MongoAdditionalMappingContributor` accepts it when
+            // it denotes `TIMESTAMP_UTC` (its default) and rejects it otherwise, with a diagnosable message.
+            if (configurationValues.containsKey(JAVA_TIME_USE_DIRECT_JDBC)) {
+                throw new HibernateException(
+                        format("Configuration property [%s] is not supported", JAVA_TIME_USE_DIRECT_JDBC));
             }
         }
 

@@ -17,6 +17,7 @@
 package com.mongodb.hibernate.query.mutation;
 
 import static com.mongodb.hibernate.BasicCrudIntegrationTests.Item.COLLECTION_NAME;
+import static java.lang.String.format;
 
 import com.mongodb.client.MongoCollection;
 import com.mongodb.hibernate.embeddable.StructAggregateEmbeddableIntegrationTests;
@@ -25,13 +26,20 @@ import com.mongodb.hibernate.junit.InjectMongoCollection;
 import com.mongodb.hibernate.junit.MongoServiceRegistryProducer;
 import com.mongodb.hibernate.query.AbstractQueryIntegrationTests;
 import com.mongodb.hibernate.query.Book;
+import com.mongodb.hibernate.query.select.QueryLiteralConstants;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Stream;
+import org.bson.BsonDateTime;
 import org.bson.BsonDocument;
+import org.bson.BsonInt32;
 import org.hibernate.annotations.ColumnTransformer;
 import org.hibernate.annotations.Struct;
 import org.hibernate.boot.MetadataSources;
@@ -40,6 +48,9 @@ import org.hibernate.testing.orm.junit.DomainModel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 @DomainModel(
         annotatedClasses = {
@@ -888,6 +899,114 @@ class UpdatingIntegrationTests extends AbstractQueryIntegrationTests {
         ItemWithPair(int id, Pair pair) {
             this.id = id;
             this.pair = pair;
+        }
+    }
+
+    /**
+     * Every instant-like type has to render as a BSON {@code Date} in a {@code $set}, from a parameter and from an
+     * inlined literal alike. The entity's three attributes are seeded to one instant and each update moves exactly one
+     * of them to another, so the asserted document also shows that the other two are left alone.
+     */
+    @Nested
+    @DomainModel(annotatedClasses = TemporalItem.class)
+    class Temporal extends AbstractQueryIntegrationTests {
+
+        private static final String CONSTANTS = QueryLiteralConstants.class.getName();
+
+        @InjectMongoCollection(TemporalItem.COLLECTION_NAME)
+        private MongoCollection<BsonDocument> temporalItemsCollection;
+
+        @BeforeEach
+        void seed() {
+            getSessionFactoryScope().inTransaction(session -> session.persist(new TemporalItem(1)));
+        }
+
+        @ParameterizedTest(name = "testUpdateSetFromParameter: {0}")
+        @MethodSource("temporalAttributes")
+        void testUpdateSetFromParameter(String attribute, Object value, String constant) {
+            assertMutationQuery(
+                    format("update TemporalItem set %s = :t", attribute),
+                    q -> q.setParameter("t", value),
+                    1,
+                    expectedMql(attribute),
+                    temporalItemsCollection,
+                    List.of(expectedDocument(attribute)),
+                    Set.of(TemporalItem.COLLECTION_NAME));
+        }
+
+        @ParameterizedTest(name = "testUpdateSetFromLiteral: {0}")
+        @MethodSource("temporalAttributes")
+        void testUpdateSetFromLiteral(String attribute, Object value, String constant) {
+            assertMutationQuery(
+                    format("update TemporalItem set %s = %s.%s", attribute, CONSTANTS, constant),
+                    1,
+                    expectedMql(attribute),
+                    temporalItemsCollection,
+                    List.of(expectedDocument(attribute)),
+                    Set.of(TemporalItem.COLLECTION_NAME));
+        }
+
+        private static Stream<Arguments> temporalAttributes() {
+            return Stream.of(
+                    Arguments.of("instantValue", Instant.parse(TemporalItem.UPDATED), "INSTANT"),
+                    Arguments.of("offsetDateTimeValue", OffsetDateTime.parse(TemporalItem.UPDATED), "OFFSET_DATE_TIME"),
+                    Arguments.of("zonedDateTimeValue", ZonedDateTime.parse(TemporalItem.UPDATED), "ZONED_DATE_TIME"));
+        }
+
+        private static String expectedMql(String attribute) {
+            return format(
+                    """
+                    {
+                      "update": "temporalItems",
+                      "updates": [
+                        {
+                          "q": {},
+                          "u": {"$set": {"%s": {"$date": "%s"}}},
+                          "multi": true
+                        }
+                      ]
+                    }""",
+                    attribute, TemporalItem.UPDATED);
+        }
+
+        private static BsonDocument expectedDocument(String updatedAttribute) {
+            var document = new BsonDocument().append("_id", new BsonInt32(1));
+            temporalAttributes()
+                    .map(arguments -> (String) arguments.get()[0])
+                    .forEach(attribute -> document.append(
+                            attribute,
+                            new BsonDateTime(Instant.parse(
+                                            attribute.equals(updatedAttribute)
+                                                    ? TemporalItem.UPDATED
+                                                    : TemporalItem.SEEDED)
+                                    .toEpochMilli())));
+            return document;
+        }
+    }
+
+    @Entity(name = "TemporalItem")
+    @Table(name = TemporalItem.COLLECTION_NAME)
+    static class TemporalItem {
+        static final String COLLECTION_NAME = "temporalItems";
+        static final String SEEDED = "2025-05-04T14:30:15Z";
+
+        /** The value every {@link QueryLiteralConstants} temporal constant holds. */
+        static final String UPDATED = "2025-01-04T10:05:01Z";
+
+        @Id
+        int id;
+
+        Instant instantValue;
+        OffsetDateTime offsetDateTimeValue;
+        ZonedDateTime zonedDateTimeValue;
+
+        TemporalItem() {}
+
+        TemporalItem(int id) {
+            this.id = id;
+            this.instantValue = Instant.parse(SEEDED);
+            this.offsetDateTimeValue = OffsetDateTime.parse(SEEDED);
+            this.zonedDateTimeValue = ZonedDateTime.parse(SEEDED);
         }
     }
 }

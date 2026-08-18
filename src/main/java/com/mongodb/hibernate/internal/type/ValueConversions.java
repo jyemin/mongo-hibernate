@@ -157,7 +157,16 @@ public final class ValueConversions {
     }
 
     public static BsonDateTime toBsonValue(Instant instant) {
-        return new BsonDateTime(instant.toEpochMilli());
+        return new BsonDateTime(roundToEpochMilli(instant));
+    }
+
+    /**
+     * A BSON {@code Date} holds milliseconds, so a finer value has to be rounded. {@link Instant#getNano()} is
+     * non-negative and {@link Instant#toEpochMilli()} floors, so halves round up on either side of the epoch.
+     */
+    @SuppressWarnings("JavaInstantGetSecondsGetNano") // only the sub-second adjustment decides the rounding
+    private static long roundToEpochMilli(Instant instant) {
+        return instant.toEpochMilli() + (instant.getNano() % 1_000_000 >= 500_000 ? 1 : 0);
     }
 
     public static BsonArray toBsonValue(java.sql.Array value) throws SQLFeatureNotSupportedException {

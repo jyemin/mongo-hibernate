@@ -35,17 +35,14 @@ import jakarta.persistence.OptimisticLockException;
 import jakarta.persistence.SecondaryTable;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
-import java.time.Instant;
 import java.util.stream.Stream;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.bson.BsonDocument;
 import org.hibernate.StaleObjectStateException;
-import org.hibernate.annotations.CurrentTimestamp;
 import org.hibernate.annotations.DynamicUpdate;
 import org.hibernate.annotations.OptimisticLock;
 import org.hibernate.annotations.OptimisticLockType;
 import org.hibernate.annotations.OptimisticLocking;
-import org.hibernate.annotations.SourceType;
 import org.hibernate.boot.MetadataSources;
 import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
 import org.hibernate.testing.orm.junit.DomainModel;
@@ -61,19 +58,11 @@ import org.junit.jupiter.params.provider.MethodSource;
             OptimisticLockingIntegrationTests.ItemWithInteger.class,
             OptimisticLockingIntegrationTests.ItemWithPrimitiveLong.class,
             OptimisticLockingIntegrationTests.ItemWithLong.class,
-            OptimisticLockingIntegrationTests.ItemWithInstant.class,
             OptimisticLockingIntegrationTests.ItemAllVersionless.class,
             OptimisticLockingIntegrationTests.ItemDirtyVersionless.class,
-            OptimisticLockingIntegrationTests.ItemWithExcluded.class,
-            OptimisticLockingIntegrationTests.ItemWithVmTimestamp.class
+            OptimisticLockingIntegrationTests.ItemWithExcluded.class
         })
 class OptimisticLockingIntegrationTests extends AbstractQueryIntegrationTests implements MongoServiceRegistryProducer {
-
-    @InjectMongoCollection("ItemWithInstant")
-    private MongoCollection<BsonDocument> itemWithInstantCollection;
-
-    @InjectMongoCollection("ItemWithVmTimestamp")
-    private MongoCollection<BsonDocument> itemWithVmTimestampCollection;
 
     @InjectMongoCollection("ItemWithExcluded")
     private MongoCollection<BsonDocument> itemWithExcludedCollection;
@@ -171,77 +160,6 @@ class OptimisticLockingIntegrationTests extends AbstractQueryIntegrationTests im
                                         item.getClass().getSimpleName(),
                                         expectedOldVersionMql,
                                         expectedNewVersionMql)));
-    }
-
-    @Test
-    void testUpdateWithInstantVersion() {
-        getSessionFactoryScope().inTransaction(session -> {
-            var item = new ItemWithInstant(1);
-            item.string = "str";
-            session.persist(item);
-        });
-        var initialStoredMillis =
-                itemWithInstantCollection.find().first().getDateTime("version").getValue();
-
-        getSessionFactoryScope().inTransaction(session -> {
-            var item = session.find(ItemWithInstant.class, 1);
-            commandHistory.clear();
-            item.string = "str_updated";
-            session.flush();
-            var newVersionMillis = item.version.toEpochMilli();
-            assertThat(newVersionMillis).isGreaterThanOrEqualTo(initialStoredMillis);
-            assertActualCommandsInOrder(BsonDocument.parse(
-                    """
-                    {
-                      "update": "ItemWithInstant",
-                      "updates": [
-                        {
-                          "q": { "$and": [ { "_id": { "$eq": 1 } }, { "version": { "$eq": { "$date": { "$numberLong": "%d" } } } } ] },
-                          "u": { "$set": { "string": "str_updated", "version": { "$date": { "$numberLong": "%d" } } } },
-                          "multi": true
-                        }
-                      ]
-                    }
-                    """
-                            .formatted(initialStoredMillis, newVersionMillis)));
-        });
-    }
-
-    @Test
-    void testUpdateWithCurrentTimestampVmVersion() {
-        getSessionFactoryScope().inTransaction(session -> {
-            var item = new ItemWithVmTimestamp(1);
-            item.string = "str";
-            session.persist(item);
-        });
-        var initialStoredMillis = itemWithVmTimestampCollection
-                .find()
-                .first()
-                .getDateTime("version")
-                .getValue();
-
-        getSessionFactoryScope().inTransaction(session -> {
-            var item = session.find(ItemWithVmTimestamp.class, 1);
-            commandHistory.clear();
-            item.string = "str_updated";
-            session.flush();
-            var newVersionMillis = item.version.toEpochMilli();
-            assertThat(newVersionMillis).isGreaterThanOrEqualTo(initialStoredMillis);
-            assertActualCommandsInOrder(BsonDocument.parse(
-                    """
-                    {
-                      "update": "ItemWithVmTimestamp",
-                      "updates": [
-                        {
-                          "q": { "$and": [ { "_id": { "$eq": 1 } }, { "version": { "$eq": { "$date": { "$numberLong": "%d" } } } } ] },
-                          "u": { "$set": { "string": "str_updated", "version": { "$date": { "$numberLong": "%d" } } } },
-                          "multi": true
-                        }
-                      ]
-                    }
-                    """
-                            .formatted(initialStoredMillis, newVersionMillis)));
-        });
     }
 
     static Stream<Arguments> testDeleteNumericVersion() {
@@ -617,31 +535,6 @@ class OptimisticLockingIntegrationTests extends AbstractQueryIntegrationTests im
         ItemWithLong() {}
 
         ItemWithLong(int id) {
-            super(id);
-        }
-    }
-
-    @Entity(name = "ItemWithInstant")
-    static class ItemWithInstant extends VersionedItem {
-        @Version
-        Instant version;
-
-        ItemWithInstant() {}
-
-        ItemWithInstant(int id) {
-            super(id);
-        }
-    }
-
-    @Entity(name = "ItemWithVmTimestamp")
-    static class ItemWithVmTimestamp extends VersionedItem {
-        @Version
-        @CurrentTimestamp(source = SourceType.VM)
-        Instant version;
-
-        ItemWithVmTimestamp() {}
-
-        ItemWithVmTimestamp(int id) {
             super(id);
         }
     }

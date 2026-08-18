@@ -26,6 +26,9 @@ import jakarta.persistence.Converter;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import java.time.MonthDay;
+import java.time.Period;
+import java.time.YearMonth;
 import java.util.Collection;
 import java.util.UUID;
 import org.bson.BsonDocument;
@@ -334,5 +337,101 @@ class UnsupportedTypesIntegrationTests {
         int id;
 
         BsonInt32 v;
+    }
+
+    @Test
+    void periodBasicAttributeNotSupported() {
+        assertNotSupported(PeriodItem.class);
+    }
+
+    @Test
+    void periodInAggregateEmbeddableNotSupported() {
+        assertNotSupported(PeriodAggregateEmbeddableItem.class);
+    }
+
+    @Test
+    void yearMonthBasicAttributeNotSupported() {
+        assertNotSupported(YearMonthItem.class);
+    }
+
+    @Test
+    void yearMonthInAggregateEmbeddableNotSupported() {
+        assertNotSupported(YearMonthAggregateEmbeddableItem.class);
+    }
+
+    @Test
+    void monthDayBasicAttributeNotSupported() {
+        assertNotSupported(MonthDayItem.class);
+    }
+
+    @Test
+    void monthDayInAggregateEmbeddableNotSupported() {
+        assertNotSupported(MonthDayAggregateEmbeddableItem.class);
+    }
+
+    @Entity
+    static class PeriodItem {
+        @Id
+        int id;
+
+        Period v;
+    }
+
+    @Struct(name = "UnsupportedPeriodAggregate")
+    @Embeddable
+    static class PeriodAggregateEmbeddable {
+        Period v;
+    }
+
+    @Entity
+    static class PeriodAggregateEmbeddableItem {
+        @Id
+        int id;
+
+        PeriodAggregateEmbeddable v;
+    }
+
+    @Entity
+    static class YearMonthItem {
+        @Id
+        int id;
+
+        YearMonth v;
+    }
+
+    @Struct(name = "UnsupportedYearMonthAggregate")
+    @Embeddable
+    static class YearMonthAggregateEmbeddable {
+        YearMonth v;
+    }
+
+    @Entity
+    static class YearMonthAggregateEmbeddableItem {
+        @Id
+        int id;
+
+        YearMonthAggregateEmbeddable v;
+    }
+
+    @Entity
+    static class MonthDayItem {
+        @Id
+        int id;
+
+        MonthDay v;
+    }
+
+    @Struct(name = "UnsupportedMonthDayAggregate")
+    @Embeddable
+    static class MonthDayAggregateEmbeddable {
+        MonthDay v;
+    }
+
+    @Entity
+    static class MonthDayAggregateEmbeddableItem {
+        @Id
+        int id;
+
+        MonthDayAggregateEmbeddable v;
     }
 }

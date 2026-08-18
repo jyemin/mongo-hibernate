@@ -91,7 +91,21 @@ import org.hibernate.service.spi.ServiceContributor;
  *     </tr>
  *     <tr>
  *       <td>{@link java.time.Instant}</td>
- *       <td>BSON {@code Date}</td>
+ *       <td>BSON {@code Date}. A value finer than a millisecond is rounded, halves up.</td>
+ *     </tr>
+ *     <tr>
+ *       <td>{@link java.time.OffsetDateTime}, {@link java.time.ZonedDateTime}</td>
+ *       <td>BSON {@code Date} holding the instant, rounded as above. By default the offset is not stored, so a read
+ *           returns the value at UTC. Under {@link org.hibernate.annotations.TimeZoneStorageType#COLUMN} a second
+ *           field, named after the attribute with a {@code _tz} suffix unless
+ *           {@link org.hibernate.annotations.TimeZoneColumn} renames it, holds the offset as a BSON {@code 32-bit
+ *           integer} number of seconds, and a read returns the value at that offset instead. Either way, a
+ *           {@link java.time.ZonedDateTime} reads back carrying a {@link java.time.ZoneOffset} rather than its
+ *           original named zone, since MongoDB stores no zone ID. {@code hibernate.jdbc.time_zone} has no effect on
+ *           either type, because it is implemented as the {@link java.util.Calendar} argument to
+ *           {@code setTimestamp}/{@code getTimestamp} and this extension stores no wall-clock values. A bare
+ *           {@code @}{@link org.hibernate.annotations.TimeZoneStorage} with no argument resolves to {@code AUTO} and
+ *           therefore to {@code COLUMN}, adding the second field.</td>
  *     </tr>
  *     <tr>
  *       <td>{@link java.time.Duration}</td>

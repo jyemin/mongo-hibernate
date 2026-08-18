@@ -18,8 +18,17 @@ package com.mongodb.hibernate.type.temporal;
 
 import static com.mongodb.hibernate.type.UnsupportedTypeAssertions.assertNotSupported;
 import static com.mongodb.hibernate.type.temporal.UnsupportedItems.DateItems;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertAll;
 
+import com.mongodb.hibernate.internal.FeatureNotSupportedException;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import jakarta.persistence.Temporal;
+import jakarta.persistence.TemporalType;
+import java.util.Date;
+import org.hibernate.boot.MetadataSources;
 import org.junit.jupiter.api.Test;
 
 class DateIntegrationTests {
@@ -55,5 +64,49 @@ class DateIntegrationTests {
                 () -> assertNotSupported(
                         DateItems.WithNestedAggregateEmbeddableWithCollectionPersistentAttribute.class),
                 () -> assertNotSupported(DateItems.WithNestedCollectionOfAggregateEmbeddable.class));
+    }
+
+    /**
+     * {@link Temporal} applies only to {@link Date} and {@code Calendar}, so {@link java.sql.Timestamp} needs no such
+     * case. Only {@link TemporalType#TIMESTAMP}, the default, denotes an instant.
+     */
+    @Test
+    void temporalDateRejectedAtBoot() {
+        assertThatThrownBy(() -> new MetadataSources()
+                        .addAnnotatedClass(TemporalDateItem.class)
+                        .buildMetadata())
+                .isInstanceOf(FeatureNotSupportedException.class)
+                .hasMessageContaining("temporal precision [DATE] that is not supported");
+    }
+
+    @Test
+    void temporalTimeRejectedAtBoot() {
+        assertThatThrownBy(() -> new MetadataSources()
+                        .addAnnotatedClass(TemporalTimeItem.class)
+                        .buildMetadata())
+                .isInstanceOf(FeatureNotSupportedException.class)
+                .hasMessageContaining("temporal precision [TIME] that is not supported");
+    }
+
+    @Entity(name = "TemporalDateItem")
+    @Table(name = "temporalDateItems")
+    static class TemporalDateItem {
+        @Id
+        int id;
+
+        @SuppressWarnings("deprecation")
+        @Temporal(TemporalType.DATE)
+        Date value;
+    }
+
+    @Entity(name = "TemporalTimeItem")
+    @Table(name = "temporalTimeItems")
+    static class TemporalTimeItem {
+        @Id
+        int id;
+
+        @SuppressWarnings("deprecation")
+        @Temporal(TemporalType.TIME)
+        Date value;
     }
 }

@@ -16,48 +16,121 @@
 
 package com.mongodb.hibernate.type.temporal;
 
-import static com.mongodb.hibernate.type.UnsupportedTypeAssertions.assertNotSupported;
-import static com.mongodb.hibernate.type.temporal.UnsupportedItems.ZonedDateTimeItems;
-import static org.junit.jupiter.api.Assertions.assertAll;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.Collection;
+import java.util.List;
+import java.util.stream.Stream;
+import org.hibernate.annotations.Struct;
+import org.hibernate.testing.orm.junit.DomainModel;
+import org.junit.jupiter.params.provider.Arguments;
 
-import org.junit.jupiter.api.Test;
+@DomainModel(annotatedClasses = {ZonedDateTimeIntegrationTests.Item.class})
+class ZonedDateTimeIntegrationTests
+        extends AbstractTemporalRoundTripIntegrationTests<ZonedDateTimeIntegrationTests.Item, ZonedDateTime> {
 
-class ZonedDateTimeIntegrationTests {
+    private static Stream<Arguments> persistAndReadParameters() {
+        return differentTimeZones().flatMap(arguments -> {
+            var tz0 = (ZoneId) arguments.get()[0];
+            var tz1 = (ZoneId) arguments.get()[1];
+            return Stream.of(
+                    Arguments.of(
+                            tz0,
+                            tz1,
+                            // Only the instant is stored, so the named zone is lost and the value read back carries a
+                            // ZoneOffset of UTC.
+                            ZonedDateTime.parse("2026-08-09T10:15:30.0029+02:00[Europe/Paris]"),
+                            ZonedDateTime.parse("2026-08-09T08:15:30.003Z")),
+                    Arguments.of(
+                            tz0,
+                            tz1,
+                            ZonedDateTime.parse("1500-12-03T10:15:30Z"),
+                            ZonedDateTime.parse("1500-12-03T10:15:30Z")),
+                    Arguments.of(
+                            tz0,
+                            tz1,
+                            ZonedDateTime.parse("-000001-12-03T10:15:30Z"),
+                            ZonedDateTime.parse("-000001-12-03T10:15:30Z")));
+        });
+    }
 
-    @Test
-    void unsupported() {
-        assertAll(
-                () -> assertNotSupported(ZonedDateTimeItems.WithId.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithFlattenedEmbeddableId.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithBasicPersistentAttribute.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithArrayPersistentAttribute.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithCollectionPersistentAttribute.class),
+    @Override
+    Class<Item> getItemClass() {
+        return Item.class;
+    }
 
-                // Flattened Embeddable
-                () -> assertNotSupported(ZonedDateTimeItems.WithEmbeddableWithBasicPersistentAttribute.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithEmbeddableWithArrayPersistentAttribute.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithEmbeddableWithCollectionPersistentAttribute.class),
+    @Override
+    Item newItem(int id, ZonedDateTime value) {
+        return new Item(id, value);
+    }
 
-                // Nested flattened embeddable
-                () -> assertNotSupported(ZonedDateTimeItems.WithNestedEmbeddableWithBasicPersistentAttribute.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithNestedEmbeddableWithArrayPersistentAttribute.class),
-                () -> assertNotSupported(
-                        ZonedDateTimeItems.WithNestedEmbeddableWithCollectionPersistentAttribute.class),
+    @Override
+    ZonedDateTime getStoredValue() {
+        return ZonedDateTime.parse("2026-08-09T10:15:30.0029+02:00[Europe/Paris]");
+    }
 
-                // Aggregate embeddable
-                () -> assertNotSupported(ZonedDateTimeItems.WithAggregateEmbeddableWithBasicPersistentAttribute.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithAggregateEmbeddableWithArrayPersistentAttribute.class),
-                () -> assertNotSupported(
-                        ZonedDateTimeItems.WithAggregateEmbeddableWithCollectionPersistentAttribute.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithCollectionOfAggregateEmbeddable.class),
+    @Override
+    String getExpectedStoredDocument() {
+        return """
+               {
+                   _id: 1,
+                   value: {"$date": "2026-08-09T08:15:30.003Z"},
+                   valueCollection: [{"$date": "2026-08-09T08:15:30.003Z"}, {"$date": "2026-08-09T08:15:30.003Z"}],
+                   values: [{"$date": "2026-08-09T08:15:30.003Z"}, {"$date": "2026-08-09T08:15:30.003Z"}],
+                   aggregateEmbeddable: {value: {"$date": "2026-08-09T08:15:30.003Z"}},
+                   flattenedValue: {"$date": "2026-08-09T08:15:30.003Z"}
+               }
+               """;
+    }
 
-                // Nested aggregate embeddable
-                () -> assertNotSupported(
-                        ZonedDateTimeItems.WithNestedAggregateEmbeddableWithBasicPersistentAttribute.class),
-                () -> assertNotSupported(
-                        ZonedDateTimeItems.WithNestedAggregateEmbeddableWithArrayPersistentAttribute.class),
-                () -> assertNotSupported(
-                        ZonedDateTimeItems.WithNestedAggregateEmbeddableWithCollectionPersistentAttribute.class),
-                () -> assertNotSupported(ZonedDateTimeItems.WithNestedCollectionOfAggregateEmbeddable.class));
+    @Entity
+    @Table(name = COLLECTION_NAME)
+    static class Item {
+        @Id
+        int id;
+
+        ZonedDateTime value;
+        Collection<ZonedDateTime> valueCollection;
+        ZonedDateTime[] values;
+        AggregateEmbeddable aggregateEmbeddable;
+        FlattenedEmbeddable flattenedEmbeddable;
+
+        Item() {}
+
+        Item(int id, ZonedDateTime value) {
+            this.id = id;
+            this.value = value;
+            this.valueCollection = List.of(value, value);
+            this.values = valueCollection.toArray(new ZonedDateTime[] {});
+            this.aggregateEmbeddable = new AggregateEmbeddable(value);
+            this.flattenedEmbeddable = new FlattenedEmbeddable(value);
+        }
+    }
+
+    @Embeddable
+    static class FlattenedEmbeddable {
+        ZonedDateTime flattenedValue;
+
+        FlattenedEmbeddable() {}
+
+        FlattenedEmbeddable(ZonedDateTime value) {
+            flattenedValue = value;
+        }
+    }
+
+    @Embeddable
+    @Struct(name = "ZonedDateTimeAggregateEmbeddable")
+    static class AggregateEmbeddable {
+        ZonedDateTime value;
+
+        AggregateEmbeddable() {}
+
+        AggregateEmbeddable(ZonedDateTime value) {
+            this.value = value;
+        }
     }
 }

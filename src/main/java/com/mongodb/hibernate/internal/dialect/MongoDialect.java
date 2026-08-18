@@ -50,7 +50,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Map;
@@ -151,7 +153,7 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
         contributeObjectIdType(typeContributions);
         typeContributions.contributeJdbcTypeConstructor(MongoArrayJdbcType.Constructor.INSTANCE);
         typeContributions.contributeJdbcType(MongoStructJdbcType.INSTANCE);
-        contributeInstantType(typeContributions);
+        contributeTemporalTypes(typeContributions);
     }
 
     private void contributeObjectIdType(TypeContributions typeContributions) {
@@ -174,10 +176,21 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
      * int)}/{@link ResultSet#getObject(int, Class)} instead of {@link PreparedStatement#setTimestamp(int, Timestamp,
      * Calendar)}/{@link ResultSet#getTimestamp(int, Calendar)} when storing/reading values of the {@link Instant} type,
      * without the need to rely on {@link AvailableSettings#JAVA_TIME_USE_DIRECT_JDBC}.
+     *
+     * <p>{@link SqlTypes#TIMESTAMP_UTC} is the only temporal type registered, and it covers every supported temporal
+     * type: an {@link Instant} resolves to it, and so does an {@link OffsetDateTime} or a {@link ZonedDateTime} under
+     * the default {@code NORMALIZE_UTC} time zone storage strategy. Nothing supported resolves to the wall-clock
+     * {@link SqlTypes#TIMESTAMP}, because every mapping that would is rejected at boot.
      */
-    private static void contributeInstantType(TypeContributions typeContributions) {
+    private static void contributeTemporalTypes(TypeContributions typeContributions) {
         var jdbcTypeRegistry = typeContributions.getTypeConfiguration().getJdbcTypeRegistry();
         jdbcTypeRegistry.addDescriptor(SqlTypes.TIMESTAMP_UTC, TimestampUtcAsInstantJdbcType.INSTANCE);
+    }
+
+    /** A BSON {@code Date} holds milliseconds, so a generated timestamp must not be produced at a finer precision. */
+    @Override
+    public int getDefaultTimestampPrecision() {
+        return 3;
     }
 
     @Override

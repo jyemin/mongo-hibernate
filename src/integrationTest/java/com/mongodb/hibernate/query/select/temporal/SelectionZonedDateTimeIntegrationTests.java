@@ -21,21 +21,25 @@ import static com.mongodb.hibernate.internal.MongoAssertions.fail;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import java.time.Instant;
+import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 import org.hibernate.testing.orm.junit.DomainModel;
 import org.junit.jupiter.params.provider.Arguments;
 
-@DomainModel(annotatedClasses = {SelectionInstantIntegrationTests.Item.class})
-class SelectionInstantIntegrationTests
-        extends AbstractSelectionTemporalIntegrationTests<SelectionInstantIntegrationTests.Item, Instant> {
+/**
+ * The seed values are expressed at UTC, which is the zone the read path reconstructs, so they double as the expected
+ * results.
+ */
+@DomainModel(annotatedClasses = {SelectionZonedDateTimeIntegrationTests.Item.class})
+class SelectionZonedDateTimeIntegrationTests
+        extends AbstractSelectionTemporalIntegrationTests<SelectionZonedDateTimeIntegrationTests.Item, ZonedDateTime> {
 
     private static final List<Item> ITEMS = List.of(
-            new Item(1, Instant.parse("2025-01-04T10:05:01Z")),
-            new Item(2, Instant.parse("2025-05-04T14:30:15Z")),
-            new Item(3, Instant.parse("2025-12-04T23:59:59Z")),
+            new Item(1, ZonedDateTime.parse("2025-01-04T10:05:01Z")),
+            new Item(2, ZonedDateTime.parse("2025-05-04T14:30:15Z")),
+            new Item(3, ZonedDateTime.parse("2025-12-04T23:59:59Z")),
             new Item(4, null));
 
     private static List<Item> getTestItems(int... ids) {
@@ -58,15 +62,15 @@ class SelectionInstantIntegrationTests
     }
 
     @Override
-    Class<Instant> getTemporalClass() {
-        return Instant.class;
+    Class<ZonedDateTime> getTemporalClass() {
+        return ZonedDateTime.class;
     }
 
     private static Stream<Arguments> testProjection() {
         return Stream.of(Arguments.of(Arrays.asList(
-                Instant.parse("2025-01-04T10:05:01Z"),
-                Instant.parse("2025-05-04T14:30:15Z"),
-                Instant.parse("2025-12-04T23:59:59Z"),
+                ZonedDateTime.parse("2025-01-04T10:05:01Z"),
+                ZonedDateTime.parse("2025-05-04T14:30:15Z"),
+                ZonedDateTime.parse("2025-12-04T23:59:59Z"),
                 null)));
     }
 
@@ -80,7 +84,7 @@ class SelectionInstantIntegrationTests
 
     private static Stream<Arguments> testComparisonByIn() {
         return Stream.of(Arguments.of(
-                List.of(Instant.parse("2025-01-04T10:05:01Z"), Instant.parse("2025-12-04T23:59:59Z")),
+                List.of(ZonedDateTime.parse("2025-01-04T10:05:01Z"), ZonedDateTime.parse("2025-12-04T23:59:59Z")),
                 getTestItems(1, 3),
                 """
                 [{"$date": "2025-01-04T10:05:01Z"}, {"$date": "2025-12-04T23:59:59Z"}]"""));
@@ -88,7 +92,7 @@ class SelectionInstantIntegrationTests
 
     private static Stream<Arguments> testComparisonByEq() {
         return Stream.of(Arguments.of(
-                Instant.parse("2025-01-04T10:05:01Z"),
+                ZonedDateTime.parse("2025-01-04T10:05:01Z"),
                 getTestItems(1),
                 """
                 {"$date": "2025-01-04T10:05:01Z"}"""));
@@ -96,7 +100,7 @@ class SelectionInstantIntegrationTests
 
     private static Stream<Arguments> testComparisonByNe() {
         return Stream.of(Arguments.of(
-                Instant.parse("2025-01-04T10:05:01Z"),
+                ZonedDateTime.parse("2025-01-04T10:05:01Z"),
                 getTestItems(2, 3, 4),
                 """
                 {"$date": "2025-01-04T10:05:01Z"}"""));
@@ -104,7 +108,7 @@ class SelectionInstantIntegrationTests
 
     private static Stream<Arguments> testComparisonByLt() {
         return Stream.of(Arguments.of(
-                Instant.parse("2025-12-04T23:59:59Z"),
+                ZonedDateTime.parse("2025-12-04T23:59:59Z"),
                 getTestItems(1, 2),
                 """
                 {"$date": "2025-12-04T23:59:59Z"}"""));
@@ -112,7 +116,7 @@ class SelectionInstantIntegrationTests
 
     private static Stream<Arguments> testComparisonByLte() {
         return Stream.of(Arguments.of(
-                Instant.parse("2025-12-04T23:59:59Z"),
+                ZonedDateTime.parse("2025-12-04T23:59:59Z"),
                 getTestItems(1, 2, 3),
                 """
                 {"$date": "2025-12-04T23:59:59Z"}"""));
@@ -120,7 +124,7 @@ class SelectionInstantIntegrationTests
 
     private static Stream<Arguments> testComparisonByGt() {
         return Stream.of(Arguments.of(
-                Instant.parse("2025-01-04T10:05:01Z"),
+                ZonedDateTime.parse("2025-01-04T10:05:01Z"),
                 getTestItems(2, 3),
                 """
                 {"$date": "2025-01-04T10:05:01Z"}"""));
@@ -128,7 +132,7 @@ class SelectionInstantIntegrationTests
 
     private static Stream<Arguments> testComparisonByGte() {
         return Stream.of(Arguments.of(
-                Instant.parse("2025-01-04T10:05:01Z"),
+                ZonedDateTime.parse("2025-01-04T10:05:01Z"),
                 getTestItems(1, 2, 3),
                 """
                 {"$date": "2025-01-04T10:05:01Z"}"""));
@@ -148,11 +152,11 @@ class SelectionInstantIntegrationTests
         @Id
         int id;
 
-        Instant temporal;
+        ZonedDateTime temporal;
 
         Item() {}
 
-        Item(int id, Instant temporal) {
+        Item(int id, ZonedDateTime temporal) {
             this.id = id;
             this.temporal = temporal;
         }

@@ -19,11 +19,10 @@ package com.mongodb.hibernate.type.temporal;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.OffsetDateTime;
 import java.time.OffsetTime;
-import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Collection;
 import org.hibernate.annotations.Struct;
@@ -31,7 +30,7 @@ import org.hibernate.type.descriptor.java.JavaType;
 
 /**
  * Generic entity/embeddable templates used by the unsupported-type tests. Each unsupported type has a corresponding
- * {@code TypeItems} nested class (e.g. {@link CalendarItems}, {@link DateItems}) that contains fully concrete,
+ * {@code TypeItems} nested class (e.g. {@link CalendarItems}, {@link SqlDateItems}) that contains fully concrete,
  * non-generic copies of these templates specialized for that type. The copies exist because Hibernate ORM 7 no longer
  * resolves type parameters from the anonymous-subclass super-type token pattern ({@code new ItemWithId<T>(){}}) that
  * worked in Hibernate 6: it reports "unbound type" when processing the generic superclass, so each test type needs its
@@ -1622,6 +1621,232 @@ final class UnsupportedItems {
         }
     }
 
+    static final class LocalDateItems {
+        private LocalDateItems() {}
+
+        // Embeddable helpers — concrete LocalDate versions of the generic embeddable templates
+        @Embeddable
+        static class FlattenedBasic {
+            LocalDate v;
+        }
+
+        @Embeddable
+        static class FlattenedArray {
+            LocalDate[] v;
+        }
+
+        @Embeddable
+        static class FlattenedCollection {
+            Collection<LocalDate> v;
+        }
+
+        @Embeddable
+        static class NestedFlattenedBasic {
+            FlattenedBasic v;
+        }
+
+        @Embeddable
+        static class NestedFlattenedArray {
+            FlattenedArray v;
+        }
+
+        @Embeddable
+        static class NestedFlattenedCollection {
+            FlattenedCollection v;
+        }
+
+        @Struct(name = "LocalDateAggregateBasic")
+        @Embeddable
+        static class AggregateBasic {
+            LocalDate v;
+        }
+
+        @Struct(name = "LocalDateAggregateArray")
+        @Embeddable
+        static class AggregateArray {
+            LocalDate[] v;
+        }
+
+        @Struct(name = "LocalDateAggregateCollection")
+        @Embeddable
+        static class AggregateCollection {
+            Collection<LocalDate> v;
+        }
+
+        @Struct(name = "LocalDateNestedAggregateBasic")
+        @Embeddable
+        static class NestedAggregateBasic {
+            AggregateBasic v;
+        }
+
+        @Struct(name = "LocalDateNestedAggregateArray")
+        @Embeddable
+        static class NestedAggregateArray {
+            AggregateArray v;
+        }
+
+        @Struct(name = "LocalDateNestedAggregateCollection")
+        @Embeddable
+        static class NestedAggregateCollection {
+            AggregateCollection v;
+        }
+
+        @Struct(name = "LocalDateAggregateCollectionOfAggregate")
+        @Embeddable
+        static class AggregateCollectionOfAggregate {
+            Collection<AggregateBasic> v;
+        }
+
+        // Entity variants
+        @Entity
+        static class WithId {
+            @Id
+            LocalDate id;
+        }
+
+        @Entity
+        static class WithFlattenedEmbeddableId {
+            @Id
+            FlattenedBasic id;
+        }
+
+        @Entity
+        static class WithBasicPersistentAttribute {
+            @Id
+            int id;
+
+            LocalDate v;
+        }
+
+        @Entity
+        static class WithArrayPersistentAttribute {
+            @Id
+            int id;
+
+            LocalDate[] v;
+        }
+
+        @Entity
+        static class WithCollectionPersistentAttribute {
+            @Id
+            int id;
+
+            Collection<LocalDate> v;
+        }
+
+        @Entity
+        static class WithEmbeddableWithBasicPersistentAttribute {
+            @Id
+            int id;
+
+            FlattenedBasic v;
+        }
+
+        @Entity
+        static class WithEmbeddableWithArrayPersistentAttribute {
+            @Id
+            int id;
+
+            FlattenedArray v;
+        }
+
+        @Entity
+        static class WithEmbeddableWithCollectionPersistentAttribute {
+            @Id
+            int id;
+
+            FlattenedCollection v;
+        }
+
+        @Entity
+        static class WithNestedEmbeddableWithBasicPersistentAttribute {
+            @Id
+            int id;
+
+            NestedFlattenedBasic v;
+        }
+
+        @Entity
+        static class WithNestedEmbeddableWithArrayPersistentAttribute {
+            @Id
+            int id;
+
+            NestedFlattenedArray v;
+        }
+
+        @Entity
+        static class WithNestedEmbeddableWithCollectionPersistentAttribute {
+            @Id
+            int id;
+
+            NestedFlattenedCollection v;
+        }
+
+        @Entity
+        static class WithAggregateEmbeddableWithBasicPersistentAttribute {
+            @Id
+            int id;
+
+            AggregateBasic v;
+        }
+
+        @Entity
+        static class WithAggregateEmbeddableWithArrayPersistentAttribute {
+            @Id
+            int id;
+
+            AggregateArray v;
+        }
+
+        @Entity
+        static class WithAggregateEmbeddableWithCollectionPersistentAttribute {
+            @Id
+            int id;
+
+            AggregateCollection v;
+        }
+
+        @Entity
+        static class WithCollectionOfAggregateEmbeddable {
+            @Id
+            int id;
+
+            Collection<AggregateBasic> v;
+        }
+
+        @Entity
+        static class WithNestedAggregateEmbeddableWithBasicPersistentAttribute {
+            @Id
+            int id;
+
+            NestedAggregateBasic v;
+        }
+
+        @Entity
+        static class WithNestedAggregateEmbeddableWithArrayPersistentAttribute {
+            @Id
+            int id;
+
+            NestedAggregateArray v;
+        }
+
+        @Entity
+        static class WithNestedAggregateEmbeddableWithCollectionPersistentAttribute {
+            @Id
+            int id;
+
+            NestedAggregateCollection v;
+        }
+
+        @Entity
+        static class WithNestedCollectionOfAggregateEmbeddable {
+            @Id
+            int id;
+
+            AggregateCollectionOfAggregate v;
+        }
+    }
+
     static final class LocalDateTimeItems {
         private LocalDateTimeItems() {}
 
@@ -1848,232 +2073,6 @@ final class UnsupportedItems {
         }
     }
 
-    static final class ZonedDateTimeItems {
-        private ZonedDateTimeItems() {}
-
-        // Embeddable helpers — concrete ZonedDateTime versions of the generic embeddable templates
-        @Embeddable
-        static class FlattenedBasic {
-            ZonedDateTime v;
-        }
-
-        @Embeddable
-        static class FlattenedArray {
-            ZonedDateTime[] v;
-        }
-
-        @Embeddable
-        static class FlattenedCollection {
-            Collection<ZonedDateTime> v;
-        }
-
-        @Embeddable
-        static class NestedFlattenedBasic {
-            FlattenedBasic v;
-        }
-
-        @Embeddable
-        static class NestedFlattenedArray {
-            FlattenedArray v;
-        }
-
-        @Embeddable
-        static class NestedFlattenedCollection {
-            FlattenedCollection v;
-        }
-
-        @Struct(name = "ZonedDateTimeAggregateBasic")
-        @Embeddable
-        static class AggregateBasic {
-            ZonedDateTime v;
-        }
-
-        @Struct(name = "ZonedDateTimeAggregateArray")
-        @Embeddable
-        static class AggregateArray {
-            ZonedDateTime[] v;
-        }
-
-        @Struct(name = "ZonedDateTimeAggregateCollection")
-        @Embeddable
-        static class AggregateCollection {
-            Collection<ZonedDateTime> v;
-        }
-
-        @Struct(name = "ZonedDateTimeNestedAggregateBasic")
-        @Embeddable
-        static class NestedAggregateBasic {
-            AggregateBasic v;
-        }
-
-        @Struct(name = "ZonedDateTimeNestedAggregateArray")
-        @Embeddable
-        static class NestedAggregateArray {
-            AggregateArray v;
-        }
-
-        @Struct(name = "ZonedDateTimeNestedAggregateCollection")
-        @Embeddable
-        static class NestedAggregateCollection {
-            AggregateCollection v;
-        }
-
-        @Struct(name = "ZonedDateTimeAggregateCollectionOfAggregate")
-        @Embeddable
-        static class AggregateCollectionOfAggregate {
-            Collection<AggregateBasic> v;
-        }
-
-        // Entity variants
-        @Entity
-        static class WithId {
-            @Id
-            ZonedDateTime id;
-        }
-
-        @Entity
-        static class WithFlattenedEmbeddableId {
-            @Id
-            FlattenedBasic id;
-        }
-
-        @Entity
-        static class WithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            ZonedDateTime v;
-        }
-
-        @Entity
-        static class WithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            ZonedDateTime[] v;
-        }
-
-        @Entity
-        static class WithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            Collection<ZonedDateTime> v;
-        }
-
-        @Entity
-        static class WithEmbeddableWithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            FlattenedBasic v;
-        }
-
-        @Entity
-        static class WithEmbeddableWithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            FlattenedArray v;
-        }
-
-        @Entity
-        static class WithEmbeddableWithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            FlattenedCollection v;
-        }
-
-        @Entity
-        static class WithNestedEmbeddableWithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            NestedFlattenedBasic v;
-        }
-
-        @Entity
-        static class WithNestedEmbeddableWithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            NestedFlattenedArray v;
-        }
-
-        @Entity
-        static class WithNestedEmbeddableWithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            NestedFlattenedCollection v;
-        }
-
-        @Entity
-        static class WithAggregateEmbeddableWithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            AggregateBasic v;
-        }
-
-        @Entity
-        static class WithAggregateEmbeddableWithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            AggregateArray v;
-        }
-
-        @Entity
-        static class WithAggregateEmbeddableWithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            AggregateCollection v;
-        }
-
-        @Entity
-        static class WithCollectionOfAggregateEmbeddable {
-            @Id
-            int id;
-
-            Collection<AggregateBasic> v;
-        }
-
-        @Entity
-        static class WithNestedAggregateEmbeddableWithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            NestedAggregateBasic v;
-        }
-
-        @Entity
-        static class WithNestedAggregateEmbeddableWithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            NestedAggregateArray v;
-        }
-
-        @Entity
-        static class WithNestedAggregateEmbeddableWithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            NestedAggregateCollection v;
-        }
-
-        @Entity
-        static class WithNestedCollectionOfAggregateEmbeddable {
-            @Id
-            int id;
-
-            AggregateCollectionOfAggregate v;
-        }
-    }
-
     static final class OffsetTimeItems {
         private OffsetTimeItems() {}
 
@@ -2185,232 +2184,6 @@ final class UnsupportedItems {
             int id;
 
             Collection<OffsetTime> v;
-        }
-
-        @Entity
-        static class WithEmbeddableWithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            FlattenedBasic v;
-        }
-
-        @Entity
-        static class WithEmbeddableWithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            FlattenedArray v;
-        }
-
-        @Entity
-        static class WithEmbeddableWithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            FlattenedCollection v;
-        }
-
-        @Entity
-        static class WithNestedEmbeddableWithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            NestedFlattenedBasic v;
-        }
-
-        @Entity
-        static class WithNestedEmbeddableWithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            NestedFlattenedArray v;
-        }
-
-        @Entity
-        static class WithNestedEmbeddableWithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            NestedFlattenedCollection v;
-        }
-
-        @Entity
-        static class WithAggregateEmbeddableWithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            AggregateBasic v;
-        }
-
-        @Entity
-        static class WithAggregateEmbeddableWithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            AggregateArray v;
-        }
-
-        @Entity
-        static class WithAggregateEmbeddableWithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            AggregateCollection v;
-        }
-
-        @Entity
-        static class WithCollectionOfAggregateEmbeddable {
-            @Id
-            int id;
-
-            Collection<AggregateBasic> v;
-        }
-
-        @Entity
-        static class WithNestedAggregateEmbeddableWithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            NestedAggregateBasic v;
-        }
-
-        @Entity
-        static class WithNestedAggregateEmbeddableWithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            NestedAggregateArray v;
-        }
-
-        @Entity
-        static class WithNestedAggregateEmbeddableWithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            NestedAggregateCollection v;
-        }
-
-        @Entity
-        static class WithNestedCollectionOfAggregateEmbeddable {
-            @Id
-            int id;
-
-            AggregateCollectionOfAggregate v;
-        }
-    }
-
-    static final class OffsetDateTimeItems {
-        private OffsetDateTimeItems() {}
-
-        // Embeddable helpers — concrete OffsetDateTime versions of the generic embeddable templates
-        @Embeddable
-        static class FlattenedBasic {
-            OffsetDateTime v;
-        }
-
-        @Embeddable
-        static class FlattenedArray {
-            OffsetDateTime[] v;
-        }
-
-        @Embeddable
-        static class FlattenedCollection {
-            Collection<OffsetDateTime> v;
-        }
-
-        @Embeddable
-        static class NestedFlattenedBasic {
-            FlattenedBasic v;
-        }
-
-        @Embeddable
-        static class NestedFlattenedArray {
-            FlattenedArray v;
-        }
-
-        @Embeddable
-        static class NestedFlattenedCollection {
-            FlattenedCollection v;
-        }
-
-        @Struct(name = "OffsetDateTimeAggregateBasic")
-        @Embeddable
-        static class AggregateBasic {
-            OffsetDateTime v;
-        }
-
-        @Struct(name = "OffsetDateTimeAggregateArray")
-        @Embeddable
-        static class AggregateArray {
-            OffsetDateTime[] v;
-        }
-
-        @Struct(name = "OffsetDateTimeAggregateCollection")
-        @Embeddable
-        static class AggregateCollection {
-            Collection<OffsetDateTime> v;
-        }
-
-        @Struct(name = "OffsetDateTimeNestedAggregateBasic")
-        @Embeddable
-        static class NestedAggregateBasic {
-            AggregateBasic v;
-        }
-
-        @Struct(name = "OffsetDateTimeNestedAggregateArray")
-        @Embeddable
-        static class NestedAggregateArray {
-            AggregateArray v;
-        }
-
-        @Struct(name = "OffsetDateTimeNestedAggregateCollection")
-        @Embeddable
-        static class NestedAggregateCollection {
-            AggregateCollection v;
-        }
-
-        @Struct(name = "OffsetDateTimeAggregateCollectionOfAggregate")
-        @Embeddable
-        static class AggregateCollectionOfAggregate {
-            Collection<AggregateBasic> v;
-        }
-
-        // Entity variants
-        @Entity
-        static class WithId {
-            @Id
-            OffsetDateTime id;
-        }
-
-        @Entity
-        static class WithFlattenedEmbeddableId {
-            @Id
-            FlattenedBasic id;
-        }
-
-        @Entity
-        static class WithBasicPersistentAttribute {
-            @Id
-            int id;
-
-            OffsetDateTime v;
-        }
-
-        @Entity
-        static class WithArrayPersistentAttribute {
-            @Id
-            int id;
-
-            OffsetDateTime[] v;
-        }
-
-        @Entity
-        static class WithCollectionPersistentAttribute {
-            @Id
-            int id;
-
-            Collection<OffsetDateTime> v;
         }
 
         @Entity

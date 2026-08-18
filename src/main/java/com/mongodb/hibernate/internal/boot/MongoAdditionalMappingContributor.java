@@ -30,12 +30,18 @@ import com.mongodb.hibernate.internal.dialect.MongoDialect;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.TemporalType;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.MonthDay;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
+import java.time.Period;
+import java.time.YearMonth;
 import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Date;
@@ -70,6 +76,7 @@ import org.hibernate.boot.spi.MetadataBuildingContext;
 import org.hibernate.cfg.AvailableSettings;
 import org.hibernate.engine.config.spi.ConfigurationService;
 import org.hibernate.mapping.AggregateColumn;
+import org.hibernate.mapping.BasicValue;
 import org.hibernate.mapping.Collection;
 import org.hibernate.mapping.Component;
 import org.hibernate.mapping.PersistentClass;
@@ -77,8 +84,13 @@ import org.hibernate.mapping.Property;
 import org.hibernate.mapping.SimpleValue;
 import org.hibernate.mapping.ToOne;
 import org.hibernate.mapping.UniqueKey;
+import org.hibernate.mapping.Value;
 import org.hibernate.type.BasicPluralType;
 import org.hibernate.type.ComponentType;
+import org.hibernate.type.SqlTypes;
+import org.hibernate.type.TimeZoneStorageStrategy;
+import org.hibernate.type.UserComponentType;
+import org.jspecify.annotations.Nullable;
 
 /**
  * @hidden
@@ -95,6 +107,16 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
      */
     private static final Set<String> UNSUPPORTED_FIELD_NAME_CHARACTERS = Set.of(".", "$", "#");
 
+    /** The types {@code TimeZoneStorageHelper} resolves a time zone storage strategy for. */
+    private static final Set<Class<?>> TIME_ZONE_STORAGE_TYPES = Set.of(OffsetDateTime.class, ZonedDateTime.class);
+
+    /** The supported temporal types, each of which denotes an instant and is stored as a BSON {@code Date}. */
+    private static final Set<Class<?>> INSTANT_DENOTING_TYPES =
+            Set.of(Instant.class, OffsetDateTime.class, ZonedDateTime.class);
+
+    private static final Set<TimeZoneStorageStrategy> UNSUPPORTED_TIME_ZONE_STORAGE_STRATEGIES =
+            Set.of(TimeZoneStorageStrategy.NATIVE, TimeZoneStorageStrategy.NORMALIZE);
+
     private static final Set<Class<?>> UNSUPPORTED_TYPES = Set.of(
             // Temporal types
             Calendar.class,
@@ -102,11 +124,13 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
             Date.class,
             java.sql.Date.class,
             Timestamp.class,
+            LocalDate.class,
             LocalTime.class,
             LocalDateTime.class,
-            ZonedDateTime.class,
             OffsetTime.class,
-            OffsetDateTime.class,
+            Period.class,
+            YearMonth.class,
+            MonthDay.class,
             // BSON value types
             BSONTimestamp.class,
             Binary.class,
@@ -157,6 +181,7 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
         });
         forbidCatalog(metadata, buildingContext);
         forbidDottedTableQualifiers(metadata);
+        forbidUnsupportedPreferredInstantJdbcType(buildingContext);
     }
 
     /**
@@ -238,10 +263,48 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
         }
     }
 
+    /**
+     * {@code hibernate.type.preferred_instant_jdbc_type} redirects {@link Instant} attributes only, not
+     * {@link OffsetDateTime} or {@link ZonedDateTime}. Its default, {@link SqlTypes#TIMESTAMP_UTC}, is the only value
+     * with a working path: {@code TIMESTAMP} redirects onto the wall-clock type this design rejects everywhere else,
+     * and an instant written on a host in one zone would read back as a different instant on a host in another;
+     * {@code INSTANT} reaches a JDBC type code this extension does not register. The setting accepts either the
+     * {@link SqlTypes} constant name or its numeric code, so both are checked.
+     */
+    private static void forbidUnsupportedPreferredInstantJdbcType(MetadataBuildingContext buildingContext) {
+        var preferredInstantJdbcType = buildingContext
+                .getBootstrapContext()
+                .getServiceRegistry()
+                .requireService(ConfigurationService.class)
+                .getSettings()
+                .get(AvailableSettings.PREFERRED_INSTANT_JDBC_TYPE);
+        if (preferredInstantJdbcType != null && !denotesTimestampUtc(preferredInstantJdbcType)) {
+            throw new FeatureNotSupportedException(format(
+                    "The setting [%s] is set to [%s], but only [TIMESTAMP_UTC] (its default) is supported",
+                    AvailableSettings.PREFERRED_INSTANT_JDBC_TYPE, preferredInstantJdbcType));
+        }
+    }
+
+    private static boolean denotesTimestampUtc(Object preferredInstantJdbcType) {
+        if (preferredInstantJdbcType instanceof Number number) {
+            return number.intValue() == SqlTypes.TIMESTAMP_UTC;
+        }
+        var text = preferredInstantJdbcType.toString().trim();
+        if ("TIMESTAMP_UTC".equalsIgnoreCase(text)) {
+            return true;
+        }
+        try {
+            return Integer.parseInt(text) == SqlTypes.TIMESTAMP_UTC;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
     private static void checkPropertyTypes(PersistentClass persistentClass) {
-        checkPropertyType(persistentClass, persistentClass.getIdentifierProperty(), new StringJoiner("."));
+        var mappedClass = persistentClass.getMappedClass();
+        checkPropertyType(persistentClass, mappedClass, persistentClass.getIdentifierProperty(), new StringJoiner("."));
         persistentClass.getProperties().forEach(property -> {
-            checkPropertyType(persistentClass, property, new StringJoiner("."));
+            checkPropertyType(persistentClass, mappedClass, property, new StringJoiner("."));
         });
     }
 
@@ -367,11 +430,18 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
                 ClassElementChecker.CURRENT_TIMESTAMP_WITH_DB_SOURCE);
     }
 
+    /** @param declaringClass the class the {@code property} is declared by, {@code null} if there is no such class. */
     private static void checkPropertyType(
-            PersistentClass persistentClass, Property property, StringJoiner propertyPath) {
+            PersistentClass persistentClass,
+            @Nullable Class<?> declaringClass,
+            Property property,
+            StringJoiner propertyPath) {
         propertyPath.add(property.getName());
         var value = property.getValue();
         var type = value.getType();
+        forbidUnsupportedTemporalPrecision(persistentClass, value, propertyPath);
+        forbidTemporalVersion(persistentClass, property, value, propertyPath);
+        forbidUnsupportedTimeZoneStorage(persistentClass, declaringClass, property, value, propertyPath);
         if (type instanceof BasicPluralType<?, ?> pluralType) {
             var columns = value.getColumns();
             assertTrue(columns.size() == 1);
@@ -388,11 +458,136 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
         }
     }
 
+    /**
+     * Only {@link TemporalType#TIMESTAMP}, which is the default, denotes an instant. {@code @Temporal} narrows a
+     * {@link Date} to a wall-clock date or time instead.
+     */
+    @SuppressWarnings("deprecation")
+    private static void forbidUnsupportedTemporalPrecision(
+            PersistentClass persistentClass, Value value, StringJoiner propertyPath) {
+        if (value instanceof BasicValue basicValue) {
+            var temporalPrecision = basicValue.getTemporalPrecision();
+            if (temporalPrecision != null && temporalPrecision != TemporalType.TIMESTAMP) {
+                throw new FeatureNotSupportedException(format(
+                        "%s: the persistent attribute [%s] has temporal precision [%s] that is not supported."
+                                + " TODO-HIBERNATE-226 https://jira.mongodb.org/browse/HIBERNATE-226",
+                        persistentClass, propertyPath, temporalPrecision));
+            }
+        }
+    }
+
+    /**
+     * A BSON {@code Date} holds milliseconds, so two updates within one millisecond produce an equal version and the
+     * optimistic-lock check on the second cannot fire.
+     *
+     * <p>This subsumes {@code COLUMN} storage on a version attribute, which is why
+     * {@link #timeZoneStorageColumnRejectedUsage} does not consider that position.
+     */
+    private static void forbidTemporalVersion(
+            PersistentClass persistentClass, Property property, Value value, StringJoiner propertyPath) {
+        if (property.equals(persistentClass.getVersion())) {
+            var storedType = storedType(value);
+            if (INSTANT_DENOTING_TYPES.contains(storedType)) {
+                throw new FeatureNotSupportedException(format(
+                        "%s: the version attribute [%s] has type [%s] that is not supported, because a BSON Date holds"
+                                + " milliseconds and two updates within one millisecond would produce an equal version",
+                        persistentClass, propertyPath, storedType.getTypeName()));
+            }
+        }
+    }
+
+    /**
+     * The type the mapping is about: for a plural attribute the element type, since the collection's own says nothing.
+     */
+    private static Class<?> storedType(Value value) {
+        var type = value.getType();
+        return type instanceof BasicPluralType<?, ?> pluralType
+                ? pluralType.getElementType().getJavaType()
+                : type.getReturnedClass();
+    }
+
+    /**
+     * {@code NATIVE} asks for an offset the server does not store.
+     *
+     * <p>{@code NORMALIZE} is rejected because it cannot be honoured. It is defined to preserve the instant and return
+     * it at the JVM default zone, which requires Hibernate ORM to convert through {@link Timestamp}; for values before
+     * 1905 that conversion goes through calendar fields, and the legacy calendar those belong to is Julian before the
+     * Gregorian cutover. A BSON {@code Date} would then hold something other than the instant - ten days out for a
+     * year-1500 value - even though the round trip cancels out and hides it. Reading through {@link java.time.Instant}
+     * instead keeps the stored value exact but returns UTC, which is {@code NORMALIZE_UTC}, so there is nothing left
+     * for {@code NORMALIZE} to mean here.
+     *
+     * <p>{@code COLUMN} stores an offset in a second field, which works for an ordinary attribute but not where a
+     * single field is required or where the strategy is not honoured. Hibernate ORM resolves it for singular attributes
+     * only, and a plural one degrades differently depending on how the strategy was asked for: the annotation replaces
+     * the attribute with one scalar value, dropping the collection, while a global setting keeps the collection and
+     * maps its elements to the wall-clock type instead, which loses their offsets and makes the stored value depend on
+     * the writing host's zone.
+     *
+     * <p>Every check applies only to the two types a strategy is resolved for, so that a global setting leaves every
+     * other temporal attribute alone.
+     */
+    private static void forbidUnsupportedTimeZoneStorage(
+            PersistentClass persistentClass,
+            @Nullable Class<?> declaringClass,
+            Property property,
+            Value value,
+            StringJoiner propertyPath) {
+        if (value instanceof BasicValue basicValue) {
+            var strategy = basicValue.getDefaultTimeZoneStorageStrategy();
+            if (TIME_ZONE_STORAGE_TYPES.contains(storedType(basicValue))) {
+                if (UNSUPPORTED_TIME_ZONE_STORAGE_STRATEGIES.contains(strategy)) {
+                    throw new FeatureNotSupportedException(format(
+                            "%s: the persistent attribute [%s] uses the time zone storage strategy [%s] that is not supported",
+                            persistentClass, propertyPath, strategy));
+                }
+                if (strategy == TimeZoneStorageStrategy.COLUMN && basicValue.getType() instanceof BasicPluralType) {
+                    throw new FeatureNotSupportedException(format(
+                            "%s: the plural attribute [%s] uses the time zone storage strategy [COLUMN] that is not supported",
+                            persistentClass, propertyPath));
+                }
+            }
+        } else if (value.getType() instanceof UserComponentType
+                && TIME_ZONE_STORAGE_TYPES.contains(value.getType().getReturnedClass())) {
+            var rejectedUsage = timeZoneStorageColumnRejectedUsage(persistentClass, declaringClass, property, value);
+            if (rejectedUsage != null) {
+                throw new FeatureNotSupportedException(format(
+                        "%s: the %s attribute [%s] uses the time zone storage strategy [COLUMN] that is not supported",
+                        persistentClass, rejectedUsage, propertyPath));
+            }
+        }
+    }
+
+    private static @Nullable String timeZoneStorageColumnRejectedUsage(
+            PersistentClass persistentClass, @Nullable Class<?> declaringClass, Property property, Value value) {
+        if (property.equals(persistentClass.getIdentifierProperty())) {
+            return "identifier";
+        }
+        // Hibernate ORM maps a plural attribute under `COLUMN` as a single scalar value, so the mapping model no longer
+        // says the attribute is plural. The declared member is what still does.
+        var declaredType = declaredAttributeType(declaringClass, property);
+        return declaredType != null && !declaredType.equals(value.getType().getReturnedClass()) ? "plural" : null;
+    }
+
+    private static @Nullable Class<?> declaredAttributeType(@Nullable Class<?> declaringClass, Property property) {
+        for (var c = declaringClass; c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                return c.getDeclaredField(property.getName()).getType();
+            } catch (NoSuchFieldException e) {
+                // keep walking up; a property may also be accessed through a getter, in which case there is no field
+                // to compare and the check does not apply
+            }
+        }
+        return null;
+    }
+
     private static void checkComponentPropertyTypes(
             PersistentClass persistentClass, Component component, StringJoiner propertyPath) {
+        var componentClass = component.getComponentClass();
         component
                 .getProperties()
-                .forEach(componentProperty -> checkPropertyType(persistentClass, componentProperty, propertyPath));
+                .forEach(componentProperty ->
+                        checkPropertyType(persistentClass, componentClass, componentProperty, propertyPath));
     }
 
     private static void forbidUnsupportedTypes(

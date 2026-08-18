@@ -24,6 +24,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -64,6 +66,8 @@ class QueryLiteralIntegrationTests extends AbstractQueryIntegrationTests {
         item.bigDecimalValue = QueryLiteralConstants.BIG_DECIMAL;
         item.objectIdValue = QueryLiteralConstants.OBJECT_ID;
         item.instantValue = QueryLiteralConstants.INSTANT;
+        item.offsetDateTimeValue = QueryLiteralConstants.OFFSET_DATE_TIME;
+        item.zonedDateTimeValue = QueryLiteralConstants.ZONED_DATE_TIME;
         return item;
     }
 
@@ -79,6 +83,8 @@ class QueryLiteralIntegrationTests extends AbstractQueryIntegrationTests {
         item.bigDecimalValue = new BigDecimal("-1.25");
         item.objectIdValue = new ObjectId("000000000000000000000002");
         item.instantValue = Instant.parse("1999-01-04T10:05:01Z");
+        item.offsetDateTimeValue = OffsetDateTime.parse("1999-01-04T10:05:01Z");
+        item.zonedDateTimeValue = ZonedDateTime.parse("1999-01-04T10:05:01Z");
         return item;
     }
 
@@ -103,6 +109,16 @@ class QueryLiteralIntegrationTests extends AbstractQueryIntegrationTests {
                         {"$oid": "000000000000000000000001"}"""),
                 Arguments.of(
                         "instantValue", "INSTANT", """
+                        {"$date": "2025-01-04T10:05:01Z"}"""),
+                Arguments.of(
+                        "offsetDateTimeValue",
+                        "OFFSET_DATE_TIME",
+                        """
+                        {"$date": "2025-01-04T10:05:01Z"}"""),
+                Arguments.of(
+                        "zonedDateTimeValue",
+                        "ZONED_DATE_TIME",
+                        """
                         {"$date": "2025-01-04T10:05:01Z"}"""));
     }
 
@@ -141,22 +157,9 @@ class QueryLiteralIntegrationTests extends AbstractQueryIntegrationTests {
         BigDecimal bigDecimalValue;
         ObjectId objectIdValue;
         Instant instantValue;
+        OffsetDateTime offsetDateTimeValue;
+        ZonedDateTime zonedDateTimeValue;
 
         Item() {}
-
-        /** Item 1 holds every constant's value; item 2 holds values none of the constants match. */
-        Item(int id) {
-            this.id = id;
-            var matching = id == 1;
-            this.stringValue = matching ? QueryLiteralConstants.STRING : "Anna Karenina";
-            this.characterValue = matching ? QueryLiteralConstants.CHARACTER : 'z';
-            this.intValue = matching ? QueryLiteralConstants.INT : -1;
-            this.longValue = matching ? QueryLiteralConstants.LONG : -1L;
-            this.doubleValue = matching ? QueryLiteralConstants.DOUBLE : -1.5;
-            this.booleanValue = matching ? QueryLiteralConstants.BOOLEAN : !QueryLiteralConstants.BOOLEAN;
-            this.bigDecimalValue = matching ? QueryLiteralConstants.BIG_DECIMAL : new BigDecimal("-1.25");
-            this.objectIdValue = matching ? QueryLiteralConstants.OBJECT_ID : new ObjectId("000000000000000000000002");
-            this.instantValue = matching ? QueryLiteralConstants.INSTANT : Instant.parse("1999-01-04T10:05:01Z");
-        }
     }
 }
