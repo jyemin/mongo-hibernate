@@ -143,5 +143,20 @@ class QueryLiteralIntegrationTests extends AbstractQueryIntegrationTests {
         Instant instantValue;
 
         Item() {}
+
+        /** Item 1 holds every constant's value; item 2 holds values none of the constants match. */
+        Item(int id) {
+            this.id = id;
+            var matching = id == 1;
+            this.stringValue = matching ? QueryLiteralConstants.STRING : "Anna Karenina";
+            this.characterValue = matching ? QueryLiteralConstants.CHARACTER : 'z';
+            this.intValue = matching ? QueryLiteralConstants.INT : -1;
+            this.longValue = matching ? QueryLiteralConstants.LONG : -1L;
+            this.doubleValue = matching ? QueryLiteralConstants.DOUBLE : -1.5;
+            this.booleanValue = matching ? QueryLiteralConstants.BOOLEAN : !QueryLiteralConstants.BOOLEAN;
+            this.bigDecimalValue = matching ? QueryLiteralConstants.BIG_DECIMAL : new BigDecimal("-1.25");
+            this.objectIdValue = matching ? QueryLiteralConstants.OBJECT_ID : new ObjectId("000000000000000000000002");
+            this.instantValue = matching ? QueryLiteralConstants.INSTANT : Instant.parse("1999-01-04T10:05:01Z");
+        }
     }
 }
