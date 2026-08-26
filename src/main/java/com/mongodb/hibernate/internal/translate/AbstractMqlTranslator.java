@@ -558,7 +558,7 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     @Override
     public void visitParameter(JdbcParameter jdbcParameter) {
         yieldValueOrExpression(
-                new AstParameterMarker(jdbcParameter.getParameterBinder()),
+                new AstParameterMarker(jdbcParameter.getParameterBinder(), jdbcParameter.getParameterId()),
                 parameterNeedsLiteralWrapping(jdbcParameter));
     }
 
@@ -1279,7 +1279,8 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
                 var parameter =
                         new ColumnValueParameter(new ColumnReference(mutatingTable, aggregate), ParameterUsage.SET);
                 updates.add(new AstFieldUpdate(
-                        aggregate.getSelectionExpression(), new AstParameterMarker(parameter.getParameterBinder())));
+                        aggregate.getSelectionExpression(),
+                        new AstParameterMarker(parameter.getParameterBinder(), parameter.getParameterId())));
             }
         }
         return updates;

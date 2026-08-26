@@ -17,21 +17,66 @@
 package com.mongodb.hibernate.internal.translate.mongoast;
 
 import static com.mongodb.hibernate.internal.translate.mongoast.AstNodeAssertions.assertValueRendering;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 public class AstParameterMarkerTests {
+
+    // Captures so that each call yields a distinct instance: a non-capturing lambda may be shared by the JVM.
     private static JdbcParameterBinder binder() {
-        return (statement, startPosition, jdbcParameterBindings, executionContext) -> {};
+        var distinct = new Object();
+        return (statement, startPosition, jdbcParameterBindings, executionContext) -> distinct.hashCode();
     }
 
     @Test
     void testRender() {
         var binder = binder();
-        var expr = new AstParameterMarker(binder);
+        var expr = new AstParameterMarker(binder, 0);
         assertValueRendering("""
                              {"": ?}""", List.of(binder), expr);
+    }
+
+    @Nested
+    class Equality {
+        @Test
+        void testEqualWhenParameterIdMatchesDespiteDifferentBinders() {
+            var marker = new AstParameterMarker(binder(), 1);
+            var other = new AstParameterMarker(binder(), 1);
+            assertThat(marker).isEqualTo(other).hasSameHashCodeAs(other);
+        }
+
+        @Test
+        void testNotEqualWhenParameterIdDiffers() {
+            assertThat(new AstParameterMarker(binder(), 1)).isNotEqualTo(new AstParameterMarker(binder(), 2));
+        }
+
+        @Test
+        void testEqualWithoutParameterIdWhenBinderIsSame() {
+            var binder = binder();
+            var marker = new AstParameterMarker(binder, null);
+            var other = new AstParameterMarker(binder, null);
+            assertThat(marker).isEqualTo(other).hasSameHashCodeAs(other);
+        }
+
+        @Test
+        void testNotEqualWithoutParameterIdWhenBinderDiffers() {
+            assertThat(new AstParameterMarker(binder(), null)).isNotEqualTo(new AstParameterMarker(binder(), null));
+        }
+
+        @Test
+        void testNotEqualWhenOnlyOneHasParameterId() {
+            var binder = binder();
+            assertThat(new AstParameterMarker(binder, 1)).isNotEqualTo(new AstParameterMarker(binder, null));
+        }
+
+        @Test
+        void testEqualToItselfWithoutParameterId() {
+            var marker = new AstParameterMarker(binder(), null);
+            assertThat(marker).isEqualTo(marker);
+        }
     }
 }
