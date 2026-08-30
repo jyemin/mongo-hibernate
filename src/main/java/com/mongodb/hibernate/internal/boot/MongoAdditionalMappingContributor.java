@@ -39,7 +39,6 @@ import java.time.OffsetTime;
 import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.UUID;
@@ -157,7 +156,7 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
             materializeUniqueColumns(persistentClass);
         });
         forbidCatalog(metadata, buildingContext);
-        forbidCollidingCollectionNames(metadata);
+        forbidDottedTableQualifiers(metadata);
     }
 
     /**
@@ -212,32 +211,30 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
     }
 
     /**
-     * A schema folds into the collection name ({@code schema.name}), so two distinct table qualifiers can resolve to
-     * the same collection — e.g. {@code @Table(schema = "a", name = "b")} and {@code @Table(name = "a.b")} both resolve
-     * to {@code a.b}. Hibernate treats these as different tables and would not catch the clash, yet they would silently
-     * co-mingle in one collection. Distinct qualifiers that resolve to the same name are rejected. Hibernate-sanctioned
-     * table sharing (and a {@code SINGLE_TABLE} hierarchy's subclasses) share one {@link org.hibernate.mapping.Table}
-     * instance, so they appear once and are not flagged.
+     * A schema folds into the collection name as {@code schema.name}, so the '.' is the extension's own separator. A
+     * '.' written by the user makes the resolved name ambiguous: {@code @Table(schema = "a", name = "b")} and
+     * {@code @Table(name = "a.b")} would resolve to the same collection, and nothing downstream could tell the two
+     * qualifiers apart.
      */
-    private static void forbidCollidingCollectionNames(InFlightMetadataCollector metadata) {
-        // Hibernate registers one Table per distinct qualified name, and table sharing (including a SINGLE_TABLE
-        // hierarchy's subclasses) reuses that one Table. So a resolved collection name seen twice always comes from
-        // two distinct qualifiers that folding collapsed together — a genuine collision.
-        var resolvedNames = new HashSet<String>();
+    private static void forbidDottedTableQualifiers(InFlightMetadataCollector metadata) {
         for (var namespace : metadata.getDatabase().getNamespaces()) {
             var schema = namespace.getName().schema();
-            var schemaText = schema == null ? null : schema.getText();
-            for (var table : namespace.getTables()) {
-                var name = table.getName();
-                var resolved = schemaText == null ? name : schemaText + "." + name;
-                if (!resolvedNames.add(resolved)) {
-                    throw new FeatureNotSupportedException(format(
-                            "Two entities resolve to the same collection [%s] via distinct table qualifiers (schema"
-                                    + " folding makes e.g. @Table(schema = \"a\", name = \"b\") collide with"
-                                    + " @Table(name = \"a.b\")). Rename one so they resolve to different collections.",
-                            resolved));
-                }
+            if (schema != null) {
+                forbidDot(schema.getText(), "schema");
             }
+            for (var table : namespace.getTables()) {
+                forbidDot(table.getName(), "table");
+            }
+        }
+    }
+
+    private static void forbidDot(String name, String kind) {
+        if (name.contains(".")) {
+            throw new FeatureNotSupportedException(format(
+                    "The character [.] in a %s name is not supported, but is present in [%s]. A schema folds into the"
+                            + " collection name as [schema.name], so a '.' written by the user would make the resolved"
+                            + " collection name ambiguous.",
+                    kind, name));
         }
     }
 

@@ -43,7 +43,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 @SessionFactory(exportSchema = false)
 @DomainModel(
         annotatedClasses = {
-            IdentifierIntegrationTests.WithSpaceAndDotAndMixedCase.class,
+            IdentifierIntegrationTests.WithSpaceAndMixedCase.class,
             IdentifierIntegrationTests.StartingAndEndingWithBackticks.class,
             IdentifierIntegrationTests.StartingWithBacktick.class,
             IdentifierIntegrationTests.EndingWithBacktick.class,
@@ -56,8 +56,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
         })
 @ExtendWith(MongoExtension.class)
 class IdentifierIntegrationTests implements SessionFactoryScopeAware, MongoServiceRegistryProducer {
-    @InjectMongoCollection(WithSpaceAndDotAndMixedCase.COLLECTION_NAME)
-    private MongoCollection<BsonDocument> mongoCollectionWithSpaceAndDotAndMixedCase;
+    @InjectMongoCollection(WithSpaceAndMixedCase.COLLECTION_NAME)
+    private MongoCollection<BsonDocument> mongoCollectionWithSpaceAndMixedCase;
 
     @InjectMongoCollection(StartingAndEndingWithBackticks.ACTUAL_COLLECTION_NAME)
     private MongoCollection<BsonDocument> mongoCollectionStartingAndEndingWithBackticks;
@@ -94,14 +94,14 @@ class IdentifierIntegrationTests implements SessionFactoryScopeAware, MongoServi
     }
 
     @Test
-    void withSpaceAndDotAndMixedCase() {
-        var item = new WithSpaceAndDotAndMixedCase();
+    void withSpaceAndMixedCase() {
+        var item = new WithSpaceAndMixedCase();
         sessionFactoryScope.inTransaction(session -> session.persist(item));
-        assertThat(mongoCollectionWithSpaceAndDotAndMixedCase.find())
+        assertThat(mongoCollectionWithSpaceAndMixedCase.find())
                 .containsExactly(new BsonDocument()
                         .append(ID_FIELD_NAME, new BsonInt32(item.id))
-                        .append(WithSpaceAndDotAndMixedCase.FIELD_NAME, new BsonInt32(item.v)));
-        sessionFactoryScope.inTransaction(session -> session.find(WithSpaceAndDotAndMixedCase.class, item.id));
+                        .append(WithSpaceAndMixedCase.FIELD_NAME, new BsonInt32(item.v)));
+        sessionFactoryScope.inTransaction(session -> session.find(WithSpaceAndMixedCase.class, item.id));
     }
 
     @Test
@@ -204,15 +204,15 @@ class IdentifierIntegrationTests implements SessionFactoryScopeAware, MongoServi
     }
 
     @Entity
-    @Table(name = WithSpaceAndDotAndMixedCase.COLLECTION_NAME)
-    static class WithSpaceAndDotAndMixedCase {
-        static final String COLLECTION_NAME = "collection name with space and .dot and Mixed Case";
+    @Table(name = WithSpaceAndMixedCase.COLLECTION_NAME)
+    static class WithSpaceAndMixedCase {
+        static final String COLLECTION_NAME = "collection name with space and Mixed Case";
         static final String FIELD_NAME = "field name with space and Mixed Case";
 
         @Id
         int id;
 
-        @Column(name = WithSpaceAndDotAndMixedCase.FIELD_NAME)
+        @Column(name = WithSpaceAndMixedCase.FIELD_NAME)
         int v;
     }
 
