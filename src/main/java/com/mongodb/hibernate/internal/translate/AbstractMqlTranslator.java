@@ -282,6 +282,124 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
     // Match a quoted SQL string with the contents of the string being in match group 1
     private static final Pattern SQL_STRING = Pattern.compile("^'((?:''|[^'])*)'$");
 
+    private static final Map<Character, Map<Integer, Optional<String>>> DATE_FORMATS = Map.ofEntries(
+            // era
+            Map.entry('G', Map.of(1, Optional.empty(), 2, Optional.empty())),
+            // year
+            Map.entry(
+                    'y',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.empty(),
+                            3, Optional.empty(),
+                            4, Optional.of("%Y"))),
+
+            // month of year
+            Map.entry(
+                    'M', Map.of(4, Optional.of("%B"), 3, Optional.of("%b"), 2, Optional.of("%m"), 1, Optional.empty())),
+
+            // week of year (this looks like %U, but does not match Java's implementation)
+            Map.entry('w', Map.of(1, Optional.empty(), 2, Optional.of("%V"))),
+
+            // year for week
+            Map.entry(
+                    'Y',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.empty(),
+                            3, Optional.empty(),
+                            4, Optional.of("%G"))),
+
+            // week of month
+            Map.entry('W', Map.of(1, Optional.empty())),
+
+            // day of week
+            Map.entry(
+                    'E',
+                    Map.of(
+                            3, Optional.empty(),
+                            4, Optional.empty())),
+            Map.entry(
+                    'e',
+                    Map.of(
+                            // This looks like it matches %u, but Mongo and Java have different starts of the week
+                            1, Optional.empty(),
+                            2, Optional.empty())),
+
+            // day of month
+            Map.entry(
+                    'd',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.of("%d"))),
+
+            // day of year
+            Map.entry(
+                    'D',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.empty(),
+                            3, Optional.of("%j"))),
+
+            // am pm
+            Map.entry('a', Map.of(1, Optional.empty())),
+
+            // hour
+            Map.entry(
+                    'h',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.empty())),
+            Map.entry(
+                    'H',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.of("%H"))),
+
+            // minute
+            Map.entry(
+                    'm',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.of("%M"))),
+
+            // second
+            Map.entry(
+                    's',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.of("%S"))),
+
+            // fractional seconds
+            Map.entry(
+                    'S',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.empty(),
+                            3, Optional.of("%L"),
+                            4, Optional.empty(),
+                            5, Optional.empty(),
+                            6, Optional.empty())),
+
+            // timezones
+            Map.entry(
+                    'z',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.empty(),
+                            3, Optional.empty())),
+            Map.entry(
+                    'Z',
+                    Map.of(
+                            1, Optional.of("%z"),
+                            2, Optional.of("%z"),
+                            3, Optional.of("%z"))),
+            Map.entry(
+                    'x',
+                    Map.of(
+                            1, Optional.empty(),
+                            2, Optional.of("%z"),
+                            3, Optional.empty())));
     private final SessionFactoryImplementor sessionFactory;
 
     private final AstVisitorValueHolder astVisitorValueHolder = new AstVisitorValueHolder();
@@ -1431,7 +1549,49 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
 
     @Override
     public void visitFormat(Format format) {
-        throw new FeatureNotSupportedException();
+        var inputFormat = format.getFormat();
+        var inQuote = false;
+        var outputFormat = new StringBuilder();
+        for (var inputIndex = 0; inputIndex < inputFormat.length(); inputIndex++) {
+            if (inputFormat.charAt(inputIndex) == '\'') {
+                inQuote = !inQuote;
+            } else if (inQuote) {
+                outputFormat.append(inputFormat.charAt(inputIndex));
+                if (inputFormat.charAt(inputIndex) == '%') {
+                    outputFormat.append('%');
+                }
+            } else {
+                var ch = inputFormat.charAt(inputIndex);
+                if (Character.isLetter(ch)) {
+                    var dateFormats = DATE_FORMATS.get(ch);
+                    if (dateFormats == null) {
+                        throw new FeatureNotSupportedException("Unknown Hibernate format code: " + ch);
+                    }
+                    var length = 1;
+                    while (inputIndex + length < inputFormat.length()
+                            && inputFormat.charAt(inputIndex + length) == ch) {
+                        length++;
+                    }
+                    if (dateFormats.containsKey(length)) {
+
+                        var code = dateFormats.get(length);
+                        if (code.isPresent()) {
+                            outputFormat.append(code.get());
+                        } else {
+                            throw new FeatureNotSupportedException("Unsupported date format: "
+                                    + inputFormat.substring(inputIndex, inputIndex + length));
+                        }
+                        inputIndex += length - 1;
+                    } else {
+                        throw new FeatureNotSupportedException("Format code %s is ambiguous."
+                                .formatted(inputFormat.substring(inputIndex, inputIndex + length)));
+                    }
+                } else {
+                    outputFormat.append(inputFormat.charAt(inputIndex));
+                }
+            }
+        }
+        this.yield(EXPRESSION, new AstLiteralExpression(new AstLiteral(new BsonString(outputFormat.toString()))));
     }
 
     @Override

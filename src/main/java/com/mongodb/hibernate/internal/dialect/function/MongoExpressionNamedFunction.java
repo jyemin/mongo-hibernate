@@ -22,6 +22,7 @@ import com.mongodb.hibernate.internal.translate.AbstractMqlTranslator;
 import com.mongodb.hibernate.internal.translate.mongoast.AstExpression;
 import com.mongodb.hibernate.internal.translate.mongoast.AstNamedOperatorExpression;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
 import java.util.function.Function;
@@ -40,6 +41,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
 
     private final String mongoOperator;
     private final FunctionParameterDefinition<String>[] parameters;
+    private final Map<String, AstExpression> supplementalArguments;
     private final Function<? super AstExpression, ? extends AstExpression> outputMapper;
 
     /**
@@ -59,7 +61,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
             TypeConfiguration typeConfiguration,
             BasicTypeReference<?> returnType,
             FunctionParameterDefinition<String>... parameters) {
-        this(hqlName, mongoOperator, typeConfiguration, returnType, Function.identity(), parameters);
+        this(hqlName, mongoOperator, typeConfiguration, Map.of(), returnType, Function.identity(), parameters);
     }
 
     /**
@@ -81,6 +83,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
             String hqlName,
             String mongoOperator,
             TypeConfiguration typeConfiguration,
+            Map<String, AstExpression> supplementalArguments,
             BasicTypeReference<?> returnType,
             Function<? super AstExpression, ? extends AstExpression> outputMapper,
             FunctionParameterDefinition<String>... parameters) {
@@ -92,6 +95,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
                         typeConfiguration.getBasicTypeRegistry().resolve(returnType))),
                 FunctionParameterDefinition.typeResolverFromParameters(typeConfiguration, parameters));
         this.mongoOperator = mongoOperator;
+        this.supplementalArguments = supplementalArguments;
         this.outputMapper = outputMapper;
         this.parameters = parameters;
     }
@@ -103,7 +107,7 @@ public final class MongoExpressionNamedFunction extends AbstractSqmSelfRendering
             ReturnableType<?> returnType,
             SqlAstTranslator<?> walker) {
         var translator = AbstractMqlTranslator.cast(walker);
-        var namedArguments = new TreeMap<String, AstExpression>();
+        var namedArguments = new TreeMap<>(supplementalArguments);
         FunctionParameterDefinition.processArguments(parameters, arguments, walker, namedArguments::put);
         translator.yield(EXPRESSION, outputMapper.apply(new AstNamedOperatorExpression(mongoOperator, namedArguments)));
     }

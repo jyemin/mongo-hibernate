@@ -26,6 +26,7 @@ import com.mongodb.hibernate.internal.translate.mongoast.AstExpression;
 import com.mongodb.hibernate.internal.translate.mongoast.AstLiteral;
 import com.mongodb.hibernate.internal.translate.mongoast.AstLiteralExpression;
 import com.mongodb.hibernate.internal.translate.mongoast.AstPositionalOperatorExpression;
+import com.mongodb.hibernate.internal.translate.mongoast.AstUnaryOperatorExpression;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
@@ -66,6 +67,24 @@ public abstract sealed class FunctionParameterDefinition<N>
         return new AstBinaryOperatorExpression(
                 AstArithmeticExpressionOperator.ADD, input, new AstLiteralExpression(new AstLiteral(new BsonInt32(1))));
     }
+
+    /**
+     * Divides a value, rounds the quotient up, and returns it as an integer.
+     *
+     * @param input the value to divide
+     * @param divisor the divisor
+     */
+    public static AstExpression ceilingDivideAsInt(AstExpression input, int divisor) {
+        return new AstUnaryOperatorExpression(
+                "$toInt",
+                new AstUnaryOperatorExpression(
+                        "$ceil",
+                        new AstBinaryOperatorExpression(
+                                AstArithmeticExpressionOperator.DIVIDE,
+                                input,
+                                new AstLiteralExpression(new AstLiteral(new BsonInt32(divisor))))));
+    }
+
     /**
      * Utility function that transforms an operation into one that returns one less than its original output
      *
