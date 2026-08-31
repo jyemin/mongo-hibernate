@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hibernate.cfg.AvailableSettings.DEFAULT_CATALOG;
 import static org.hibernate.cfg.AvailableSettings.JAKARTA_JDBC_URL;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 import com.mongodb.client.MongoCollection;
 import com.mongodb.hibernate.junit.InjectMongoCollection;
@@ -35,6 +36,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.SecondaryTable;
 import jakarta.persistence.Table;
 import java.util.Set;
+import java.util.stream.Stream;
 import org.bson.BsonDocument;
 import org.bson.BsonInt32;
 import org.bson.BsonString;
@@ -45,6 +47,9 @@ import org.hibernate.testing.orm.junit.DomainModel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 /**
  * {@code @Table(schema=...)} folds into a dotted collection name in the single database. Verified at three levels: the
@@ -54,7 +59,6 @@ import org.junit.jupiter.api.Test;
 @DomainModel(
         annotatedClasses = {
             SchemaQualificationIntegrationTests.Book.class,
-            SchemaQualificationIntegrationTests.DottedName.class,
             SchemaQualificationIntegrationTests.Article.class,
             SchemaQualificationIntegrationTests.Author.class,
             SchemaQualificationIntegrationTests.SharedOne.class,
@@ -67,9 +71,6 @@ class SchemaQualificationIntegrationTests extends AbstractQueryIntegrationTests 
     @InjectMongoCollection("library.books")
     private MongoCollection<BsonDocument> libraryBooks;
 
-    @InjectMongoCollection("archive.entries")
-    private MongoCollection<BsonDocument> archiveEntries;
-
     @InjectMongoCollection("shared.things")
     private MongoCollection<BsonDocument> sharedThings;
 
@@ -80,7 +81,6 @@ class SchemaQualificationIntegrationTests extends AbstractQueryIntegrationTests 
     void seed() {
         getSessionFactoryScope().inTransaction(session -> {
             session.persist(new Book(1, "MongoDB"));
-            session.persist(new DottedName(2, "x"));
             var author = new Author(10, "Alice");
             session.persist(author);
             session.persist(new Article(20, "Aggregation", author));
@@ -102,24 +102,12 @@ class SchemaQualificationIntegrationTests extends AbstractQueryIntegrationTests 
     }
 
     @Test
-    void dottedNameIsNotSplit() {
-        assertThat(archiveEntries.find())
-                .containsExactly(new BsonDocument()
-                        .append(ID_FIELD_NAME, new BsonInt32(2))
-                        .append("v", new BsonString("x")));
-    }
-
-    @Test
     void tableSharingIsAllowed() {
-        // Two distinct entities mapped to the same @Table share one Hibernate table, so the fold-collision check must
-        // not reject them (that is Hibernate-sanctioned table sharing).
         assertThat(sharedThings.find()).hasSize(2);
     }
 
     @Test
     void singleTableInheritanceFoldsAndPersists() {
-        // A SINGLE_TABLE hierarchy folds into one collection, its subclasses share the root's table (so the
-        // fold-collision check must not flag them), and a subclass persists and reads back.
         assertThat(zooAnimals.find()).hasSize(1);
         var loaded = getSessionFactoryScope()
                 .fromTransaction(session -> session.createSelectionQuery("from Animal", Animal.class)
@@ -218,22 +206,6 @@ class SchemaQualificationIntegrationTests extends AbstractQueryIntegrationTests 
         }
     }
 
-    @Entity(name = "DottedName")
-    @Table(name = "archive.entries")
-    static class DottedName {
-        @Id
-        int id;
-
-        String v;
-
-        DottedName() {}
-
-        DottedName(int id, String v) {
-            this.id = id;
-            this.v = v;
-        }
-    }
-
     @Entity(name = "Article")
     @Table(schema = "content", name = "articles")
     static class Article {
@@ -327,7 +299,6 @@ class SchemaQualificationIntegrationTests extends AbstractQueryIntegrationTests 
 
     @Nested
     class Unsupported implements MongoServiceRegistryProducer {
-
         @Test
         void catalogRejectedAtBoot() {
             assertThatThrownBy(() -> new MetadataSources()
@@ -362,12 +333,70 @@ class SchemaQualificationIntegrationTests extends AbstractQueryIntegrationTests 
         }
 
         @Test
-        void foldCollisionRejectedAtBoot() {
+        void dottedTableNameRejectedAtBoot() {
             assertThatThrownBy(() -> new MetadataSources()
-                            .addAnnotatedClass(SchemaAName.class)
-                            .addAnnotatedClass(DottedAB.class)
+                            .addAnnotatedClass(DottedTableName.class)
                             .buildMetadata())
-                    .hasMessageContaining("resolve to the same collection");
+                    .hasMessageContaining("The character [.] in a table name is not supported");
+        }
+
+        @Test
+        void dottedSchemaNameRejectedAtBoot() {
+            assertThatThrownBy(() -> new MetadataSources()
+                            .addAnnotatedClass(DottedSchemaName.class)
+                            .buildMetadata())
+                    .hasMessageContaining("The character [.] in a schema name is not supported");
+        }
+
+        /**
+         * Backticks, double quotes and square brackets are Hibernate ORM quoting markers, stripped before the name
+         * reaches the check, so the '.' is exposed. A single quote is not a quoting marker, so it stays in the name
+         * alongside the '.'. Neither form is exempt.
+         */
+        @ParameterizedTest
+        @MethodSource
+        void quotingDoesNotExemptADottedTableName(Class<?> annotatedClass, String reportedName) {
+            assertThatThrownBy(() -> new MetadataSources()
+                            .addAnnotatedClass(annotatedClass)
+                            .buildMetadata())
+                    .hasMessageContaining("The character [.] in a table name is not supported")
+                    .hasMessageContaining("is present in [" + reportedName + "]");
+        }
+
+        private static Stream<Arguments> quotingDoesNotExemptADottedTableName() {
+            return Stream.of(
+                    arguments(BacktickQuotedTableName.class, "a.b"),
+                    arguments(DoubleQuotedTableName.class, "a.b"),
+                    arguments(BracketQuotedTableName.class, "a.b"),
+                    arguments(SingleQuotedTableName.class, "'a.b'"));
+        }
+
+        @Entity(name = "BacktickQuotedTableName")
+        @Table(name = "`a.b`")
+        static class BacktickQuotedTableName {
+            @Id
+            int id;
+        }
+
+        @Entity(name = "DoubleQuotedTableName")
+        @Table(name = "\"a.b\"")
+        static class DoubleQuotedTableName {
+            @Id
+            int id;
+        }
+
+        @Entity(name = "BracketQuotedTableName")
+        @Table(name = "[a.b]")
+        static class BracketQuotedTableName {
+            @Id
+            int id;
+        }
+
+        @Entity(name = "SingleQuotedTableName")
+        @Table(name = "'a.b'")
+        static class SingleQuotedTableName {
+            @Id
+            int id;
         }
 
         @Entity(name = "WithCatalog")
@@ -392,18 +421,16 @@ class SchemaQualificationIntegrationTests extends AbstractQueryIntegrationTests 
             int id;
         }
 
-        // resolves to collection "a.b"
-        @Entity(name = "SchemaAName")
-        @Table(schema = "a", name = "b")
-        static class SchemaAName {
+        @Entity(name = "DottedTableName")
+        @Table(name = "a.b")
+        static class DottedTableName {
             @Id
             int id;
         }
 
-        // also resolves to collection "a.b", via a dotted name
-        @Entity(name = "DottedAB")
-        @Table(name = "a.b")
-        static class DottedAB {
+        @Entity(name = "DottedSchemaName")
+        @Table(schema = "a.b", name = "c")
+        static class DottedSchemaName {
             @Id
             int id;
         }
