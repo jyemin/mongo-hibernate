@@ -16,8 +16,11 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import static com.mongodb.hibernate.internal.translate.mongoast.AstMapChildrenAssertions.assertMapsChildren;
 import static com.mongodb.hibernate.internal.translate.mongoast.AstNodeAssertions.assertExpressionRendering;
+import static com.mongodb.hibernate.internal.translate.mongoast.AstStructuralKeyAssertions.assertStructuralKey;
 
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class AstVariableExpressionTests {
@@ -28,5 +31,18 @@ class AstVariableExpressionTests {
                 """
                 {"": "$$v0"}\
                 """, new AstVariableExpression("v0"));
+    }
+
+    @Test
+    void testMapChildren() {
+        assertMapsChildren(new AstVariableExpression("v"));
+    }
+
+    @Test
+    void testStructuralKey() {
+        assertStructuralKey(
+                new AstVariableExpression("v"),
+                new StructuralKey("Variable", List.of("v")),
+                new AstVariableExpression("w"));
     }
 }

@@ -16,8 +16,11 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import static com.mongodb.hibernate.internal.translate.mongoast.AstMapChildrenAssertions.assertMapsChildren;
 import static com.mongodb.hibernate.internal.translate.mongoast.AstNodeAssertions.assertExpressionRendering;
+import static com.mongodb.hibernate.internal.translate.mongoast.AstStructuralKeyAssertions.assertStructuralKey;
 
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import org.bson.BsonInt32;
@@ -35,5 +38,29 @@ class AstLetBindingExpressionTests {
                 {"": {"$let": {"vars": {"x": {"$numberInt": "2"}}, "in": "$$x"}}}\
                 """,
                 let);
+    }
+
+    @Test
+    void testMapChildren() {
+        assertMapsChildren(new AstLetBindingExpression(
+                new AstFieldPathExpression("a"),
+                new TreeMap<>(Map.of(
+                        "v", (AstExpression) new AstFieldPathExpression("b"), "w", new AstFieldPathExpression("c")))));
+    }
+
+    @Test
+    void testStructuralKey() {
+        assertStructuralKey(
+                new AstLetBindingExpression(new AstFieldPathExpression("a"), new TreeMap<>(Map.of("v", (AstExpression)
+                        new AstFieldPathExpression("b")))),
+                new StructuralKey(
+                        "LetBinding", List.of(new AstFieldPathExpression("a"), new TreeMap<>(Map.of("v", (AstExpression)
+                                new AstFieldPathExpression("b"))))),
+                new AstLetBindingExpression(new AstFieldPathExpression("b"), new TreeMap<>(Map.of("v", (AstExpression)
+                        new AstLiteralExpression(new AstLiteral(new BsonInt32(1)))))),
+                new AstLetBindingExpression(new AstFieldPathExpression("a"), new TreeMap<>(Map.of("w", (AstExpression)
+                        new AstLiteralExpression(new AstLiteral(new BsonInt32(1)))))),
+                new AstLetBindingExpression(new AstFieldPathExpression("a"), new TreeMap<>(Map.of("v", (AstExpression)
+                        new AstLiteralExpression(new AstLiteral(new BsonInt32(2)))))));
     }
 }

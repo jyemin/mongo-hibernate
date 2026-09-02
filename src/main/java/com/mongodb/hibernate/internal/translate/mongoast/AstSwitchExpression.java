@@ -16,6 +16,7 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 import org.bson.BsonWriter;
@@ -32,6 +33,24 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 @SuppressWarnings("MissingSummary")
 public record AstSwitchExpression(List<AstSwitchCase> branches, AstExpression defaultExpression)
         implements AstExpression {
+
+    @Override
+    public StructuralKey structuralKey() {
+        List<Object> fields = new ArrayList<>();
+        for (var branch : branches) {
+            fields.add(branch.caseExpression());
+            fields.add(branch.thenExpression());
+        }
+        fields.add(defaultExpression);
+        return new StructuralKey("Switch", fields);
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        return new AstSwitchExpression(
+                branches.stream().map(rewriter::rewrite).toList(), rewriter.rewrite(defaultExpression));
+    }
+
     @Override
     public void render(BsonWriter writer, Consumer<JdbcParameterBinder> binderConsumer) {
         writer.writeStartDocument();

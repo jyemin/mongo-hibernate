@@ -16,6 +16,7 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import java.util.List;
 import java.util.function.Consumer;
 import org.bson.BsonWriter;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
@@ -23,6 +24,16 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 /** @hidden */
 @SuppressWarnings("MissingSummary")
 public record AstFieldPathExpression(String fieldPath) implements AstExpression {
+    @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("FieldPath", List.of(fieldPath));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        return this;
+    }
+
     @Override
     public void render(BsonWriter writer, Consumer<JdbcParameterBinder> binderConsumer) {
         writer.writeString("$" + fieldPath);

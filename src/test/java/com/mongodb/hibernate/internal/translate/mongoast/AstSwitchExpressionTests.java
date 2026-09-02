@@ -16,7 +16,9 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import static com.mongodb.hibernate.internal.translate.mongoast.AstMapChildrenAssertions.assertMapsChildren;
 import static com.mongodb.hibernate.internal.translate.mongoast.AstNodeAssertions.assertExpressionRendering;
+import static com.mongodb.hibernate.internal.translate.mongoast.AstStructuralKeyAssertions.assertStructuralKey;
 
 import java.util.List;
 import org.bson.BsonInt32;
@@ -64,5 +66,52 @@ class AstSwitchExpressionTests {
                 {"": {"$switch": {"branches": [{"case": {"$eq": ["$x", {"$numberInt": "1"}]}, "then": {"$numberInt": "10"}}, {"case": {"$eq": ["$x", {"$numberInt": "2"}]}, "then": {"$numberInt": "20"}}], "default": null}}}\
                 """,
                 expr);
+    }
+
+    @Test
+    void testMapChildren() {
+        assertMapsChildren(new AstSwitchExpression(
+                List.of(
+                        new AstSwitchCase(new AstFieldPathExpression("a"), new AstFieldPathExpression("b")),
+                        new AstSwitchCase(new AstFieldPathExpression("c"), new AstFieldPathExpression("d"))),
+                new AstFieldPathExpression("f")));
+    }
+
+    @Test
+    void testStructuralKey() {
+        assertStructuralKey(
+                new AstSwitchExpression(
+                        List.of(new AstSwitchCase(new AstFieldPathExpression("a"), new AstFieldPathExpression("b"))),
+                        new AstFieldPathExpression("c")),
+                new StructuralKey(
+                        "Switch",
+                        List.of(
+                                new AstFieldPathExpression("a"),
+                                new AstFieldPathExpression("b"),
+                                new AstFieldPathExpression("c"))),
+                new AstSwitchExpression(
+                        List.of(new AstSwitchCase(
+                                new AstFieldPathExpression("b"),
+                                new AstLiteralExpression(new AstLiteral(new BsonInt32(1))))),
+                        new AstLiteralExpression(new AstLiteral(new BsonInt32(2)))),
+                new AstSwitchExpression(
+                        List.of(new AstSwitchCase(
+                                new AstFieldPathExpression("a"),
+                                new AstLiteralExpression(new AstLiteral(new BsonInt32(2))))),
+                        new AstLiteralExpression(new AstLiteral(new BsonInt32(2)))),
+                new AstSwitchExpression(
+                        List.of(new AstSwitchCase(
+                                new AstFieldPathExpression("a"),
+                                new AstLiteralExpression(new AstLiteral(new BsonInt32(1))))),
+                        new AstLiteralExpression(new AstLiteral(new BsonInt32(1)))),
+                new AstSwitchExpression(
+                        List.of(
+                                new AstSwitchCase(
+                                        new AstFieldPathExpression("a"),
+                                        new AstLiteralExpression(new AstLiteral(new BsonInt32(1)))),
+                                new AstSwitchCase(
+                                        new AstFieldPathExpression("b"),
+                                        new AstLiteralExpression(new AstLiteral(new BsonInt32(2))))),
+                        new AstLiteralExpression(new AstLiteral(new BsonInt32(2)))));
     }
 }

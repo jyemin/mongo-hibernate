@@ -16,8 +16,10 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast.command;
 
+import static com.mongodb.hibernate.internal.translate.mongoast.AstMapChildrenAssertions.assertMapsChildren;
 import static com.mongodb.hibernate.internal.translate.mongoast.AstNodeAssertions.assertRendering;
-import static com.mongodb.hibernate.internal.translate.mongoast.command.AstUpdateStatement.createUpsertStatement;
+import static com.mongodb.hibernate.internal.translate.mongoast.command.AstUpdateStatement.Kind.MULTI;
+import static com.mongodb.hibernate.internal.translate.mongoast.command.AstUpdateStatement.Kind.UPSERT;
 
 import com.mongodb.hibernate.internal.translate.mongoast.AstArithmeticExpressionOperator;
 import com.mongodb.hibernate.internal.translate.mongoast.AstBinaryOperatorExpression;
@@ -28,6 +30,7 @@ import com.mongodb.hibernate.internal.translate.mongoast.AstLiteral;
 import com.mongodb.hibernate.internal.translate.mongoast.AstValueExpression;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstComparisonFilterOperation;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstComparisonFilterOperator;
+import com.mongodb.hibernate.internal.translate.mongoast.filter.AstExprFilter;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstFieldOperationFilter;
 import java.util.List;
 import org.bson.BsonInt32;
@@ -51,8 +54,8 @@ class AstUpdateCommandTests {
 
         var updateCommand = new AstUpdateCommand(
                 collection,
-                List.of(AstUpdateStatement.createMultiUpdateStatement(
-                        filter, new AstDocumentUpdate(List.of(astFieldUpdate1, astFieldUpdate2)))));
+                List.of(new AstUpdateStatement(
+                        filter, new AstDocumentUpdate(List.of(astFieldUpdate1, astFieldUpdate2)), MULTI)));
 
         var expectedJson =
                 """
@@ -73,9 +76,7 @@ class AstUpdateCommandTests {
                         new AstFieldPathExpression("publishYear"),
                         new AstValueExpression(new AstLiteral(new BsonInt32(1)))));
         var updateCommand = new AstUpdateCommand(
-                "books",
-                List.of(AstUpdateStatement.createMultiUpdateStatement(
-                        filter, new AstPipelineUpdate(List.of(computed)))));
+                "books", List.of(new AstUpdateStatement(filter, new AstPipelineUpdate(List.of(computed)), MULTI)));
 
         var expectedJson =
                 """
@@ -90,7 +91,7 @@ class AstUpdateCommandTests {
                 "_id",
                 new AstComparisonFilterOperation(AstComparisonFilterOperator.EQ, new AstLiteral(new BsonInt32(1))));
         var update = new AstDocumentUpdate(List.of(new AstFieldUpdate("v", new AstLiteral(new BsonInt32(10)))));
-        var updateCommand = new AstUpdateCommand("items", List.of(createUpsertStatement(filter, update)));
+        var updateCommand = new AstUpdateCommand("items", List.of(new AstUpdateStatement(filter, update, UPSERT)));
 
         var expectedJson =
                 """
@@ -107,12 +108,27 @@ class AstUpdateCommandTests {
         var update = new AstDocumentUpdate(
                 List.of(new AstFieldUpdate("label", new AstLiteral(new BsonString("a")))),
                 List.of(new AstFieldUpdate("createdBy", new AstLiteral(new BsonString("jeff")))));
-        var updateCommand = new AstUpdateCommand("items", List.of(createUpsertStatement(filter, update)));
+        var updateCommand = new AstUpdateCommand("items", List.of(new AstUpdateStatement(filter, update, UPSERT)));
 
         var expectedJson =
                 """
                 {"update": "items", "updates": [{"q": {"_id": {"$eq": {"$numberInt": "1"}}}, "u": {"$set": {"label": "a"}, "$setOnInsert": {"createdBy": "jeff"}}, "upsert": true, "multi": false}]}\
                 """;
         assertRendering(expectedJson, updateCommand);
+    }
+
+    @Test
+    void testMapChildren() {
+        assertMapsChildren(new AstUpdateCommand(
+                "c",
+                List.of(
+                        new AstUpdateStatement(
+                                new AstExprFilter(new AstFieldPathExpression("a")),
+                                new AstPipelineUpdate(List.of()),
+                                UPSERT),
+                        new AstUpdateStatement(
+                                new AstExprFilter(new AstFieldPathExpression("b")),
+                                new AstPipelineUpdate(List.of()),
+                                UPSERT))));
     }
 }

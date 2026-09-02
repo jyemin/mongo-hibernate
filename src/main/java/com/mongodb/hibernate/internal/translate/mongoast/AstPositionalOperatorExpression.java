@@ -28,6 +28,18 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
  * @param arguments a list of arguments that will be converted into an array
  */
 public record AstPositionalOperatorExpression(String operator, List<AstExpression> arguments) implements AstExpression {
+
+    @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("PositionalOperator", List.of(operator, arguments));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        return new AstPositionalOperatorExpression(
+                operator, arguments.stream().map(rewriter::rewrite).toList());
+    }
+
     @Override
     public void render(BsonWriter writer, Consumer<JdbcParameterBinder> binderConsumer) {
         writer.writeStartDocument();

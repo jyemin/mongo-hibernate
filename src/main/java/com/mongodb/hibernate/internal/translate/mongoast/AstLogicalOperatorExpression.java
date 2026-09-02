@@ -26,6 +26,17 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 public record AstLogicalOperatorExpression(AstLogicalOperator operator, List<? extends AstExpression> operands)
         implements AstExpression {
     @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("LogicalOperator", List.of(operator, operands));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        return new AstLogicalOperatorExpression(
+                operator, operands.stream().map(rewriter::rewrite).toList());
+    }
+
+    @Override
     public void render(BsonWriter writer, Consumer<JdbcParameterBinder> binderConsumer) {
         writer.writeStartDocument();
         writer.writeName(operator.getOperatorName());

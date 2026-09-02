@@ -16,6 +16,7 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import java.util.List;
 import java.util.function.Consumer;
 import org.bson.BsonWriter;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
@@ -23,6 +24,16 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 /** @hidden */
 @SuppressWarnings("MissingSummary")
 public record AstRegexMatchExpression(AstExpression input, String regex, String options) implements AstExpression {
+    @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("RegexMatch", List.of(input, regex, options));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        return new AstRegexMatchExpression(rewriter.rewrite(input), regex, options);
+    }
+
     @Override
     public void render(BsonWriter writer, Consumer<JdbcParameterBinder> binderConsumer) {
         writer.writeStartDocument();

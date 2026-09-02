@@ -16,8 +16,11 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import static com.mongodb.hibernate.internal.translate.mongoast.AstMapChildrenAssertions.assertMapsChildren;
 import static com.mongodb.hibernate.internal.translate.mongoast.AstNodeAssertions.assertExpressionRendering;
+import static com.mongodb.hibernate.internal.translate.mongoast.AstStructuralKeyAssertions.assertStructuralKey;
 
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import org.junit.jupiter.api.Test;
@@ -33,5 +36,28 @@ class AstNamedOperatorExpressionTests {
                 """
                 {"": {"$op": {"a": "$x", "b": "$y"}}}\
                 """, operation);
+    }
+
+    @Test
+    void testMapChildren() {
+        assertMapsChildren(new AstNamedOperatorExpression(
+                "$op",
+                new TreeMap<>(Map.of(
+                        "a", (AstExpression) new AstFieldPathExpression("x"), "b", new AstFieldPathExpression("y")))));
+    }
+
+    @Test
+    void testStructuralKey() {
+        assertStructuralKey(
+                new AstNamedOperatorExpression(
+                        "$op", new TreeMap<>(Map.of("k", (AstExpression) new AstFieldPathExpression("a")))),
+                new StructuralKey("NamedOperator", List.of("$op", new TreeMap<>(Map.of("k", (AstExpression)
+                        new AstFieldPathExpression("a"))))),
+                new AstNamedOperatorExpression(
+                        "$other", new TreeMap<>(Map.of("k", (AstExpression) new AstFieldPathExpression("a")))),
+                new AstNamedOperatorExpression(
+                        "$op", new TreeMap<>(Map.of("j", (AstExpression) new AstFieldPathExpression("a")))),
+                new AstNamedOperatorExpression(
+                        "$op", new TreeMap<>(Map.of("k", (AstExpression) new AstFieldPathExpression("b")))));
     }
 }

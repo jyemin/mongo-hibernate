@@ -16,7 +16,11 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import static com.mongodb.hibernate.internal.translate.mongoast.AstLogicalOperator.AND;
+import static com.mongodb.hibernate.internal.translate.mongoast.AstLogicalOperator.OR;
+import static com.mongodb.hibernate.internal.translate.mongoast.AstMapChildrenAssertions.assertMapsChildren;
 import static com.mongodb.hibernate.internal.translate.mongoast.AstNodeAssertions.assertExpressionRendering;
+import static com.mongodb.hibernate.internal.translate.mongoast.AstStructuralKeyAssertions.assertStructuralKey;
 
 import java.util.List;
 import org.bson.BsonInt32;
@@ -56,5 +60,22 @@ class AstLogicalOperatorExpressionTests {
                 """
                 {"": {"$not": [{"$gt": ["$x", {"$numberInt": "1"}]}]}}\
                 """, expr);
+    }
+
+    @Test
+    void testMapChildren() {
+        assertMapsChildren(new AstLogicalOperatorExpression(
+                AstLogicalOperator.AND, List.of(new AstFieldPathExpression("a"), new AstFieldPathExpression("b"))));
+    }
+
+    @Test
+    void testStructuralKey() {
+        assertStructuralKey(
+                new AstLogicalOperatorExpression(AND, List.of(new AstFieldPathExpression("a"))),
+                new StructuralKey("LogicalOperator", List.of(AND, List.of(new AstFieldPathExpression("a")))),
+                new AstLogicalOperatorExpression(OR, List.of(new AstFieldPathExpression("a"))),
+                new AstLogicalOperatorExpression(AND, List.of(new AstFieldPathExpression("b"))),
+                new AstLogicalOperatorExpression(
+                        AND, List.of(new AstFieldPathExpression("a"), new AstFieldPathExpression("b"))));
     }
 }

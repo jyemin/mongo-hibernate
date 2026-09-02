@@ -16,7 +16,9 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import static com.mongodb.hibernate.internal.translate.mongoast.AstMapChildrenAssertions.assertMapsChildren;
 import static com.mongodb.hibernate.internal.translate.mongoast.AstNodeAssertions.assertExpressionRendering;
+import static com.mongodb.hibernate.internal.translate.mongoast.AstStructuralKeyAssertions.assertStructuralKey;
 
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -30,5 +32,22 @@ class AstPositionalOperatorExpressionTests {
         assertExpressionRendering("""
                 {"": {"$op": ["$x", "$y"]}}\
                 """, operation);
+    }
+
+    @Test
+    void testMapChildren() {
+        assertMapsChildren(new AstPositionalOperatorExpression(
+                "$op", List.of((AstExpression) new AstFieldPathExpression("a"), new AstFieldPathExpression("b"))));
+    }
+
+    @Test
+    void testStructuralKey() {
+        assertStructuralKey(
+                new AstPositionalOperatorExpression("$op", List.of((AstExpression) new AstFieldPathExpression("a"))),
+                new StructuralKey("PositionalOperator", List.of("$op", List.of(new AstFieldPathExpression("a")))),
+                new AstPositionalOperatorExpression("$other", List.of(new AstFieldPathExpression("a"))),
+                new AstPositionalOperatorExpression("$op", List.of(new AstFieldPathExpression("b"))),
+                new AstPositionalOperatorExpression(
+                        "$op", List.of(new AstFieldPathExpression("a"), new AstFieldPathExpression("b"))));
     }
 }

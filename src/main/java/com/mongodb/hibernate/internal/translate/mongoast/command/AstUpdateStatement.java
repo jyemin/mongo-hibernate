@@ -17,6 +17,7 @@
 package com.mongodb.hibernate.internal.translate.mongoast.command;
 
 import com.mongodb.hibernate.internal.translate.mongoast.AstNode;
+import com.mongodb.hibernate.internal.translate.mongoast.AstNodeRewriter;
 import com.mongodb.hibernate.internal.translate.mongoast.filter.AstFilter;
 import java.util.function.Consumer;
 import org.bson.BsonWriter;
@@ -28,26 +29,23 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
  *
  * @hidden
  */
-public class AstUpdateStatement implements AstNode {
-    private final AstFilter filter;
-    private final AstUpdate update;
-    private final boolean upsert;
-    private final boolean multi;
+@SuppressWarnings("MissingSummary")
+public record AstUpdateStatement(AstFilter filter, AstUpdate update, Kind kind) implements AstNode {
 
-    public static AstUpdateStatement createUpsertStatement(AstFilter filter, AstUpdate update) {
-        return new AstUpdateStatement(filter, update, true, false);
+    /**
+     * How many documents the statement applies to, and whether it inserts when none match. The {@code update} command
+     * carries these as separate {@code upsert} and {@code multi} flags, but only one at a time is ever set.
+     */
+    public enum Kind {
+        /** Updates the single matching document, inserting it when there is none. */
+        UPSERT,
+        /** Updates every matching document, inserting nothing. */
+        MULTI
     }
 
-    public static AstUpdateStatement createMultiUpdateStatement(AstFilter filter, AstUpdate update) {
-        return new AstUpdateStatement(filter, update, false, true);
-    }
-
-    private AstUpdateStatement(
-            final AstFilter filter, final AstUpdate update, final boolean upsert, final boolean multi) {
-        this.filter = filter;
-        this.update = update;
-        this.upsert = upsert;
-        this.multi = multi;
+    @Override
+    public AstUpdateStatement mapChildren(AstNodeRewriter rewriter) {
+        return new AstUpdateStatement(rewriter.rewrite(filter), rewriter.rewrite(update), kind);
     }
 
     @Override
@@ -58,10 +56,10 @@ public class AstUpdateStatement implements AstNode {
             filter.render(writer, binderConsumer);
             writer.writeName("u");
             update.render(writer, binderConsumer);
-            if (upsert) {
+            if (kind == Kind.UPSERT) {
                 writer.writeBoolean("upsert", true);
             }
-            writer.writeBoolean("multi", multi);
+            writer.writeBoolean("multi", kind == Kind.MULTI);
         }
         writer.writeEndDocument();
     }

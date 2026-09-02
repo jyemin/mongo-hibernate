@@ -16,6 +16,7 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import java.util.List;
 import java.util.function.Consumer;
 import org.bson.BsonWriter;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
@@ -26,6 +27,16 @@ public record AstUnaryOperatorExpression(String operator, AstExpression operand)
 
     public AstUnaryOperatorExpression(AstConversionExpressionOperator operator, AstExpression operand) {
         this(operator.getOperatorName(), operand);
+    }
+
+    @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("UnaryOperator", List.of(operator, operand));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        return new AstUnaryOperatorExpression(operator, rewriter.rewrite(operand));
     }
 
     @Override

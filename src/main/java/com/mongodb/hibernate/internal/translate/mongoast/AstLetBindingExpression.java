@@ -16,7 +16,9 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import java.util.List;
 import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.function.Consumer;
 import org.bson.BsonWriter;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
@@ -24,6 +26,18 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 /** Define an expression with locally bound variables */
 public record AstLetBindingExpression(AstExpression in, SortedMap<String, AstExpression> vars)
         implements AstExpression {
+
+    @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("LetBinding", List.of(in, vars));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        var newVars = new TreeMap<String, AstExpression>();
+        vars.forEach((name, value) -> newVars.put(name, rewriter.rewrite(value)));
+        return new AstLetBindingExpression(rewriter.rewrite(in), newVars);
+    }
 
     @Override
     public void render(BsonWriter writer, Consumer<JdbcParameterBinder> binderConsumer) {

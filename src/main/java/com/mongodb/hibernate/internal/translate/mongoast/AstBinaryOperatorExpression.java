@@ -16,6 +16,7 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import java.util.List;
 import java.util.function.Consumer;
 import org.bson.BsonWriter;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
@@ -33,6 +34,16 @@ public record AstBinaryOperatorExpression(String operator, AstExpression left, A
     public AstBinaryOperatorExpression(
             AstArithmeticExpressionOperator operator, AstExpression left, AstExpression right) {
         this(operator.getOperatorName(), left, right);
+    }
+
+    @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("BinaryOperator", List.of(operator, left, right));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        return new AstBinaryOperatorExpression(operator, rewriter.rewrite(left), rewriter.rewrite(right));
     }
 
     @Override

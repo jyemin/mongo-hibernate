@@ -16,7 +16,9 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import java.util.List;
 import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.function.Consumer;
 import org.bson.BsonWriter;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
@@ -29,6 +31,19 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
  */
 public record AstNamedOperatorExpression(String operator, SortedMap<String, AstExpression> arguments)
         implements AstExpression {
+
+    @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("NamedOperator", List.of(operator, arguments));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        var newArguments = new TreeMap<String, AstExpression>();
+        arguments.forEach((name, argument) -> newArguments.put(name, rewriter.rewrite(argument)));
+        return new AstNamedOperatorExpression(operator, newArguments);
+    }
+
     @Override
     public void render(BsonWriter writer, Consumer<JdbcParameterBinder> binderConsumer) {
         writer.writeStartDocument();

@@ -16,6 +16,7 @@
 
 package com.mongodb.hibernate.internal.translate.mongoast;
 
+import java.util.List;
 import java.util.function.Consumer;
 import org.bson.BsonWriter;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
@@ -32,6 +33,16 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
  */
 @SuppressWarnings("MissingSummary")
 public record AstValueExpression(AstValue value) implements AstExpression {
+    @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("Value", List.of(value));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        return new AstValueExpression(rewriter.rewrite(value));
+    }
+
     @Override
     public void render(BsonWriter writer, Consumer<JdbcParameterBinder> binderConsumer) {
         value.render(writer, binderConsumer);

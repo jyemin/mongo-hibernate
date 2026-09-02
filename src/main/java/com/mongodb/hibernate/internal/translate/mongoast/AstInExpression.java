@@ -25,6 +25,17 @@ import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 @SuppressWarnings("MissingSummary")
 public record AstInExpression(AstExpression value, List<? extends AstExpression> options) implements AstExpression {
     @Override
+    public StructuralKey structuralKey() {
+        return new StructuralKey("In", List.of(value, options));
+    }
+
+    @Override
+    public AstExpression mapChildren(AstNodeRewriter rewriter) {
+        return new AstInExpression(
+                rewriter.rewrite(value), options.stream().map(rewriter::rewrite).toList());
+    }
+
+    @Override
     public void render(BsonWriter writer, Consumer<JdbcParameterBinder> binderConsumer) {
         writer.writeStartDocument();
         writer.writeName("$in");

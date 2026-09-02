@@ -23,4 +23,15 @@ package com.mongodb.hibernate.internal.translate.mongoast;
  * @hidden
  */
 @SuppressWarnings("MissingSummary")
-public interface AstExpression extends AstNode {}
+public interface AstExpression extends AstNode {
+    /** Returns this expression's kind, its own data, and its child expressions. See {@link StructuralKey}. */
+    StructuralKey structuralKey();
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Narrowed so a walker can rebuild a AstExpression without casting.
+     */
+    @Override
+    AstExpression mapChildren(AstNodeRewriter rewriter);
+}
