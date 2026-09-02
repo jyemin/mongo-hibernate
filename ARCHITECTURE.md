@@ -177,8 +177,9 @@ MongoDB Java driver
 ```
 
 Hibernate requests an `Exporter` per kind of `Exportable`, and each one's `getSqlCreateStrings` /
-`getSqlDropStrings` returns statement strings. `getTableExporter()` has nothing to render, because
-MongoDB creates collections implicitly and has no `CREATE TABLE` analogue.
+`getSqlDropStrings` returns statement strings. `getTableExporter()` renders the `create` and `drop`
+commands; with `com.mongodb.hibernate.schema.validation` set, the create command also carries a
+`$jsonSchema` validator derived from the entity mapping by `MongoJsonSchemaGenerator`.
 
 That absence determines which mappings can be honoured. Hibernate models some constraints as their own
 exportable --- `@Index` and `@Table(uniqueConstraints = ...)` --- and leaves others to be inlined into
@@ -189,3 +190,11 @@ effect at all.
 Export runs at `SessionFactory` build time, driven by
 `jakarta.persistence.schema-generation.database.action` --- so it is exercised by building a factory,
 not by running HQL.
+
+A field type's BSON representation exists in two places: the write path (`ValueConversions` and
+the contributed `JdbcType`s) and the JSON schema generator. Adding support for a field type means
+updating both; adding a binder without a generator mapping makes the validator reject every write
+of the new type as soon as an application opts in. The integration test suite runs with the
+validator on, so a type the generator does not map fails the suite as soon as a test writes it.
+The generator throws `AssertionError` at export time for a type it cannot map, which is the
+backstop. UUID support, for instance, needs the binder and the generator updated together.

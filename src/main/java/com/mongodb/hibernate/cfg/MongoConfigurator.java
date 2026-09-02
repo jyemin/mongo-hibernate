@@ -101,6 +101,22 @@ import org.hibernate.service.spi.Configurable;
  *                 to release. A future release may add {@code "SQL"} semantics.
  *             </td>
  *         </tr>
+ *         <tr>
+ *             <td>&mdash;</td>
+ *             <td>✗</td>
+ *             <td>{@code com.mongodb.hibernate.schema.validation}</td>
+ *             <td>
+ *                 <ul>
+ *                     <li>{@link Boolean}</li>
+ *                 </ul>
+ *             </td>
+ *             <td>
+ *                 When {@code true}, collections created by schema export carry a {@code $jsonSchema}
+ *                 validator derived from the entity mapping, and MongoDB rejects writes that do not
+ *                 conform to it. Default {@code false}. The validator is set only at collection
+ *                 creation; existing collections are never re-validated.
+ *             </td>
+ *         </tr>
  *     </tbody>
  * </table>
  *

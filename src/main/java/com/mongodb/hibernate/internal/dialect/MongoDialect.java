@@ -17,6 +17,7 @@
 package com.mongodb.hibernate.internal.dialect;
 
 import static com.mongodb.hibernate.internal.MongoConstants.MONGO_DBMS_NAME;
+import static com.mongodb.hibernate.internal.MongoConstants.SCHEMA_VALIDATION_PROPERTY_NAME;
 import static com.mongodb.hibernate.internal.dialect.function.FunctionParameterDefinition.orMissing;
 import static com.mongodb.hibernate.internal.dialect.function.FunctionParameterDefinition.required;
 import static com.mongodb.hibernate.internal.dialect.function.MongoExpressionPositionalFunction.swap;
@@ -77,6 +78,7 @@ import org.hibernate.exception.spi.SQLExceptionConversionDelegate;
 import org.hibernate.mapping.Index;
 import org.hibernate.mapping.Table;
 import org.hibernate.mapping.UniqueKey;
+import org.hibernate.mapping.UserDefinedType;
 import org.hibernate.persister.entity.mutation.EntityMutationTarget;
 import org.hibernate.query.sqm.produce.function.FunctionParameterType;
 import org.hibernate.service.ServiceRegistry;
@@ -102,8 +104,12 @@ import org.jspecify.annotations.Nullable;
 public sealed class MongoDialect extends Dialect permits TestMongoDialect {
     private static final DatabaseVersion MINIMUM_DBMS_VERSION = DatabaseVersion.make(7);
 
+    private final boolean jsonSchemaValidation;
+
     public MongoDialect(DialectResolutionInfo info) {
         super(info);
+        this.jsonSchemaValidation = Boolean.parseBoolean(
+                String.valueOf(info.getConfigurationValues().getOrDefault(SCHEMA_VALIDATION_PROPERTY_NAME, "false")));
     }
 
     /**
@@ -193,6 +199,21 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
     @Override
     public NameQualifierSupport getNameQualifierSupport() {
         return NameQualifierSupport.SCHEMA;
+    }
+
+    /**
+     * A schema exists only as a collection-name prefix in the single database, so there is no schema object to create
+     * or drop.
+     */
+    @Override
+    public boolean canCreateSchema() {
+        return false;
+    }
+
+    @Override
+    public boolean hasAlterTable() {
+        // Associations are stored as ordinary fields; neither foreign keys nor any other constraint produces DDL.
+        return false;
     }
 
     @Override
@@ -482,10 +503,15 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
             @Override
             public String[] getSqlCreateStrings(
                     Table exportable, Metadata metadata, SqlStringGenerationContext context) {
-                return new String[] {
-                    new BsonDocument("create", new BsonString(context.format(exportable.getQualifiedTableName())))
-                            .toJson(MongoConstants.EXTENDED_JSON_WRITER_SETTINGS)
-                };
+                var command =
+                        new BsonDocument("create", new BsonString(context.format(exportable.getQualifiedTableName())));
+                if (jsonSchemaValidation) {
+                    command.append(
+                            "validator",
+                            new BsonDocument(
+                                    "$jsonSchema", MongoJsonSchemaGenerator.jsonSchemaFor(exportable, metadata)));
+                }
+                return new String[] {command.toJson(MongoConstants.EXTENDED_JSON_WRITER_SETTINGS)};
             }
 
             @Override
@@ -494,6 +520,24 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
                     new BsonDocument("drop", new BsonString(context.format(exportable.getQualifiedTableName())))
                             .toJson(MongoConstants.EXTENDED_JSON_WRITER_SETTINGS)
                 };
+            }
+        };
+    }
+
+    @Override
+    public Exporter<UserDefinedType> getUserDefinedTypeExporter() {
+        // MongoDB has no user-defined type DDL; @Struct shapes are subdocuments in the aggregation pipeline.
+        return new Exporter<>() {
+            @Override
+            public String[] getSqlCreateStrings(
+                    UserDefinedType exportable, Metadata metadata, SqlStringGenerationContext context) {
+                return NO_COMMANDS;
+            }
+
+            @Override
+            public String[] getSqlDropStrings(
+                    UserDefinedType exportable, Metadata metadata, SqlStringGenerationContext context) {
+                return NO_COMMANDS;
             }
         };
     }
