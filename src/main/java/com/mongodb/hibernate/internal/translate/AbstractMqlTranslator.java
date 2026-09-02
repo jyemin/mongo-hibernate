@@ -2230,9 +2230,6 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements 
         if (queryOptions.getTimeout() != null) {
             throw new FeatureNotSupportedException("'timeout' inQueryOptions is not supported");
         }
-        if (queryOptions.getQueryFlushMode() != null) {
-            throw new FeatureNotSupportedException("'flushMode' in QueryOptions is not supported");
-        }
         if (Boolean.TRUE.equals(queryOptions.isReadOnly())) {
             throw new FeatureNotSupportedException("'readOnly' in QueryOptions is not supported");
         }

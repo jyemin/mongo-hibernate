@@ -51,8 +51,10 @@ import java.sql.ResultSet;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Stream;
@@ -77,6 +79,7 @@ import org.hibernate.engine.jdbc.env.spi.NameQualifierSupport;
 import org.hibernate.engine.jdbc.mutation.JdbcValueBindings;
 import org.hibernate.engine.jdbc.mutation.ParameterUsage;
 import org.hibernate.engine.jdbc.mutation.group.UnknownParameterException;
+import org.hibernate.engine.jdbc.mutation.internal.JdbcValueDescriptorImpl;
 import org.hibernate.engine.jdbc.mutation.internal.MutationQueryOptions;
 import org.hibernate.engine.spi.SharedSessionContractImplementor;
 import org.hibernate.exception.spi.SQLExceptionConversionDelegate;
@@ -464,12 +467,18 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
         private final MutationTarget mutationTarget;
         private final TableMapping tableMapping;
         private final String message;
+        private final List<JdbcValueDescriptor> jdbcValueDescriptors;
 
         RejectingUpsertOperation(
                 MutationTarget mutationTarget, OptionalTableUpdate optionalTableUpdate, String message) {
             this.mutationTarget = mutationTarget;
             this.tableMapping = optionalTableUpdate.getMutatingTable().getTableMapping();
             this.message = message;
+            var parameters = optionalTableUpdate.getParameters();
+            this.jdbcValueDescriptors = new ArrayList<>(parameters.size());
+            for (var parameter : parameters) {
+                jdbcValueDescriptors.add(new JdbcValueDescriptorImpl(parameter, jdbcValueDescriptors.size() + 1));
+            }
         }
 
         @Override
@@ -489,6 +498,11 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
 
         @Override
         public JdbcValueDescriptor findValueDescriptor(String columnName, ParameterUsage usage) {
+            for (var descriptor : jdbcValueDescriptors) {
+                if (descriptor.getColumnName().equals(columnName) && descriptor.getUsage() == usage) {
+                    return descriptor;
+                }
+            }
             throw new UnknownParameterException(
                     getMutationType(), getMutationTarget(), tableMapping.getTableName(), columnName, usage);
         }
