@@ -183,13 +183,28 @@ public abstract class AbstractQueryIntegrationTests implements SessionFactorySco
                 expectedExceptionMessageParameters);
     }
 
+    /**
+     * Asserts the exact command sequence, first filtering out the boot and schema-management commands ({@code create},
+     * {@code createIndexes}, {@code drop}) that {@link #isDataCommand} excludes; a test asserting those commands must
+     * inspect {@link CommandHistory} directly.
+     */
     protected void assertActualCommandsInOrder(BsonDocument... expectedCommands) {
-        var capturedCommands = commandHistory.getCommands();
+        var capturedCommands = commandHistory.getCommands().stream()
+                .filter(AbstractQueryIntegrationTests::isDataCommand)
+                .toList();
         assertThat(capturedCommands).hasSize(expectedCommands.length);
         for (int i = 0; i < expectedCommands.length; i++) {
             BsonDocument actual = capturedCommands.get(i);
             assertThat(actual).asInstanceOf(InstanceOfAssertFactories.MAP).containsAllEntriesOf(expectedCommands[i]);
         }
+    }
+
+    private static boolean isDataCommand(BsonDocument command) {
+        // Commands Hibernate and the driver emit at factory boot are not the commands a query test asserts.
+        return switch (command.getFirstKey()) {
+            case "create", "createIndexes", "drop" -> false;
+            default -> true;
+        };
     }
 
     protected void assertMutationQuery(

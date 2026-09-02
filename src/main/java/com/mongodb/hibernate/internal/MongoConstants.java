@@ -42,6 +42,7 @@ public final class MongoConstants {
     public static final String ID_FIELD_NAME = "_id";
 
     public static final String MONGO_DIALECT_SHORT_NAME = "MongoDB";
+    public static final String SCHEMA_VALIDATION_PROPERTY_NAME = "com.mongodb.hibernate.schema.validation";
 
     /**
      * JPA property key used to pass a {@code MongoConfigurationContributor} object via the JPA properties map. Read by

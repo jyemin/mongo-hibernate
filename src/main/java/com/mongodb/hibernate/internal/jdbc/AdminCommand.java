@@ -18,8 +18,10 @@ package com.mongodb.hibernate.internal.jdbc;
 
 import com.mongodb.MongoClientSettings;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.CreateCollectionOptions;
 import com.mongodb.client.model.IndexModel;
 import com.mongodb.client.model.IndexOptions;
+import com.mongodb.client.model.ValidationOptions;
 import java.sql.SQLFeatureNotSupportedException;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +30,7 @@ import org.bson.BsonType;
 import org.bson.codecs.Decoder;
 import org.bson.codecs.DecoderContext;
 import org.bson.json.JsonReader;
+import org.jspecify.annotations.Nullable;
 
 abstract sealed class AdminCommand
         permits AdminCommand.CreateIndexesCommand,
@@ -36,6 +39,9 @@ abstract sealed class AdminCommand
 
     private static final Decoder<Index> INDEX_DECODER =
             MongoClientSettings.getDefaultCodecRegistry().get(Index.class);
+
+    private static final Decoder<BsonDocument> BSON_DOCUMENT_DECODER =
+            MongoClientSettings.getDefaultCodecRegistry().get(BsonDocument.class);
 
     public record Index(String name, BsonDocument key, boolean unique) {
         IndexModel toIndexModel() {
@@ -51,7 +57,19 @@ abstract sealed class AdminCommand
             var name = reader.readName();
             final var result =
                     switch (name) {
-                        case "create" -> new CreateCollectionCommand(reader.readString());
+                        case "create" -> {
+                            var collectionName = reader.readString();
+                            BsonDocument validator = null;
+                            if (reader.readBsonType() != BsonType.END_OF_DOCUMENT) {
+                                var optionName = reader.readName();
+                                if (!"validator".equals(optionName)) {
+                                    throw new SQLFeatureNotSupportedException(
+                                            "Cannot decode command %s: unknown option %s".formatted(name, optionName));
+                                }
+                                validator = BSON_DOCUMENT_DECODER.decode(reader, decoderContext);
+                            }
+                            yield new CreateCollectionCommand(collectionName, validator);
+                        }
                         case "createIndexes" -> {
                             var collectionName = reader.readString();
                             reader.readName("indexes");
@@ -80,14 +98,20 @@ abstract sealed class AdminCommand
     static final class CreateCollectionCommand extends AdminCommand {
 
         private final String collectionName;
+        private final @Nullable BsonDocument validator;
 
-        CreateCollectionCommand(String collectionName) {
+        CreateCollectionCommand(String collectionName, @Nullable BsonDocument validator) {
             this.collectionName = collectionName;
+            this.validator = validator;
         }
 
         @Override
         void execute(MongoDatabase database) {
-            database.createCollection(collectionName);
+            var options = new CreateCollectionOptions();
+            if (validator != null) {
+                options.validationOptions(new ValidationOptions().validator(validator));
+            }
+            database.createCollection(collectionName, options);
         }
     }
 

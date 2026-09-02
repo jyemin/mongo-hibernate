@@ -24,6 +24,7 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.junit.InjectMongoCollection;
 import com.mongodb.hibernate.junit.MongoExtension;
+import com.mongodb.hibernate.junit.MongoServiceRegistryProducer;
 import com.mongodb.hibernate.query.AbstractQueryIntegrationTests;
 import com.mongodb.hibernate.query.Book;
 import jakarta.persistence.Embeddable;
@@ -1972,8 +1973,7 @@ public class GroupByHavingIntegrationTests extends AbstractQueryIntegrationTests
     }
 
     @Nested
-    @DomainModel(annotatedClasses = {Item.class})
-    class Accumulators extends AbstractQueryIntegrationTests {
+    class Accumulators implements MongoServiceRegistryProducer {
 
         @Test
         void countStar() {
