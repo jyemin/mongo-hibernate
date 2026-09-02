@@ -19,7 +19,7 @@ plugins {
     id("mongo-hibernate-publish")
 }
 
-repositories { mavenCentral() }
+repositories { mavenLocal(); mavenCentral() }
 
 // No source code, just dependency aggregation following the Spring Boot starter convention:
 // https://docs.spring.io/spring-boot/reference/features/developing-auto-configuration.html#features.developing-auto-configuration.custom-starter

@@ -20,7 +20,7 @@ import static com.mongodb.hibernate.internal.MongoAssertions.fail;
 import static com.mongodb.hibernate.internal.translate.AstVisitorValueDescriptor.MUTATION_RESULT;
 import static java.lang.String.format;
 import static java.util.Collections.emptyMap;
-import static org.hibernate.sql.ast.SqlTreePrinter.logSqlAst;
+import static org.hibernate.sql.ast.internal.SqlTreePrinter.logSqlAst;
 
 import com.mongodb.hibernate.internal.translate.mongoast.command.AstCommand;
 import com.mongodb.hibernate.internal.translate.mongoast.command.AstDeleteCommand;
@@ -30,7 +30,7 @@ import java.util.ArrayList;
 import java.util.Set;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.query.spi.QueryOptions;
-import org.hibernate.sql.ast.tree.MutationStatement;
+import org.hibernate.sql.ast.spi.query.MutationStatement;
 import org.hibernate.sql.exec.internal.JdbcOperationQueryDelete;
 import org.hibernate.sql.exec.internal.JdbcOperationQueryInsertImpl;
 import org.hibernate.sql.exec.internal.JdbcOperationQueryUpdate;

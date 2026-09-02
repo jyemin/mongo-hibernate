@@ -25,9 +25,23 @@ plugins {
     alias(libs.plugins.errorprone)
     alias(libs.plugins.buildconfig)
     alias(libs.plugins.nexus.publish)
+    id("org.hibernate.orm.dialect-provider") version "8.0.0-SNAPSHOT"
 }
 
-repositories { mavenCentral() }
+hibernateDialectProvider {
+    hibernateVersion = "8.0.0-SNAPSHOT"
+    // 8.0 has no published family metadata yet; use the locally generated document from the PR branch build
+    classificationMetadataFile =
+        file("/Users/jeff/git/m/hibernate-orm-ast80/documentation/target/orm/reports/classifications.json.gz")
+    providerPackages.add("com.mongodb.hibernate")
+    // the boundary report is the deliverable of this evaluation; do not gate `check` on it
+    attachToCheck = false
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+}
 
 tasks.withType<Javadoc> {
     val standardDocletOptions = options as StandardJavadocDocletOptions
@@ -109,6 +123,10 @@ tasks.withType<JavaCompile>().configureEach {
                 error("NullAway")
             }
         else -> options.errorprone.enabled = false
+    }
+    // Hibernate 8.0 / JPA 4 deprecations are expected here; they are tracked in the migration catalog, not the build
+    if (name == "compileIntegrationTestJava") {
+        options.compilerArgs.addAll(listOf("-Xlint:-removal", "-Xlint:-deprecation"))
     }
 }
 

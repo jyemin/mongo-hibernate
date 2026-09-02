@@ -25,11 +25,11 @@ import com.mongodb.hibernate.internal.translate.mongoast.command.AstCommand;
 import java.util.ArrayList;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.query.spi.QueryOptions;
+import org.hibernate.sql.ast.spi.model.TableMutation;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 import org.hibernate.sql.exec.spi.JdbcParameterBindings;
-import org.hibernate.sql.model.ast.TableMutation;
 import org.hibernate.sql.model.internal.TableUpdateNoSet;
-import org.hibernate.sql.model.jdbc.JdbcMutationOperation;
+import org.hibernate.sql.spi.mutation.jdbc.JdbcMutationOperation;
 import org.jspecify.annotations.Nullable;
 
 /**

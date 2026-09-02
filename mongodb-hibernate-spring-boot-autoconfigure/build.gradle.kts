@@ -20,7 +20,7 @@ plugins {
     id("mongo-hibernate-publish")
 }
 
-repositories { mavenCentral() }
+repositories { mavenLocal(); mavenCentral() }
 
 // This module ships no module-info.java. Like Spring Boot's own autoconfigure jars (which are
 // automatic modules), it lives in a Spring ecosystem that is entirely automatic modules, so a full

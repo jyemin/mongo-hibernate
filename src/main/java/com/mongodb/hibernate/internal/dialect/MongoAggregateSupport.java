@@ -21,7 +21,7 @@ import static java.lang.String.format;
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import com.mongodb.hibernate.internal.type.MongoArrayJdbcType;
 import com.mongodb.hibernate.internal.type.MongoStructJdbcType;
-import org.hibernate.dialect.aggregate.AggregateSupportImpl;
+import org.hibernate.dialect.aggregate.internal.AggregateSupportImpl;
 import org.hibernate.mapping.Column;
 import org.hibernate.metamodel.mapping.SqlTypedMapping;
 import org.hibernate.type.spi.TypeConfiguration;

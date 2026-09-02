@@ -19,18 +19,19 @@ package com.mongodb.hibernate.internal.translate;
 import static com.mongodb.hibernate.internal.translate.AstVisitorValueDescriptor.SELECT_RESULT;
 import static java.lang.Integer.MAX_VALUE;
 import static java.util.Collections.emptyMap;
-import static org.hibernate.sql.ast.SqlTreePrinter.logSqlAst;
-import static org.hibernate.sql.exec.spi.JdbcLockStrategy.NONE;
+import static org.hibernate.sql.ast.internal.SqlTreePrinter.logSqlAst;
 
 import com.mongodb.hibernate.internal.translate.mongoast.command.AstCommand;
 import java.util.ArrayList;
 import java.util.Set;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.query.spi.QueryOptions;
-import org.hibernate.sql.ast.tree.Statement;
-import org.hibernate.sql.ast.tree.expression.JdbcParameter;
-import org.hibernate.sql.ast.tree.select.SelectStatement;
+import org.hibernate.sql.ast.spi.Statement;
+import org.hibernate.sql.ast.spi.query.expression.JdbcParameter;
+import org.hibernate.sql.ast.spi.query.select.SelectStatement;
 import org.hibernate.sql.exec.internal.JdbcOperationQuerySelect;
+import org.hibernate.sql.exec.spi.JdbcLockingApplication;
+import org.hibernate.sql.exec.spi.JdbcPaginationApplication;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
 import org.hibernate.sql.exec.spi.JdbcParameterBindings;
 import org.hibernate.sql.exec.spi.JdbcSelect;
@@ -95,11 +96,13 @@ final class SelectMqlTranslator extends AbstractMqlTranslator<JdbcSelect> {
                     0,
                     MAX_VALUE,
                     emptyMap(),
-                    NONE,
+                    JdbcLockingApplication.NONE,
+                    JdbcPaginationApplication.NONE,
                     // The following parameters are provided for query plan cache purposes.
                     // Not setting them could result in reusing the wrong query plan and subsequently the wrong MQL.
                     offsetParameter,
-                    limitParameter);
+                    limitParameter,
+                    false);
         }
     }
 }
