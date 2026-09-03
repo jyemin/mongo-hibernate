@@ -1393,7 +1393,9 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> extends Abs
             if (aggregate == null) {
                 updates.add(createFieldUpdate(valueBinding));
             } else if (collapsedAggregates.add(aggregate.getSelectionExpression())) {
-                var parameter =
+                // typed as the spi interface: ColumnValueParameter's binder and id accessors are declared
+                // on the internal AbstractJdbcParameter it extends
+                JdbcParameter parameter =
                         new ColumnValueParameter(new ColumnReference(mutatingTable, aggregate), ParameterUsage.SET);
                 updates.add(new AstFieldUpdate(
                         aggregate.getSelectionExpression(),
