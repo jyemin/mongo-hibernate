@@ -154,6 +154,7 @@ import org.hibernate.dialect.sql.ast.spi.SqlAstTranslatorFactory;
 import org.hibernate.engine.jdbc.mutation.ParameterUsage;
 import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.metamodel.mapping.EmbeddableValuedModelPart;
+import org.hibernate.metamodel.mapping.JdbcMappingContainer;
 import org.hibernate.metamodel.mapping.SelectableMapping;
 import org.hibernate.metamodel.mapping.internal.EmbeddedAttributeMapping;
 import org.hibernate.persister.entity.EntityPersister;
@@ -170,6 +171,7 @@ import org.hibernate.query.sqm.tree.spi.expression.Conversion;
 import org.hibernate.spi.Stack;
 import org.hibernate.sql.ast.spi.AbstractSqlAstWalker;
 import org.hibernate.sql.ast.spi.SqlAstNode;
+import org.hibernate.sql.ast.spi.SqlAstWalker;
 import org.hibernate.sql.ast.spi.Statement;
 import org.hibernate.sql.ast.spi.model.AbstractRestrictedTableMutation;
 import org.hibernate.sql.ast.spi.model.ColumnValueBinding;
@@ -261,7 +263,6 @@ import org.hibernate.sql.ast.spi.query.update.UpdateStatement;
 import org.hibernate.sql.ast.spi.translation.Clause;
 import org.hibernate.sql.ast.spi.translation.SqlAstNodeRenderingMode;
 import org.hibernate.sql.ast.spi.translation.SqlAstTranslator;
-import org.hibernate.sql.exec.internal.AbstractJdbcParameter;
 import org.hibernate.sql.exec.spi.ExecutionContext;
 import org.hibernate.sql.exec.spi.JdbcOperation;
 import org.hibernate.sql.exec.spi.JdbcParameterBinder;
@@ -2595,22 +2596,42 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> extends Abs
         return "v" + letVariableCounter++ + "_" + suffix;
     }
 
-    private static final class OffsetJdbcParameter extends AbstractJdbcParameter {
+    private static final class OffsetJdbcParameter implements JdbcParameter, JdbcParameterBinder {
+
+        private final BasicType<Integer> type;
 
         OffsetJdbcParameter(BasicType<Integer> type) {
-            super(type);
+            this.type = type;
         }
 
         @Override
-        @SuppressWarnings("unchecked")
+        public JdbcParameterBinder getParameterBinder() {
+            return this;
+        }
+
+        @Override
+        public @Nullable Integer getParameterId() {
+            return null;
+        }
+
+        @Override
+        public @Nullable JdbcMappingContainer getExpressionType() {
+            return type;
+        }
+
+        @Override
+        public void accept(SqlAstWalker sqlTreeWalker) {
+            sqlTreeWalker.visitParameter(this);
+        }
+
+        @Override
         public void bindParameterValue(
                 PreparedStatement statement,
                 int startPosition,
                 JdbcParameterBindings jdbcParamBindings,
                 ExecutionContext executionContext)
                 throws SQLException {
-            getJdbcMapping()
-                    .getJdbcValueBinder()
+            type.getJdbcValueBinder()
                     .bind(
                             statement,
                             executionContext.getQueryOptions().getLimit().getFirstRow(),
@@ -2619,22 +2640,42 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> extends Abs
         }
     }
 
-    private static final class LimitJdbcParameter extends AbstractJdbcParameter {
+    private static final class LimitJdbcParameter implements JdbcParameter, JdbcParameterBinder {
+
+        private final BasicType<Integer> type;
 
         LimitJdbcParameter(BasicType<Integer> type) {
-            super(type);
+            this.type = type;
         }
 
         @Override
-        @SuppressWarnings("unchecked")
+        public JdbcParameterBinder getParameterBinder() {
+            return this;
+        }
+
+        @Override
+        public @Nullable Integer getParameterId() {
+            return null;
+        }
+
+        @Override
+        public @Nullable JdbcMappingContainer getExpressionType() {
+            return type;
+        }
+
+        @Override
+        public void accept(SqlAstWalker sqlTreeWalker) {
+            sqlTreeWalker.visitParameter(this);
+        }
+
+        @Override
         public void bindParameterValue(
                 PreparedStatement statement,
                 int startPosition,
                 JdbcParameterBindings jdbcParamBindings,
                 ExecutionContext executionContext)
                 throws SQLException {
-            getJdbcMapping()
-                    .getJdbcValueBinder()
+            type.getJdbcValueBinder()
                     .bind(
                             statement,
                             executionContext.getQueryOptions().getLimit().getMaxRows(),
