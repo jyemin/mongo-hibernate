@@ -33,8 +33,7 @@ import org.hibernate.sql.spi.mutation.jdbc.JdbcMutationOperation;
 import org.jspecify.annotations.Nullable;
 
 /**
- * @mongoCme Does not have to be thread-safe because it is
- *     {@linkplain MongoTranslatorFactory#buildModelMutationTranslator(TableMutation, SessionFactoryImplementor)
+ * @mongoCme Does not have to be thread-safe because it is {@linkplain MongoTranslatorFactory#buildTranslator
  *     single-use}, as is {@link MongoTranslatorFactory#buildUpsertModelMutationTranslator}.
  */
 final class ModelMutationMqlTranslator<O extends JdbcMutationOperation> extends AbstractMqlTranslator<O> {

@@ -41,11 +41,9 @@ public final class MongoTranslatorFactory implements SqlAstTranslatorFactory {
     public <S extends Statement, O extends JdbcOperation> SqlAstTranslator<O> buildTranslator(
             SqlAstTranslationRequest<S, O> request) {
         if (request instanceof SqlAstTranslationRequest.Select selectRequest) {
-            return (SqlAstTranslator<O>) (SqlAstTranslator<?>)
-                    new SelectMqlTranslator(selectRequest.sessionFactory(), selectRequest.statement());
+            return (SqlAstTranslator<O>) (SqlAstTranslator<?>) new SelectMqlTranslator(selectRequest);
         } else if (request instanceof SqlAstTranslationRequest.QueryMutation mutationRequest) {
-            return (SqlAstTranslator<O>) (SqlAstTranslator<?>)
-                    new MutationMqlTranslator(mutationRequest.sessionFactory(), mutationRequest.statement());
+            return (SqlAstTranslator<O>) (SqlAstTranslator<?>) new MutationMqlTranslator(mutationRequest);
         } else if (request instanceof SqlAstTranslationRequest.ModelMutation<?> modelMutationRequest) {
             // A model mutation's semantic statement is a TableMutation<?> while its translator renders a
             // constituent JdbcMutationOperation, so the narrowing is safe at runtime.
