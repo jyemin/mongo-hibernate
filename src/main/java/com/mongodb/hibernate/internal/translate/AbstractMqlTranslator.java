@@ -156,7 +156,6 @@ import org.hibernate.engine.spi.SessionFactoryImplementor;
 import org.hibernate.metamodel.mapping.EmbeddableValuedModelPart;
 import org.hibernate.metamodel.mapping.JdbcMappingContainer;
 import org.hibernate.metamodel.mapping.SelectableMapping;
-import org.hibernate.metamodel.mapping.internal.EmbeddedAttributeMapping;
 import org.hibernate.persister.entity.EntityPersister;
 import org.hibernate.persister.entity.JoinedSubclassEntityPersister;
 import org.hibernate.persister.entity.SingleTableEntityPersister;
@@ -1404,8 +1403,8 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> extends Abs
                 .getTargetPart()
                 .visitSubParts(
                         attributeMapping -> {
-                            if (attributeMapping instanceof EmbeddedAttributeMapping embeddedAttributeMapping) {
-                                var aggregate = embeddedAttributeMapping
+                            if (attributeMapping instanceof EmbeddableValuedModelPart embeddableValuedModelPart) {
+                                var aggregate = embeddableValuedModelPart
                                         .getEmbeddableTypeDescriptor()
                                         .getAggregateMapping();
                                 if (aggregate != null) {
