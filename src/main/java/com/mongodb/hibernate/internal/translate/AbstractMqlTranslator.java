@@ -168,6 +168,7 @@ import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.query.sqm.tree.spi.expression.Conversion;
 import org.hibernate.spi.Stack;
+import org.hibernate.sql.ast.spi.AbstractSqlAstWalker;
 import org.hibernate.sql.ast.spi.SqlAstNode;
 import org.hibernate.sql.ast.spi.Statement;
 import org.hibernate.sql.ast.spi.model.AbstractRestrictedTableMutation;
@@ -280,7 +281,8 @@ import org.jspecify.annotations.Nullable;
  *     {@linkplain SqlAstTranslatorFactory single-use}.
  */
 @SuppressWarnings("MissingSummary")
-public abstract class AbstractMqlTranslator<T extends JdbcOperation> implements SqlAstTranslator<T> {
+public abstract class AbstractMqlTranslator<T extends JdbcOperation> extends AbstractSqlAstWalker
+        implements SqlAstTranslator<T> {
 
     // '#' is blocked in mapped field names, so prefixing join aliases with it prevents $lookup from shadowing
     // a local field that happens to share the Hibernate-generated alias name (e.g. "o1_0").
