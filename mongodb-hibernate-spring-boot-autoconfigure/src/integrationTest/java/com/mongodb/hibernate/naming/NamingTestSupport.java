@@ -35,7 +35,7 @@ final class NamingTestSupport {
             var databaseName = Objects.requireNonNull(
                     new ConnectionString(connectionString).getDatabase(),
                     "connection string must include a database name");
-            client.getDatabase(databaseName).getCollection("namingbook").drop();
+            client.getDatabase(databaseName).getCollection(NamingBook.COLLECTION_NAME).drop();
         }
     }
 
@@ -47,7 +47,7 @@ final class NamingTestSupport {
                     new ConnectionString(connectionString).getDatabase(),
                     "connection string must include a database name");
             var document = client.getDatabase(databaseName)
-                    .getCollection("namingbook", BsonDocument.class)
+                    .getCollection(NamingBook.COLLECTION_NAME, BsonDocument.class)
                     .find(new BsonDocument("_id", new BsonObjectId(id)))
                     .first();
             return Objects.requireNonNull(document, () -> "no stored document for id " + id);
