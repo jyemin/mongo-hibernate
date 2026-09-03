@@ -80,16 +80,17 @@ import org.hibernate.engine.jdbc.env.spi.NameQualifierSupport;
 import org.hibernate.engine.jdbc.mutation.JdbcValueBindings;
 import org.hibernate.engine.jdbc.mutation.ParameterUsage;
 import org.hibernate.engine.jdbc.mutation.group.UnknownParameterException;
-import org.hibernate.engine.jdbc.mutation.internal.JdbcValueDescriptorImpl;
 import org.hibernate.engine.spi.SharedSessionContractImplementor;
 import org.hibernate.exception.spi.SQLExceptionConversionDelegate;
 import org.hibernate.mapping.Column;
 import org.hibernate.mapping.Index;
 import org.hibernate.mapping.Table;
 import org.hibernate.mapping.UniqueKey;
+import org.hibernate.metamodel.mapping.JdbcMapping;
 import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.produce.function.FunctionParameterType;
 import org.hibernate.service.ServiceRegistry;
+import org.hibernate.sql.ast.spi.model.ColumnValueParameter;
 import org.hibernate.sql.ast.spi.model.OptionalTableUpdate;
 import org.hibernate.sql.spi.mutation.MutationOperation;
 import org.hibernate.sql.spi.mutation.MutationTarget;
@@ -477,7 +478,7 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
             var parameters = optionalTableUpdate.getParameters();
             this.jdbcValueDescriptors = new ArrayList<>(parameters.size());
             for (var parameter : parameters) {
-                jdbcValueDescriptors.add(new JdbcValueDescriptorImpl(parameter, jdbcValueDescriptors.size() + 1));
+                jdbcValueDescriptors.add(new ParameterValueDescriptor(parameter, jdbcValueDescriptors.size() + 1));
             }
         }
 
@@ -494,6 +495,30 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
         @Override
         public TableMapping getTableDetails() {
             return tableMapping;
+        }
+
+        private record ParameterValueDescriptor(ColumnValueParameter parameter, int jdbcPosition)
+                implements JdbcValueDescriptor {
+
+            @Override
+            public String getColumnName() {
+                return parameter.getColumnReference().getColumnExpression();
+            }
+
+            @Override
+            public ParameterUsage getUsage() {
+                return parameter.getUsage();
+            }
+
+            @Override
+            public int getJdbcPosition() {
+                return jdbcPosition;
+            }
+
+            @Override
+            public JdbcMapping getJdbcMapping() {
+                return parameter.getJdbcMapping();
+            }
         }
 
         @Override
