@@ -596,7 +596,13 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> extends Abs
             }
             case 1 -> {
                 if (columnWriteFragment.getFragment().equals("?")) {
-                    columnWriteFragment.getParameters().iterator().next().accept(this);
+                    // visit through the spi interface: ColumnValueParameter extends the internal
+                    // AbstractJdbcParameter, and invoking accept() on its declared type would depend on it
+                    ((JdbcParameter) columnWriteFragment
+                                    .getParameters()
+                                    .iterator()
+                                    .next())
+                            .accept(this);
                 } else {
                     throw new FeatureNotSupportedException("@ColumnTransformer expressions are not supported");
                 }
