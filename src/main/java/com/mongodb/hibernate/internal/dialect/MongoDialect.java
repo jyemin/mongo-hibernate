@@ -73,6 +73,7 @@ import org.hibernate.dialect.array.spi.ArraySupport;
 import org.hibernate.dialect.sql.ast.spi.OptionalTableUpdateOperationRequest;
 import org.hibernate.dialect.sql.ast.spi.SqlAstTranslatorFactory;
 import org.hibernate.dialect.temporaltype.spi.TemporalFormatSupport;
+import org.hibernate.dialect.type.spi.StandardDdlTypes;
 import org.hibernate.dialect.unique.spi.UniqueDelegate;
 import org.hibernate.engine.jdbc.dialect.spi.DialectResolutionInfo;
 import org.hibernate.engine.jdbc.env.spi.NameQualifierSupport;
@@ -101,7 +102,6 @@ import org.hibernate.tool.schema.spi.Exporter;
 import org.hibernate.type.SqlTypes;
 import org.hibernate.type.StandardBasicTypes;
 import org.hibernate.type.descriptor.jdbc.TimestampUtcAsInstantJdbcType;
-import org.hibernate.type.descriptor.sql.internal.DdlTypeImpl;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -171,7 +171,7 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
         typeContributions
                 .getTypeConfiguration()
                 .getDdlTypeRegistry()
-                .addDescriptorIfAbsent(new DdlTypeImpl(
+                .addDescriptorIfAbsent(StandardDdlTypes.simple(
                         objectIdTypeCode,
                         format(
                                 "unused from %s.contributeObjectIdType for SQL type code [%d]",
