@@ -165,7 +165,6 @@ import org.hibernate.query.spi.Limit;
 import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.ComparisonOperator;
 import org.hibernate.query.sqm.function.SelfRenderingFunctionSqlAstExpression;
-import org.hibernate.query.sqm.sql.internal.BasicValuedPathInterpretation;
 import org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation;
 import org.hibernate.query.sqm.tree.spi.expression.Conversion;
 import org.hibernate.spi.Stack;
@@ -1140,13 +1139,7 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> extends Abs
     }
 
     private static @Nullable ColumnReference extractColumnReference(Expression expression) {
-        if (expression instanceof ColumnReference cr) {
-            return cr;
-        }
-        if (expression instanceof BasicValuedPathInterpretation<?> bvpi) {
-            return bvpi.getColumnReference();
-        }
-        return null;
+        return expression.getColumnReference();
     }
 
     @Override
@@ -2061,11 +2054,10 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> extends Abs
         if (args.size() != 1) {
             return Optional.empty();
         }
-        var arg = args.get(0);
-        if (!(arg instanceof BasicValuedPathInterpretation<?> bvpi)) {
+        if (!(args.get(0) instanceof Expression arg)) {
             return Optional.empty();
         }
-        var columnReference = bvpi.getColumnReference();
+        var columnReference = arg.getColumnReference();
         if (columnReference == null) {
             return Optional.empty();
         }
@@ -2295,9 +2287,7 @@ public abstract class AbstractMqlTranslator<T extends JdbcOperation> extends Abs
     }
 
     private static boolean isFieldPathExpression(Expression expression) {
-        return expression instanceof ColumnReference
-                || expression instanceof BasicValuedPathInterpretation
-                || expression instanceof SqlSelectionExpression;
+        return expression.getColumnReference() != null || expression instanceof SqlSelectionExpression;
     }
 
     private static boolean isValueExpression(Expression expression) {
