@@ -27,6 +27,18 @@ final class NamingTestSupport {
 
     private NamingTestSupport() {}
 
+    // Drops the collection via the Mongo client rather than emptying it through the repository: the
+    // collection is shared by the two naming tests, whose naming strategies store different field keys,
+    // and repository.deleteAll would fail to hydrate documents written under the other strategy.
+    static void dropBooksCollection(String connectionString) {
+        try (var client = MongoClients.create(connectionString)) {
+            var databaseName = Objects.requireNonNull(
+                    new ConnectionString(connectionString).getDatabase(),
+                    "connection string must include a database name");
+            client.getDatabase(databaseName).getCollection("namingbook").drop();
+        }
+    }
+
     // Reads the raw stored document straight from MongoDB (bypassing Hibernate) so the test inspects the
     // actual persisted field keys rather than the entity's Java property names.
     static BsonDocument readStoredBook(String connectionString, ObjectId id) {
