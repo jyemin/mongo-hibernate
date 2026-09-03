@@ -17,7 +17,6 @@
 package com.mongodb.hibernate.internal.translate;
 
 import static com.mongodb.hibernate.internal.translate.AstVisitorValueDescriptor.SELECT_RESULT;
-import static org.hibernate.sql.ast.internal.SqlTreePrinter.logSqlAst;
 
 import com.mongodb.hibernate.internal.translate.mongoast.command.AstCommand;
 import java.util.ArrayList;
@@ -50,8 +49,6 @@ final class SelectMqlTranslator extends AbstractMqlTranslator<JdbcSelect> {
 
     @Override
     public JdbcSelect translate(@Nullable JdbcParameterBindings jdbcParameterBindings, QueryOptions queryOptions) {
-
-        logSqlAst(selectStatement);
 
         applyQueryOptions(queryOptions);
 

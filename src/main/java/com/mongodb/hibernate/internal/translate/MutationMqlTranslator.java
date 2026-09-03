@@ -17,7 +17,6 @@
 package com.mongodb.hibernate.internal.translate;
 
 import static com.mongodb.hibernate.internal.translate.AstVisitorValueDescriptor.MUTATION_RESULT;
-import static org.hibernate.sql.ast.internal.SqlTreePrinter.logSqlAst;
 
 import com.mongodb.hibernate.internal.translate.mongoast.command.AstCommand;
 import java.util.ArrayList;
@@ -49,8 +48,6 @@ final class MutationMqlTranslator extends AbstractMqlTranslator<JdbcOperationQue
     @Override
     public JdbcOperationQueryMutation translate(
             @Nullable JdbcParameterBindings jdbcParameterBindings, QueryOptions queryOptions) {
-
-        logSqlAst(mutationStatement);
 
         applyQueryOptions(queryOptions);
 
