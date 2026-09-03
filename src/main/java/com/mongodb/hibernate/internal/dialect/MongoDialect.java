@@ -81,13 +81,13 @@ import org.hibernate.engine.jdbc.mutation.JdbcValueBindings;
 import org.hibernate.engine.jdbc.mutation.ParameterUsage;
 import org.hibernate.engine.jdbc.mutation.group.UnknownParameterException;
 import org.hibernate.engine.jdbc.mutation.internal.JdbcValueDescriptorImpl;
-import org.hibernate.engine.jdbc.mutation.internal.MutationQueryOptions;
 import org.hibernate.engine.spi.SharedSessionContractImplementor;
 import org.hibernate.exception.spi.SQLExceptionConversionDelegate;
 import org.hibernate.mapping.Column;
 import org.hibernate.mapping.Index;
 import org.hibernate.mapping.Table;
 import org.hibernate.mapping.UniqueKey;
+import org.hibernate.query.spi.QueryOptions;
 import org.hibernate.query.sqm.produce.function.FunctionParameterType;
 import org.hibernate.service.ServiceRegistry;
 import org.hibernate.sql.ast.spi.model.OptionalTableUpdate;
@@ -455,7 +455,7 @@ public sealed class MongoDialect extends Dialect permits TestMongoDialect {
         }
         return MongoTranslatorFactory.INSTANCE
                 .buildUpsertModelMutationTranslator(optionalTableUpdate, request.sessionFactory())
-                .translate(null, MutationQueryOptions.INSTANCE);
+                .translate(null, QueryOptions.NONE);
     }
 
     private static MutationOperation rejectingUpsertOperation(
