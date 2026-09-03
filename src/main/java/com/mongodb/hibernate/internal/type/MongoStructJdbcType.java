@@ -25,26 +25,31 @@ import static com.mongodb.hibernate.internal.type.ValueConversions.isNull;
 import static com.mongodb.hibernate.internal.type.ValueConversions.toArrayDomainValue;
 import static com.mongodb.hibernate.internal.type.ValueConversions.toBsonValue;
 import static com.mongodb.hibernate.internal.type.ValueConversions.toDomainValue;
-import static org.hibernate.type.descriptor.jdbc.StructHelper.getAttributeValues;
-import static org.hibernate.type.descriptor.jdbc.StructHelper.getJdbcValues;
-import static org.hibernate.type.descriptor.jdbc.StructHelper.instantiate;
 
 import com.mongodb.hibernate.internal.FeatureNotSupportedException;
 import java.io.IOException;
 import java.io.NotSerializableException;
 import java.io.ObjectOutputStream;
 import java.io.Serial;
+import java.sql.Blob;
 import java.sql.CallableStatement;
-import java.sql.Connection;
+import java.sql.Clob;
 import java.sql.JDBCType;
+import java.sql.NClob;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
-import java.sql.Struct;
 import org.bson.BsonDocument;
+import org.hibernate.metamodel.mapping.DiscriminatedAssociationModelPart;
 import org.hibernate.metamodel.mapping.EmbeddableMappingType;
+import org.hibernate.metamodel.mapping.EmbeddableValuedModelPart;
+import org.hibernate.metamodel.mapping.EntityAssociationMapping;
+import org.hibernate.metamodel.mapping.JdbcMapping;
+import org.hibernate.metamodel.mapping.PluralAttributeMapping;
+import org.hibernate.metamodel.mapping.ValuedModelPart;
 import org.hibernate.metamodel.spi.RuntimeModelCreationContext;
+import org.hibernate.metamodel.spi.ValueAccess;
 import org.hibernate.type.SqlTypes;
 import org.hibernate.type.descriptor.ValueBinder;
 import org.hibernate.type.descriptor.ValueExtractor;
@@ -126,11 +131,10 @@ public final class MongoStructJdbcType implements StructuredJdbcType {
             return null;
         }
         var embeddableMappingType = getEmbeddableMappingType();
-        // `StructHelper` flattens the domain value to one JDBC value per column, applying each column's
+        // The flatten walk below turns the domain value into one JDBC value per column, applying each column's
         // `ValueBinder` on the way, which is the unwrap this method needs, and yielding the `BsonDocument` a nested
-        // `@Struct` binds to. The order mapping is null because this type writes fields by selectable name rather
-        // than by physical position.
-        var jdbcValues = getJdbcValues(embeddableMappingType, null, domainValue, options);
+        // `@Struct` binds to. Fields are written by selectable name rather than by physical position.
+        var jdbcValues = getJdbcValues(embeddableMappingType, domainValue, options);
         var result = new BsonDocument();
         var jdbcValueCount = embeddableMappingType.getJdbcValueCount();
         for (var columnIndex = 0; columnIndex < jdbcValueCount; columnIndex++) {
@@ -150,10 +154,9 @@ public final class MongoStructJdbcType implements StructuredJdbcType {
     }
 
     /**
-     * @return The {@linkplain Struct#getAttributes() struct attributes}. Though, the way we support {@link Struct} in
-     *     {@link MongoStructJdbcType} does not involve Hibernate ORM ever {@linkplain Connection#createStruct(String,
-     *     Object[]) creating} one. If we extended {@link org.hibernate.dialect.StructJdbcType}, this could have been
-     *     different.
+     * @return The struct attribute values, one per column, taken from the {@link BsonDocument} fields directly.
+     *     Hibernate ORM never creates a {@link java.sql.Struct} for this type, so there is no
+     *     {@linkplain java.sql.Struct#getAttributes() attribute array} to read.
      */
     @Override
     public Object @Nullable [] extractJdbcValues(@Nullable Object rawJdbcValue, WrapperOptions options)
@@ -287,6 +290,227 @@ public final class MongoStructJdbcType implements StructuredJdbcType {
         @Override
         protected X doExtract(CallableStatement statement, String name, WrapperOptions options) throws SQLException {
             throw new SQLFeatureNotSupportedException();
+        }
+    }
+
+    // The flatten/assemble walks below are adapted from Hibernate ORM's internal
+    // org.hibernate.type.descriptor.jdbc.StructHelper (Apache-2.0), reduced to what this type uses:
+    // no attribute-order mapping (fields are addressed by selectable name) and no polymorphic
+    // embeddables (rejected by the constructor). Associations decompose through the public
+    // ModelPart contract rather than the internal ToOneAttributeMapping.
+
+    private static Object[] getJdbcValues(
+            EmbeddableMappingType embeddableMappingType, @Nullable Object domainValue, WrapperOptions options)
+            throws SQLException {
+        final var jdbcValues = new Object[embeddableMappingType.getJdbcValueCount()];
+        injectJdbcValues(embeddableMappingType, domainValue, jdbcValues, 0, options);
+        return jdbcValues;
+    }
+
+    private static int injectJdbcValues(
+            EmbeddableMappingType embeddableMappingType,
+            @Nullable Object domainValue,
+            Object[] jdbcValues,
+            int jdbcIndex,
+            WrapperOptions options)
+            throws SQLException {
+        return injectJdbcValues(
+                embeddableMappingType,
+                domainValue == null ? null : embeddableMappingType.getValues(domainValue),
+                jdbcValues,
+                jdbcIndex,
+                options);
+    }
+
+    private static int injectJdbcValues(
+            EmbeddableMappingType embeddableMappingType,
+            Object @Nullable [] values,
+            Object[] jdbcValues,
+            int jdbcIndex,
+            WrapperOptions options)
+            throws SQLException {
+        if (values == null) {
+            return embeddableMappingType.getJdbcValueCount();
+        }
+        int offset = 0;
+        for (int i = 0; i < values.length; i++) {
+            offset += injectJdbcValue(
+                    embeddableMappingType.getAttributeMapping(i), values, i, jdbcValues, jdbcIndex + offset, options);
+        }
+        assertTrue(offset == embeddableMappingType.getJdbcValueCount());
+        return offset;
+    }
+
+    private static int injectJdbcValue(
+            ValuedModelPart attributeMapping,
+            Object[] attributeValues,
+            int attributeIndex,
+            Object[] jdbcValues,
+            int jdbcIndex,
+            WrapperOptions options)
+            throws SQLException {
+        if (attributeMapping instanceof PluralAttributeMapping) {
+            return 0;
+        } else if (attributeMapping instanceof EntityAssociationMapping
+                || attributeMapping instanceof DiscriminatedAssociationModelPart) {
+            return attributeMapping.decompose(
+                    attributeValues[attributeIndex],
+                    jdbcIndex,
+                    jdbcValues,
+                    options,
+                    (valueIndex, valueArray, wrapperOptions, value, jdbcValueMapping) -> valueArray[valueIndex] = value,
+                    options.getSession());
+        } else if (attributeMapping instanceof EmbeddableValuedModelPart embeddableValuedModelPart) {
+            final EmbeddableMappingType embeddableMappingType = embeddableValuedModelPart.getMappedType();
+            if (embeddableMappingType.getAggregateMapping() != null) {
+                jdbcValues[jdbcIndex] = getBindValue(
+                        embeddableMappingType
+                                .getAggregateMapping()
+                                .getJdbcMapping()
+                                .getJdbcValueBinder(),
+                        attributeValues[attributeIndex],
+                        options);
+                return 1;
+            } else {
+                return injectJdbcValues(
+                        embeddableMappingType, attributeValues[attributeIndex], jdbcValues, jdbcIndex, options);
+            }
+        } else {
+            assertTrue(attributeMapping.getJdbcTypeCount() == 1);
+            final var jdbcMapping = attributeMapping.getSingleJdbcMapping();
+            final Object relationalValue = jdbcMapping.convertToRelationalValue(attributeValues[attributeIndex]);
+            if (relationalValue != null) {
+                injectJdbcValue(jdbcValues, jdbcIndex, options, jdbcMapping, relationalValue);
+            }
+            return 1;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object getBindValue(ValueBinder<?> binder, Object value, WrapperOptions options)
+            throws SQLException {
+        return ((ValueBinder<Object>) binder).getBindValue(value, options);
+    }
+
+    private static void injectJdbcValue(
+            Object[] jdbcValues, int jdbcIndex, WrapperOptions options, JdbcMapping jdbcMapping, Object relationalValue)
+            throws SQLException {
+        injectCastJdbcValue(
+                jdbcValues, jdbcIndex, options, jdbcMapping, jdbcMapping.getJdbcJavaType(), relationalValue);
+    }
+
+    private static <T> void injectCastJdbcValue(
+            Object[] jdbcValues,
+            int jdbcIndex,
+            WrapperOptions options,
+            JdbcMapping jdbcMapping,
+            JavaType<T> javaType,
+            Object relationalValue)
+            throws SQLException {
+        assertTrue(javaType.isInstance(relationalValue));
+        injectJdbcValue(jdbcValues, jdbcIndex, options, jdbcMapping, javaType, javaType.cast(relationalValue));
+    }
+
+    private static <T> void injectJdbcValue(
+            Object[] jdbcValues,
+            int jdbcIndex,
+            WrapperOptions options,
+            JdbcMapping jdbcMapping,
+            JavaType<T> javaType,
+            T relationalValue)
+            throws SQLException {
+        jdbcValues[jdbcIndex] = switch (jdbcMapping.getJdbcType().getDefaultSqlTypeCode()) {
+            case SqlTypes.BLOB, SqlTypes.MATERIALIZED_BLOB -> javaType.unwrap(relationalValue, Blob.class, options);
+            case SqlTypes.CLOB, SqlTypes.MATERIALIZED_CLOB -> javaType.unwrap(relationalValue, Clob.class, options);
+            case SqlTypes.NCLOB, SqlTypes.MATERIALIZED_NCLOB -> javaType.unwrap(relationalValue, NClob.class, options);
+            default -> getBindValue(jdbcMapping.getJdbcValueBinder(), relationalValue, options);
+        };
+    }
+
+    private static AttributeValues getAttributeValues(
+            EmbeddableMappingType embeddableMappingType, Object[] rawJdbcValues, WrapperOptions options)
+            throws SQLException {
+        final int numberOfAttributeMappings = embeddableMappingType.getNumberOfAttributeMappings();
+        final var attributeValues = new AttributeValues(numberOfAttributeMappings, rawJdbcValues);
+        int jdbcIndex = 0;
+        for (int i = 0; i < numberOfAttributeMappings; i++) {
+            jdbcIndex += injectAttributeValue(
+                    embeddableMappingType.getAttributeMapping(i),
+                    attributeValues,
+                    i,
+                    rawJdbcValues,
+                    jdbcIndex,
+                    options);
+        }
+        return attributeValues;
+    }
+
+    private static int injectAttributeValue(
+            ValuedModelPart modelPart,
+            AttributeValues attributeValues,
+            int attributeIndex,
+            Object[] rawJdbcValues,
+            int jdbcIndex,
+            WrapperOptions options)
+            throws SQLException {
+        if (modelPart.getMappedType() instanceof EmbeddableMappingType embeddableMappingType) {
+            return injectAttributeValueEmbeddable(
+                    attributeValues, attributeIndex, rawJdbcValues, jdbcIndex, options, embeddableMappingType);
+        } else {
+            assertTrue(modelPart.getJdbcTypeCount() == 1);
+            final var jdbcMapping = modelPart.getSingleJdbcMapping();
+            final Object jdbcValue = jdbcMapping.getJdbcJavaType().wrap(rawJdbcValues[jdbcIndex], options);
+            attributeValues.setAttributeValue(attributeIndex, jdbcMapping.convertToDomainValue(jdbcValue));
+            return 1;
+        }
+    }
+
+    private static int injectAttributeValueEmbeddable(
+            AttributeValues attributeValues,
+            int attributeIndex,
+            Object[] rawJdbcValues,
+            int jdbcIndex,
+            WrapperOptions options,
+            EmbeddableMappingType embeddableMappingType)
+            throws SQLException {
+        if (embeddableMappingType.getAggregateMapping() != null) {
+            attributeValues.setAttributeValue(attributeIndex, rawJdbcValues[jdbcIndex]);
+            return 1;
+        } else {
+            final int jdbcValueCount = embeddableMappingType.getJdbcValueCount();
+            final Object[] subJdbcValues = new Object[jdbcValueCount];
+            System.arraycopy(rawJdbcValues, jdbcIndex, subJdbcValues, 0, subJdbcValues.length);
+            final var subValues = getAttributeValues(embeddableMappingType, subJdbcValues, options);
+            attributeValues.setAttributeValue(attributeIndex, instantiate(embeddableMappingType, subValues));
+            return jdbcValueCount;
+        }
+    }
+
+    private static Object instantiate(EmbeddableMappingType embeddableMappingType, AttributeValues attributeValues) {
+        return embeddableMappingType
+                .getRepresentationStrategy()
+                .getInstantiator()
+                .instantiate(attributeValues);
+    }
+
+    private static final class AttributeValues implements ValueAccess {
+        private final Object[] attributeValues;
+
+        AttributeValues(int size, Object @Nullable [] rawJdbcValues) {
+            if (rawJdbcValues == null || size != rawJdbcValues.length) {
+                attributeValues = new Object[size];
+            } else {
+                attributeValues = rawJdbcValues;
+            }
+        }
+
+        @Override
+        public Object[] getValues() {
+            return attributeValues;
+        }
+
+        void setAttributeValue(int index, Object value) {
+            attributeValues[index] = value;
         }
     }
 }

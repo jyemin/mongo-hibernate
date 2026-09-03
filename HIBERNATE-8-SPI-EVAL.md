@@ -57,85 +57,108 @@ Two known limitations:
    `StandardAggregateSupport`, `StandardDdlTypes`, `QueryOptions.NONE`,
    and the boot-model `Component` check instead of `ComponentType`.
 7. Interface-surfacing conversions: the offset and limit parameters implement
-   `JdbcParameter` and `JdbcParameterBinder` directly; field-path resolution
-   goes through `Expression.getColumnReference()`; aggregate recognition
-   through `EmbeddableValuedModelPart`; the rejecting upsert implements
-   `JdbcValueDescriptor`; parameter member reads dispatch through
-   `JdbcParameter` and `SqlExpressible`.
+   `org.hibernate.sql.ast.spi.query.expression.JdbcParameter` and
+   `org.hibernate.sql.exec.spi.JdbcParameterBinder` directly; field-path
+   resolution goes through `Expression.getColumnReference()`; aggregate
+   recognition through `EmbeddableValuedModelPart`; the rejecting upsert
+   implements `org.hibernate.sql.spi.mutation.jdbc.JdbcValueDescriptor`;
+   parameter member reads dispatch through
+   `org.hibernate.sql.ast.spi.query.expression.JdbcParameter` and
+   `SqlExpressible`.
 8. `SqlTreePrinter` debug logging dropped (internal utility, no equivalent).
 9. The no-op update (`TableUpdateNoSet`) detected through the spi
    `TableUpdate` accessors instead of the internal marker class.
+10. The struct flatten and assemble walks copied from `StructHelper` into
+    `MongoStructJdbcType` as private static methods,
+    reduced to what the type uses: no attribute-order mapping, no
+    polymorphic embeddables, and associations decomposed through the
+    public `ModelPart` contract. The values holder implements the
+    incubating `org.hibernate.metamodel.spi.ValueAccess`, the one finding the copy adds.
 
 ## Provider-boundary report
 
 `./gradlew validateDialectProviderBoundaries` against this branch's jar
 (using the plugin from the PR, with classification metadata generated from
-the PR checkout): 65 errors and 11 warnings.
+the PR checkout): 67 errors and 8 warnings.
 
-The 65 errors (`MISSING_IMPLEMENT_ROLE`, 22 declarations) are the deliberate
-output of commit series 7: every internal dependency that could be expressed
-against an spi interface was converted, so the report now names exactly the
-contracts that need classification. The declarations:
+The 67 errors (`MISSING_IMPLEMENT_ROLE`, 23 declarations) are the deliberate
+output of the interface-surfacing series: every internal dependency that
+could be expressed against an spi interface was converted, so the report
+names exactly the contracts that need classification. Per the generated
+classification metadata, the 23 declarations fall into two categories.
 
-- Boot and service:
-  - `StandardServiceInitiator`
-  - `ServiceInitiator`
-  - `ServiceContributor`
-  - `Service`
-  - `NamedStrategyContributor`
-  - `AdditionalMappingContributor`
-  - `ConnectionProvider`
-  - `Stoppable`
-  - `Wrapped`
-  - `DatabaseConnectionInfo`
-- Generation:
-  - `Generator`
-  - `BeforeExecutionGenerator`
-- Functions:
-  - `AbstractSqmSelfRenderingSetReturningFunctionDescriptor`
-  - `SetReturningFunctionRenderer`
-  - `AbstractArrayIncludesFunction`
-- Mutation operations:
-  - `MutationOperation`
-  - `SelfExecutingUpdateOperation`
-- Parameter and descriptor surface:
-  - `JdbcParameter`
-  - `JdbcParameterBinder`
-  - `Expression`
-  - `SqlAstNode`
-  - `JdbcValueDescriptor`
+Classified SPI, `USE` role only (16 declarations). The category is right;
+implementing them simply needs the `IMPLEMENT` role:
 
-Six of the seven warning declarations have no local route; they are
+- `org.hibernate.service.spi.ServiceInitiator`
+- `org.hibernate.service.spi.ServiceContributor`
+- `org.hibernate.service.spi.Stoppable`
+- `org.hibernate.service.spi.Wrapped`
+- `org.hibernate.boot.registry.selector.spi.NamedStrategyContributor`
+- `org.hibernate.boot.spi.AdditionalMappingContributor`
+- `org.hibernate.engine.jdbc.connections.spi.ConnectionProvider`
+- `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo`
+- `org.hibernate.metamodel.spi.ValueAccess`
+- `org.hibernate.sql.ast.spi.SqlAstNode`
+- `org.hibernate.sql.ast.spi.query.expression.Expression`
+- `org.hibernate.sql.ast.spi.query.expression.JdbcParameter`
+- `org.hibernate.sql.exec.spi.JdbcParameterBinder`
+- `org.hibernate.sql.spi.mutation.SelfExecutingUpdateOperation`
+- `org.hibernate.sql.spi.mutation.jdbc.JdbcValueDescriptor`
+- `org.hibernate.sql.spi.mutation.MutationOperation`
+
+Classified API with no roles (7 declarations). These are public types in
+plain, non-spi packages, and the classifier resolved them as
+application-facing contracts; under the model, a provider implementing an
+API declaration is a policy violation. Custom identifier generators and
+custom service initiators have been documented extension points for years,
+so this looks like the unannotated-public-type defaulting rule sweeping up
+classic extension points rather than intent. These need reclassification
+to SPI with `IMPLEMENT`, not just a role:
+
+- `org.hibernate.service.Service`
+- `org.hibernate.boot.registry.StandardServiceInitiator`
+- `org.hibernate.generator.Generator`
+- `org.hibernate.generator.BeforeExecutionGenerator`
+- `org.hibernate.query.sqm.function.SetReturningFunctionRenderer`
+- `org.hibernate.query.sqm.function.AbstractSqmSelfRenderingSetReturningFunctionDescriptor`
+- `org.hibernate.dialect.function.array.AbstractArrayIncludesFunction`
+
+Hibernate's own `ConnectionProvider` (SPI, `USE`) extending `Service`
+(API) is a cross-category edge of the kind their
+`FORBIDDEN_CATEGORY_DEPENDENCY` validation is meant to catch, which is
+further evidence the API classifications are unintended.
+
+The six remaining warning declarations have no local route; they are
 runtime types Hibernate instantiates and hands to the extension:
 
-- `Joined`/`SingleTable`/`UnionSubclassEntityPersister` (inheritance-strategy
-  detection; needs a supported strategy accessor)
-- `SqmParameterInterpretation` (recognition; needs a hook or classification)
-- `StandardServiceRegistryBuilder` (handed over by `ServiceContributor`'s
-  own signature)
-- `DatabaseConnectionInfo` (the extension implements it; the warnings are
-  those overrides)
-
-`StructHelper` is the exception: it is a static utility, so copying it into
-the extension is a known workaround (the file is Apache-2.0 on the branch).
-It is unpleasant rather than impossible: the extension would own around
-371 lines of mapping-model traversal logic that upstream maintains today,
-and the copy would silently diverge on any upstream change. Left as a
-warning so the missing spi contract stays visible.
+- `org.hibernate.persister.entity.JoinedSubclassEntityPersister`,
+  `org.hibernate.persister.entity.SingleTableEntityPersister`,
+  `org.hibernate.persister.entity.UnionSubclassEntityPersister`
+  (inheritance-strategy detection; needs a supported strategy accessor)
+- `org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation`
+  (recognition; needs a hook or classification)
+- `org.hibernate.boot.registry.StandardServiceRegistryBuilder` (handed over
+  by `org.hibernate.service.spi.ServiceContributor`'s own signature)
+- `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo` (the
+  extension implements it; the warnings are those overrides)
 
 ## Upstream asks
 
-1. The `@SPI` annotation pass over the unannotated integration interfaces
-   listed above.
+1. The `IMPLEMENT` role for the 16 SPI-classified declarations above, and
+   reclassification of the 7 API-classified ones (the defaulting rule for
+   unannotated public types in plain packages, or deliberate
+   reclassification of the classic extension points among them).
 2. A `JdbcParameterFactory`: `limitParameter`/`offsetParameter` for the
    offset and limit parameters, plus a general
    `parameter(ColumnReference, ParameterUsage)` whose product exposes usage.
    That removes the last self-built parameters and all
    `ColumnValueParameter` references.
 3. A supported inheritance-strategy query on the entity mapping contract.
-4. Classification or a recognition hook for `SqmParameterInterpretation`.
-5. Classification of `StructHelper`, `StandardServiceRegistryBuilder`, and
-   `DatabaseConnectionInfo`.
+4. Classification or a recognition hook for
+   `org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation`.
+5. Classification of `org.hibernate.boot.registry.StandardServiceRegistryBuilder` and
+   `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo`.
 6. Two structural findings: `ColumnValueParameter` sits in the spi
    `sql.ast.spi.model` package but extends the internal
    `AbstractJdbcParameter` without redeclaring `accept`,
