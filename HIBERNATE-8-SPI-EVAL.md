@@ -138,8 +138,9 @@ runtime types Hibernate instantiates and hands to the extension:
   (inheritance-strategy detection; needs a supported strategy accessor)
 - `org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation`
   (recognition; needs a hook or classification)
-- `org.hibernate.boot.registry.StandardServiceRegistryBuilder` (handed over
-  by `org.hibernate.service.spi.ServiceContributor`'s own signature)
+- `org.hibernate.boot.registry.StandardServiceRegistryBuilder#getSettings()`
+  (the one settings read accessor, deliberately `@Internal`, called by our
+  service contributor; the builder's writes are supported API)
 - `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo` (the
   extension implements it; the warnings are those overrides)
 
@@ -163,8 +164,15 @@ runtime types Hibernate instantiates and hands to the extension:
    otherwise must name the internal
    `org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation` to
    recognize them.
-5. Classification of `org.hibernate.boot.registry.StandardServiceRegistryBuilder` and
-   `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo`.
+5. A supported way for a `ServiceContributor` to read the current
+   settings. The builder it is handed classifies as API and its
+   `applySetting`/`addInitiator` are supported, but its only read accessor,
+   `getSettings()`, is deliberately `@Internal`; a contributor that
+   auto-configures must read before it writes. Un-mark `getSettings()` or
+   hand the contributor a supported settings view. Separately, the
+   `IMPLEMENT` role for
+   `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo`,
+   which the extension implements.
 6. Two structural findings: `ColumnValueParameter` sits in the spi
    `sql.ast.spi.model` package but extends the internal
    `AbstractJdbcParameter` without redeclaring `accept`,
