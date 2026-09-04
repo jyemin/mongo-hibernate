@@ -155,8 +155,14 @@ runtime types Hibernate instantiates and hands to the extension:
    That removes the last self-built parameters and all
    `ColumnValueParameter` references.
 3. A supported inheritance-strategy query on the entity mapping contract.
-4. Classification or a recognition hook for
-   `org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation`.
+4. `isParameterInterpretation(Expression)` exposed beyond
+   `AbstractSqlAstTranslator` (a static utility or a default method on the
+   `SqlAstTranslator` interface). It is already the sanctioned recognition
+   for query-parameter operands, but as a protected final member of the
+   SQL-rendering base it is unavailable to direct implementations, which
+   otherwise must name the internal
+   `org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation` to
+   recognize them.
 5. Classification of `org.hibernate.boot.registry.StandardServiceRegistryBuilder` and
    `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo`.
 6. Two structural findings: `ColumnValueParameter` sits in the spi
