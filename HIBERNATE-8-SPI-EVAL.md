@@ -165,11 +165,12 @@ runtime types Hibernate instantiates and hands to the extension:
    to pick which unsupported-feature error to throw when an entity spans
    multiple query spaces, so the present need is precise messages, nothing
    functional. This is the one ask that anticipates future work: when
-   JOINED or @SecondaryTable support is designed, branching on strategy
-   becomes load-bearing, and the right shape for the accessor depends on
-   that design. The subclass structure and per-subclass table mappings the
-   feature would need are already reachable through the `EntityMappingType`
-   mapping SPI; the strategy value is the piece with no supported source.
+   JOINED or @SecondaryTable support is designed, the strategy branch then
+   decides how the query is translated, and the right shape for the
+   accessor depends on that design. The subclass structure and the
+   per-subclass table mappings the feature would need are already reachable
+   through the `EntityMappingType` mapping SPI; the strategy value is the
+   piece with no supported source.
 4. `isParameterInterpretation(Expression)` exposed beyond
    `AbstractSqlAstTranslator` (a static utility or a default method on the
    `SqlAstTranslator` interface). It is already the sanctioned recognition
