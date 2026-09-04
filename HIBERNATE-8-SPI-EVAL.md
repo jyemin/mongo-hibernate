@@ -142,7 +142,9 @@ runtime types Hibernate instantiates and hands to the extension:
   (the one settings read accessor, deliberately `@Internal`, called by our
   service contributor; the builder's writes are supported API)
 - `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo` (the
-  extension implements it; the warnings are those overrides)
+  extension implements the interface; the warnings are the overrides of
+  `hasSchema()` and `hasCatalog()`, which are deliberately `@Internal` and
+  abstract, so no implementer can compile without them)
 
 ## Upstream asks
 
@@ -169,10 +171,12 @@ runtime types Hibernate instantiates and hands to the extension:
    `applySetting`/`addInitiator` are supported, but its only read accessor,
    `getSettings()`, is deliberately `@Internal`; a contributor that
    auto-configures must read before it writes. Un-mark `getSettings()` or
-   hand the contributor a supported settings view. Separately, the
-   `IMPLEMENT` role for
-   `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo`,
-   which the extension implements.
+   hand the contributor a supported settings view. Separately, for
+   `org.hibernate.engine.jdbc.connections.spi.DatabaseConnectionInfo`:
+   the `IMPLEMENT` role, and either un-marked or defaulted
+   `hasSchema()`/`hasCatalog()`. As it stands the interface is
+   unimplementable by a provider without findings, because those two
+   members are both `@Internal` and abstract.
 6. Two structural findings: `ColumnValueParameter` sits in the spi
    `sql.ast.spi.model` package but extends the internal
    `AbstractJdbcParameter` without redeclaring `accept`,
