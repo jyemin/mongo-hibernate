@@ -135,7 +135,10 @@ runtime types Hibernate instantiates and hands to the extension:
 - `org.hibernate.persister.entity.JoinedSubclassEntityPersister`,
   `org.hibernate.persister.entity.SingleTableEntityPersister`,
   `org.hibernate.persister.entity.UnionSubclassEntityPersister`
-  (inheritance-strategy detection; needs a supported strategy accessor)
+  (used only to select which unsupported-feature error to throw: an
+  entity spanning multiple query spaces is rejected either way, and the
+  concrete class picks the JOINED, TABLE_PER_CLASS, or @SecondaryTable
+  message)
 - `org.hibernate.query.sqm.sql.internal.SqmParameterInterpretation`
   (recognition; needs a hook or classification)
 - `org.hibernate.boot.registry.StandardServiceRegistryBuilder#getSettings()`
@@ -157,7 +160,16 @@ runtime types Hibernate instantiates and hands to the extension:
    `parameter(ColumnReference, ParameterUsage)` whose product exposes usage.
    That removes the last self-built parameters and all
    `ColumnValueParameter` references.
-3. A supported inheritance-strategy query on the entity mapping contract.
+3. A way to distinguish the three inheritance strategies on the entity
+   mapping contract. Today the extension uses the concrete persisters only
+   to pick which unsupported-feature error to throw when an entity spans
+   multiple query spaces, so the present need is precise messages, nothing
+   functional. This is the one ask that anticipates future work: when
+   JOINED or @SecondaryTable support is designed, branching on strategy
+   becomes load-bearing, and the right shape for the accessor depends on
+   that design. The subclass structure and per-subclass table mappings the
+   feature would need are already reachable through the `EntityMappingType`
+   mapping SPI; the strategy value is the piece with no supported source.
 4. `isParameterInterpretation(Expression)` exposed beyond
    `AbstractSqlAstTranslator` (a static utility or a default method on the
    `SqlAstTranslator` interface). It is already the sanctioned recognition
