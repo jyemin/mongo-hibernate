@@ -32,6 +32,7 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.UUID;
 import org.bson.BsonArray;
 import org.bson.BsonBinary;
 import org.bson.BsonBoolean;
@@ -45,6 +46,7 @@ import org.bson.BsonNull;
 import org.bson.BsonObjectId;
 import org.bson.BsonString;
 import org.bson.BsonValue;
+import org.bson.UuidRepresentation;
 import org.bson.types.Decimal128;
 import org.bson.types.ObjectId;
 import org.jspecify.annotations.Nullable;
@@ -83,6 +85,8 @@ public final class ValueConversions {
         } else if (value instanceof char[] v) {
             return toBsonValue(v);
         } else if (value instanceof ObjectId v) {
+            return toBsonValue(v);
+        } else if (value instanceof UUID v) {
             return toBsonValue(v);
         } else if (value instanceof Instant v) {
             return toBsonValue(v);
@@ -156,6 +160,10 @@ public final class ValueConversions {
         return new BsonObjectId(value);
     }
 
+    public static BsonBinary toBsonValue(UUID value) {
+        return new BsonBinary(value);
+    }
+
     public static BsonDateTime toBsonValue(Instant instant) {
         return new BsonDateTime(instant.toEpochMilli());
     }
@@ -197,7 +205,7 @@ public final class ValueConversions {
         } else if (value instanceof BsonString v) {
             return uncheckedToDomainValue(v, domainType);
         } else if (value instanceof BsonBinary v) {
-            return toDomainValue(v);
+            return domainType.equals(UUID.class) ? toUuidDomainValue(v) : toDomainValue(v);
         } else if (value instanceof BsonObjectId v) {
             return toDomainValue(v);
         } else if (value instanceof BsonDateTime v) {
@@ -319,6 +327,10 @@ public final class ValueConversions {
 
     public static ObjectId toObjectIdDomainValue(BsonValue value) {
         return toDomainValue(value.asObjectId());
+    }
+
+    public static UUID toUuidDomainValue(BsonValue value) {
+        return value.asBinary().asUuid(UuidRepresentation.STANDARD);
     }
 
     private static ObjectId toDomainValue(BsonObjectId value) {
