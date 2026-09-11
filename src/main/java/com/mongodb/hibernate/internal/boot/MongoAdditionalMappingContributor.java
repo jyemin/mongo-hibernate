@@ -71,6 +71,7 @@ import org.hibernate.annotations.GenericGenerator;
 import org.hibernate.annotations.IdGeneratorType;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.annotations.Struct;
+import org.hibernate.annotations.UuidGenerator;
 import org.hibernate.boot.Metadata;
 import org.hibernate.boot.MetadataSources;
 import org.hibernate.boot.ResourceStreamLocator;
@@ -135,9 +136,7 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
             Document.class,
             BsonDocument.class,
             RawBsonDocument.class,
-            BsonDocumentWrapper.class,
-            // java.util types
-            UUID.class);
+            BsonDocumentWrapper.class);
 
     public MongoAdditionalMappingContributor() {}
 
@@ -410,13 +409,15 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
             "guid");
 
     /**
-     * Only sequence-backed generation is supported, and only for the identifier types Hibernate ORM reads with
-     * {@code ResultSet#getLong}.
+     * Two kinds of identifier generation are supported: sequence-backed generation, for the identifier types Hibernate
+     * ORM reads with {@code ResultSet#getLong}, and UUID generation ({@code strategy = UUID} or a localized
+     * {@link UuidGenerator}), for UUID-typed identifiers. Legacy generator names that map to UUID generation are
+     * forbidden even though the strategy is supported, because the modern spellings supersede them.
      *
      * <p>{@code generatedValue.strategy()} is not what determines the generator Hibernate actually resolves: an unnamed
      * {@code AUTO} generator can be captured by a localized {@link TableGenerator}, and a named generator can map
-     * through {@code GeneratorStrategies.mapLegacyNamedGenerator} to identity, table, increment or UUID generation
-     * regardless of what {@code strategy()} says. Since the resolved generator is not introspectable
+     * through {@code GeneratorStrategies.mapLegacyNamedGenerator} to identity, table or increment generation regardless
+     * of what {@code strategy()} says. Since the resolved generator is not introspectable
      * ({@link SimpleValue#getCustomIdGeneratorCreator()} is an opaque lambda), the annotation shapes that could produce
      * one of those generators are forbidden directly rather than relying on {@code strategy()}.
      */
@@ -442,7 +443,7 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
             case AUTO, SEQUENCE -> forbidUnsupportedGeneratedIdentifierType(persistentClass, identifier);
             case IDENTITY -> throw identityGenerationNotSupported(persistentClass);
             case TABLE -> throw tableGenerationNotSupported(persistentClass);
-            case UUID -> throw uuidGenerationNotSupported(persistentClass);
+            case UUID -> {}
         }
     }
 
@@ -510,17 +511,35 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
             return tableGenerationNotSupported(persistentClass);
         }
         if (UUID_FLAVORED_LEGACY_GENERATOR_NAMES.contains(generatorName)) {
-            return uuidGenerationNotSupported(persistentClass);
+            return legacyUuidGeneratorNotSupported(persistentClass, generatorName);
         }
         return unsupportedGenerator(persistentClass, format("the identifier generator named [%s]", generatorName));
     }
 
     private static FeatureNotSupportedException unsupportedGenerator(PersistentClass persistentClass, String what) {
         return new FeatureNotSupportedException(format(
-                "%s: %s is not supported; the only supported identifier generation is sequence-backed"
+                "%s: %s is not supported; the supported identifier generation is sequence-backed"
                         + " (@GeneratedValue with strategy AUTO or SEQUENCE, naming a @SequenceGenerator or no"
-                        + " generator name at all)",
-                persistentClass, what));
+                        + " generator name at all) or UUID-backed ([@%s] or [@%s(strategy = %s.%s)])",
+                persistentClass,
+                what,
+                UuidGenerator.class.getSimpleName(),
+                GeneratedValue.class.getSimpleName(),
+                GenerationType.class.getSimpleName(),
+                GenerationType.UUID));
+    }
+
+    private static FeatureNotSupportedException legacyUuidGeneratorNotSupported(
+            PersistentClass persistentClass, String generatorName) {
+        return new FeatureNotSupportedException(format(
+                "%s: the legacy identifier generator name [%s] is not supported; use [@%s], or"
+                        + " [@%s(strategy = %s.%s)]",
+                persistentClass,
+                generatorName,
+                UuidGenerator.class.getSimpleName(),
+                GeneratedValue.class.getSimpleName(),
+                GenerationType.class.getSimpleName(),
+                GenerationType.UUID));
     }
 
     private static FeatureNotSupportedException identityGenerationNotSupported(PersistentClass persistentClass) {
@@ -540,13 +559,6 @@ public final class MongoAdditionalMappingContributor implements AdditionalMappin
                 "%s: identifier generation strategy [%s] is not supported; use [%s]."
                         + " TODO-HIBERNATE-252 https://jira.mongodb.org/browse/HIBERNATE-252",
                 persistentClass, GenerationType.TABLE, GenerationType.SEQUENCE));
-    }
-
-    private static FeatureNotSupportedException uuidGenerationNotSupported(PersistentClass persistentClass) {
-        return new FeatureNotSupportedException(format(
-                "%s: identifier generation strategy [%s] is not supported."
-                        + " TODO-HIBERNATE-121 https://jira.mongodb.org/browse/HIBERNATE-121",
-                persistentClass, GenerationType.UUID));
     }
 
     private static void forbidUnsupportedGeneratedIdentifierType(PersistentClass persistentClass, KeyValue identifier) {

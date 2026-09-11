@@ -694,14 +694,6 @@ class SequenceGeneratedIdIntegrationTests {
             Long id;
         }
 
-        @Entity(name = "UuidItem")
-        @Table(name = "uuidItems")
-        static class UuidItem {
-            @Id
-            @GeneratedValue(strategy = GenerationType.UUID)
-            String id;
-        }
-
         @Entity(name = "BigIntegerItem")
         @Table(name = "bigIntegerItems")
         static class BigIntegerItem {
@@ -836,13 +828,6 @@ class SequenceGeneratedIdIntegrationTests {
             assertThatThrownBy(() -> inRegistry(session -> null, TableItem.class))
                     .isInstanceOf(FeatureNotSupportedException.class)
                     .hasMessageContaining("TODO-HIBERNATE-252");
-        }
-
-        @Test
-        void uuidStrategyIsRejected() {
-            assertThatThrownBy(() -> inRegistry(session -> null, UuidItem.class))
-                    .isInstanceOf(FeatureNotSupportedException.class)
-                    .hasMessageContaining("TODO-HIBERNATE-121");
         }
 
         @Test
